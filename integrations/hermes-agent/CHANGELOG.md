@@ -10,6 +10,122 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.3]
+
+### Added
+- **Recall is auto on the default dataset (SDK-1393).** Unless recall is pinned, the
+  per-prompt memory lane and `cognee_recall` name no dataset and the server picks the
+  best-matching one.
+  Routing needs a cognee 1.6.6 server; an older one searches every dataset the user can read.
+  Saves still go to the conversation's dataset. While recall is auto, the memory credit says
+  "based on Cognee memory" rather than naming the active dataset. The guidance lane,
+  `cognee_code_search` and recaps keep their datasets.
+- **The recall mode is a setting: `recall_mode` / `COGNEE_PLUGIN_RECALL_MODE`.** `auto` lets
+  the server pick the dataset; `pinned` keeps recall on the active dataset (reason
+  `configured_pin`). Set it with the env var, `recall_mode` in `cognee.json`, or the setup
+  wizard's new recall-mode question. An unknown value is `auto`. With no mode set, the default
+  dataset is `auto` and a configured non-default dataset stays `pinned` (reason
+  `configured_pin`), so a dataset chosen to keep agents or projects apart keeps recall apart
+  too; the wizard offers `pinned` for such a dataset. A set mode wins, and a conversation's own
+  pin or `auto` wins over both.
+- **A one-time note that auto exists.** A user whose recall stays on a configured dataset only
+  because no mode is set gets one line appended to the first reply of a session, once per
+  machine and dataset (marker under `~/.cognee-plugin/hermes/notices/`), and logged: "Cognee:
+  recall stays on `<dataset>`. Cognee can also pick the best-matching dataset for each prompt
+  from all you can read: set `recall_mode: auto` in cognee.json (or
+  `COGNEE_PLUGIN_RECALL_MODE=auto`, or rerun `hermes memory setup cognee`), or ask to set recall
+  to auto for this conversation." It is never stored with the answer. `hermes cognee status`
+  shows the recall mode in effect.
+  `COGNEE_PLUGIN_DATASET=auto` (any case) means the default dataset and says nothing about the
+  mode; before, saves went to a dataset named `auto`.
+- **`cognee_switch_dataset` sets the conversation's recall mode, which wins over the
+  configured one.** New `action='pin'` pins recall to the active dataset (no new session); a
+  `switch` pins recall to its target, and a `switch` to the dataset in use behaves as `pin`.
+  `action='auto'` lets the server pick for that conversation, lifting a configured pin too (the
+  reply names it in `lifted`). `reset` goes back to the configured dataset and recall mode.
+  `current` reports the mode in effect and, when pinned, a `reason` as the other cognee
+  plugins do: `dataset_picked` or `configured_pin`. Every result carries one `message` line
+  built from the mode and reason. `switch` refuses the name `auto`. The memory credit names
+  the dataset whenever recall is pinned.
+- **The mode is kept in `dataset-overrides.json` as a mode.** A pin or `auto` without a switch
+  stores only `{"recall": ...}`: recall applies to the active dataset, which follows the
+  configuration, so after a change of the configured dataset a pinned conversation is pinned
+  to the new one (reason `dataset_picked`). A switch stores its dataset and counter too.
+  Entries written before this release (no `recall`) stay pinned, except one on the configured
+  dataset (indistinguishable from a reset), which follows the configuration.
+
+### Changed
+- **The terminal logo names the dataset.** In `hermes` and `hermes --tui` the braille
+  logo the plugin adds under a streamed answer now reads `COGNEE  based on alice_in_wonderland
+  dataset` ("a and b datasets" for several), taken from the datasets the credit line names; a
+  line crediting only "Cognee memory" keeps the logo alone. In the classic CLI it follows the
+  answer's closing line with no blank lines in between.
+- **Hermes Desktop sets the credited dataset as code.** The drawn credit line shows
+  "based on dataset `live_context_support_agent`" with the name in inline code, so it stands
+  out from the sentence. Only a name that ends the line or leads to the next named dataset
+  is set; the terminal chats and messaging apps keep the line as the agent wrote it.
+- **The memory credit names the dataset an auto recall came from.** While recall is auto the
+  credit said "based on Cognee memory", because the server picks the datasets. Each recalled
+  memory now carries the dataset the server reports for it (`dataset_name` on the search
+  result) in its tag, `[m1 · Cognee memory · dataset shop_support]`, and the credit names the
+  datasets of the items the answer used ("based on dataset shop_support and dataset returns").
+  The same goes for `cognee_recall` results. When a result names no dataset (an older server),
+  the credit says "based on Cognee memory" as before.
+- **The setup wizard asks about recall once.** `hermes memory setup` no longer asks
+  "Auto-route recall" right after the recall mode, where it read as the same question twice.
+  The two are different settings: `recall_mode` is which datasets recall reads, `auto_route`
+  is whether Cognee picks the search type for each query. `auto_route` keeps its saved value
+  and is set in `cognee.json` or with `COGNEE_AUTO_ROUTE`.
+- **Local mode installs cognee 1.6.6** (was 1.6.5), and a runtime installed for 1.6.5 keeps
+  local mode off until `hermes cognee install-runtime` installs 1.6.6: the plugin never starts
+  a server on a cognee it was not written against, and never downloads one behind the user's
+  back. Hermes reports Cognee as unavailable with that command, and `hermes cognee status`
+  shows the runtime as outdated. `install-runtime` upgrades `runtime/venv` in place; a failed
+  or interrupted install leaves no ready marker, so local mode stays off and the next
+  `install-runtime` repairs the venv. Then start a new Hermes session.
+- **`install-runtime` stops the local server this plugin started before it installs, and
+  asks first.** A server still running from the venv would load modules of the new version
+  into the old process. The plugin now writes a pidfile when it starts a server
+  (`~/.cognee-plugin/hermes/runtime/servers/<port>.pid`) and stops servers by it, checking the
+  pid is alive and still runs `cognee.api.client:app` (a reused pid is left alone). It says
+  "This stops the local cognee server (pid N) on port 8011; other cognee plugins using it will
+  restart it on their next request." and asks `Continue? (y/n)` (default yes); without a
+  terminal it goes ahead only with the new `--yes` flag. The setup wizard's install question
+  names the pid when a server is running. The server gets SIGTERM only, never SIGKILL, and up
+  to 60 seconds; one still running after that is left running and the install stops with the
+  ready marker and the venv untouched. Other cognee plugins sharing that server start a new
+  one on their next request. A session that would start a server while `install-runtime`
+  holds its lock reports Cognee as unavailable instead of starting one on a half-upgraded venv.
+- **`install-runtime` changes nothing while an outdated cognee server still answers on the
+  local port.** When the server left on the port reports a cognee older than the pin, or no
+  version (one 1.4.2 or earlier started without a pidfile, where agent mode makes it exit once
+  idle; one another plugin started on an older cognee; any server on Windows, where nothing is
+  stopped for you), the install stops before it touches the ready marker or the venv, and
+  names the port, the version and, when `lsof` is installed, the pid to stop before re-running
+  it. A server on the pinned cognee or newer, such as another plugin's current one, does not
+  block the install. The outdated-server and
+  outdated-runtime messages no longer promise that `install-runtime` stops every server.
+- **Embedded mode needs the pinned cognee in Hermes's own environment.** Embedded mode
+  (`COGNEE_EMBEDDED`, `embedded` in `cognee.json`) runs cognee in the Hermes process, so it is
+  available only when that environment holds cognee 1.6.6 or newer; the runtime venv never
+  counts for it. With an older one, Hermes's warning names the found version and the upgrade
+  command (`<python> -m pip install cognee==1.6.6`), or says to unset `COGNEE_EMBEDDED`; it
+  never points to `install-runtime`, which embedded mode does not use.
+- **A cognee older than the pin in Hermes's own environment is never started.** 1.3.x
+  installed cognee 1.6.5 as a dependency, and `pip install -U` leaves it behind; local mode
+  used to start the server from it, so recall was never routed and nothing said why. It is now
+  used only at the pinned version or newer; otherwise local mode stays off with the
+  `install-runtime` message, and `hermes cognee status` shows it as outdated.
+- **A running local server on an older cognee is not used.** The server on the local port is
+  shared with the other cognee plugins and may be one of them running an older cognee. When
+  its `/health` version is older than the pin, Hermes reports Cognee as unavailable, naming
+  the port, until it is replaced. A server that reports no version is used.
+- **`COGNEE_PLUGIN_RECALL_MODE` overrides `recall_mode` in `cognee.json`.** The setup wizard
+  always writes `recall_mode`, so the exported variable did nothing after setup. It now wins,
+  as in the hook-family plugins (every other setting still lets `cognee.json` win), and a
+  configured pin names where it was set: `COGNEE_PLUGIN_RECALL_MODE=pinned` or
+  `recall_mode "pinned" in cognee.json`.
+
 ## [1.4.2]
 
 ### Fixed

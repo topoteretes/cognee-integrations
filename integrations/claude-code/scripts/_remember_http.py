@@ -293,18 +293,20 @@ def do_remember(
         return UNREACHABLE
 
     # The server responded with 2xx. A body we can't parse is fine —
-    # the important thing is the server accepted the request.
+    # the important thing is the server accepted the request. The result names
+    # where the write went, so a caller reports that rather than its own guess.
+    accepted = {"ok": True, "dataset": dataset} if dataset else {"ok": True}
     try:
         data = json.loads(raw or "{}")
     except (json.JSONDecodeError, ValueError):
-        return {"ok": True}
+        return accepted
 
     if isinstance(data, dict) and data.get("error"):
         msg = str(data.get("error"))[:200]
         sys.stderr.write("[cognee-remember] server returned error: %s\n" % msg)
         return _error(200, msg)
 
-    result = {"ok": True}
+    result = dict(accepted)
     if isinstance(data, dict):
         if data.get("dataset_id"):
             result["dataset_id"] = str(data["dataset_id"])

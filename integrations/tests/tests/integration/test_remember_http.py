@@ -98,12 +98,12 @@ def test_2xx_returns_ok(rh, mock_server):
     # The default mock body carries a dataset_id; the wait is disabled below so
     # this isolates "the server accepted the write".
     mock_server.force_response("POST", REMEMBER, 200, {})
-    assert _remember(rh, mock_server.url) == {"ok": True}
+    assert _remember(rh, mock_server.url) == {"ok": True, "dataset": "ds"}
 
 
 def test_unparseable_body_still_ok(rh, mock_server):
     mock_server.force_response("POST", REMEMBER, 200, b"not json")
-    assert _remember(rh, mock_server.url) == {"ok": True}
+    assert _remember(rh, mock_server.url) == {"ok": True, "dataset": "ds"}
 
 
 def test_error_in_2xx_body_is_an_error_envelope(rh, mock_server):

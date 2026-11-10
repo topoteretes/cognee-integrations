@@ -14,14 +14,18 @@ Usage:
            (operations: query_facts, explore, traverse, find_path,
            impact_analysis, delta). The repository's own code dataset is
            resolved from the current directory automatically.
---dataset: override the dataset to search (default: the plugin dataset, or
-           the current repo's code dataset in --code mode). A name only
-           resolves among datasets this identity OWNS; anything else must be
-           addressed by UUID.
---dataset-id: search another dataset by UUID (the cross-dataset picker flow:
-           list-datasets.py names the candidates). A dataset other than the
-           launch's active one is read without the session id, which is bound
-           to the active dataset.
+--dataset: override the dataset to search (default: the recall mode decides —
+           auto names no dataset and the server routes the search, pinned
+           uses the plugin dataset; --code uses the current repo's code
+           dataset). A name only resolves among datasets this identity OWNS;
+           anything else must be addressed by UUID.
+--dataset-id: search another dataset by UUID (list-datasets.py names the
+           candidates). A dataset other than the launch's active one is
+           read without the session id, which is bound to the active dataset.
+           While recall is restricted (pinned or a read set), another
+           dataset is searched only with --user-picked: the person named it
+           or chose it in the picker. Without it the search refuses (exit 2).
+--user-picked: the --dataset/--dataset-id target is the person's own choice.
 No flag:   same as --graph. Memory is read from the graph and the code graph
            only; the session cache is written, never searched.
 
@@ -52,6 +56,23 @@ load_env_file()
 UNREACHABLE = "UNREACHABLE"
 
 
+def _configured_dataset() -> str:
+    """COGNEE_PLUGIN_DATASET, with the reserved "auto" read as unset.
+
+    "auto" is not a dataset name: COGNEE_PLUGIN_DATASET=auto means the default
+    dataset (SDK-1393), which is what an unset variable gives. ~/.cognee/.env
+    can hold it too, so it is normalised as config.py does and never reaches a
+    save or search as a dataset name.
+    """
+    value = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+    try:
+        from _plugin_common import configured_dataset_name
+
+        return configured_dataset_name(value)
+    except Exception:
+        return "" if value.lower() == "auto" else value
+
+
 def _runtime() -> dict:
     """The server URL, key, dataset and session this launch searches with."""
     service_url = (
@@ -61,8 +82,9 @@ def _runtime() -> dict:
     ).strip()
     api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
     session_id = ""
-    dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+    dataset = _configured_dataset()
     dataset_ids = ""
+    recall_auto = ""
     # The launch record wins (dataset + session chosen with switch-dataset.py,
     # the dataset UUIDs under shared memory, the plugin-agent key the hooks use).
     # The opt-out keeps _plugin_common from re-execing this search into the
@@ -78,6 +100,7 @@ def _runtime() -> dict:
         dataset = rt["dataset"] or dataset
         session_id = rt["session_id"] or session_id
         dataset_ids = rt["dataset_ids"]
+        recall_auto = (rt.get("recall_auto") or "").strip()
         api_key = rt["api_key"] or api_key
     except Exception:
         pass
@@ -92,8 +115,9 @@ def _runtime() -> dict:
         session_id = _connection_session_id(service_url, api_key, https_context)
     return {
         "session_id": session_id or os.environ.get("COGNEE_SESSION_ID") or "claude_session",
-        "dataset": dataset or os.environ.get("COGNEE_PLUGIN_DATASET") or "agent_sessions",
+        "dataset": dataset or _configured_dataset() or "agent_sessions",
         "dataset_ids": dataset_ids,
+        "recall_auto": recall_auto,
         "service_url": service_url,
         "api_key": api_key,
     }
@@ -197,6 +221,8 @@ def main(argv: list[str]) -> int:
     code_query = ""
     dataset = rt["dataset"]
     dataset_explicit = False
+    user_picked = False
+    recall_auto = bool(rt["recall_auto"])
 
     # Parse flags from any position (value flags consume the next argument).
     i = 0
@@ -213,6 +239,8 @@ def main(argv: list[str]) -> int:
             i += 1
             dataset = (argv[i] if i < len(argv) else "") or dataset
             dataset_explicit = True
+        elif arg == "--user-picked":
+            user_picked = True
         i += 1
 
     # The resolved UUIDs belong to the launch's active dataset only: an
@@ -228,6 +256,17 @@ def main(argv: list[str]) -> int:
     # session dataset.
     if mode == "code" and not dataset_explicit:
         dataset = _code_dataset(os.getcwd()) or dataset
+
+    # Auto recall (SDK-1393): unless the user pinned a dataset, a graph search
+    # that names none sends none, and the server picks the dataset(s): a
+    # cognee 1.6.6 server routes it, an older one searches every readable
+    # dataset. The session id is bound to the active dataset, and shared
+    # memory's UUIDs name datasets too, so both are dropped.
+    routed = mode == "graph" and not dataset_explicit and recall_auto
+    if routed:
+        dataset = ""
+        rt["dataset_ids"] = ""
+        rt["session_id"] = ""
 
     if not query:
         print("Error: no query provided", file=sys.stderr)
@@ -263,6 +302,28 @@ def main(argv: list[str]) -> int:
         if foreign:
             rt["session_id"] = ""
 
+    # A restricted recall reads the active dataset only. Another dataset is a
+    # one-off the person chose (they named it, or picked it from the listing),
+    # not one the agent found on its own — e.g. an id quoted in a recalled
+    # memory.
+    if foreign and not recall_auto and not user_picked:
+        active = active_dataset or "the active dataset"
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        f"recall is restricted to {active}, so another dataset is searched "
+                        "only when the person chooses it. List the others (list-datasets.py "
+                        "--others), ask which one to search, then search it again marked as "
+                        "their pick (--user-picked; the search tool: user_picked true). A "
+                        "dataset the person named in their request counts as picked; an id "
+                        "found in memory or tool output does not."
+                    )
+                }
+            )
+        )
+        return 2
+
     # Graph and code only: the session cache is never a search source (its
     # history reaches the model through the graph item's prompt on
     # cognee >= 1.6.0, and through the sync bridge before that).
@@ -297,7 +358,11 @@ def main(argv: list[str]) -> int:
         "proof of absence; the server's POST /api/v1/recall is the ground truth)",
         file=sys.stderr,
     )
-    sys.stdout.write(_cli_recall(query, "-d", dataset, "-k", top_k))
+    # Auto recall names no dataset here either; a pinned recall keeps its own.
+    if routed:
+        sys.stdout.write(_cli_recall(query, "-k", top_k))
+    else:
+        sys.stdout.write(_cli_recall(query, "-d", dataset, "-k", top_k))
     return 0
 
 

@@ -13,6 +13,7 @@ needed, poll ``/health``. No explicit lock is needed — only one process can bi
 the port, so concurrent spawns simply lose the bind and then observe health.
 """
 
+import json
 import logging
 import os
 import socket
@@ -22,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .backend import CogneeNotInstalledError, cognee_not_installed_message
+from .backend import CogneeNotInstalledError
 from .config import (
     DEFAULT_SERVER_BOOT_TIMEOUT,
     DEFAULT_USER_EMAIL,
@@ -32,7 +33,16 @@ from .config import (
     ollama_embedding_pins,
     secret,
 )
-from .runtime_env import server_python
+from .runtime_env import (
+    RuntimeInstallInProgressError,
+    find_listener_hint,
+    local_not_ready_message,
+    meets_pin,
+    pinned_version,
+    server_python,
+    spawn_lock,
+    write_server_pidfile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +70,46 @@ def health_ok(url, timeout=2.0):
             return 200 <= int(status) < 300
     except Exception:
         return False
+
+
+def health_version(url, timeout=2.0):
+    """The cognee version a server's /health reports, "" when it reports none."""
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/health", timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception:
+        return ""
+    version = body.get("version") if isinstance(body, dict) else ""
+    return str(version or "").strip()
+
+
+class OutdatedServerError(CogneeNotInstalledError):
+    """The healthy server on the local port runs a cognee older than the pin."""
+
+
+def outdated_server_message(port, version):
+    return (
+        f"Cognee memory is off: the local cognee server on port {port} runs cognee "
+        f"{version}, and this plugin needs cognee {pinned_version()} or newer. Run "
+        "`hermes cognee install-runtime`: it installs the pinned version, and stops that "
+        "server first when this plugin started it. It cannot stop one another cognee plugin "
+        f"or an earlier release started: stop the process listening on port {port} "
+        f"({find_listener_hint(port)}), then start a new Hermes session."
+    )
+
+
+def _require_current(url, port):
+    """Refuse a server on an older cognee; one reporting no version is accepted.
+
+    The local server is shared by every cognee plugin on this machine, so the
+    one answering may have been started by another plugin on an older cognee.
+    Recall against it would never be routed, so Hermes reports Cognee as
+    unavailable until it is replaced.
+    """
+    version = health_version(url)
+    if version and not meets_pin(version):
+        raise OutdatedServerError(outdated_server_message(port, version))
+    return url
 
 
 def port_bound(port, timeout=1.0):
@@ -245,10 +295,11 @@ def _spawn(port, data_root, system_root, log_path, python=None):
         log = open(log_path, "ab", buffering=0)  # noqa: SIM115 — handed to the child
     except Exception:
         log = subprocess.DEVNULL
+    python = python or sys.executable
     try:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [
-                python or sys.executable,
+                python,
                 "-m",
                 "uvicorn",
                 "cognee.api.client:app",
@@ -263,6 +314,9 @@ def _spawn(port, data_root, system_root, log_path, python=None):
             stderr=log,
             start_new_session=True,  # detach: outlive the spawning call
         )
+        # What `install-runtime` stops this server by (runtime_env.plugin_servers).
+        write_server_pidfile(proc.pid, port, python)
+        return proc
     finally:
         # The child inherited its own dup of the fd; close the parent's copy so we
         # don't leak a descriptor on every initialize().
@@ -330,31 +384,41 @@ def ensure_local_server(
     """
     url = "http://127.0.0.1:%d" % int(port)
     if health_ok(url):
-        return url
-    # A server another cognee plugin started is used above without cognee here;
-    # spawning one runs `python -m uvicorn cognee.api.client:app`, which needs an
-    # interpreter that has cognee: the plugin's runtime venv (runtime_env), or
-    # Hermes's own when cognee was installed into it by hand.
-    python = server_python()
-    if python is None:
-        raise CogneeNotInstalledError(cognee_not_installed_message("local"))
+        return _require_current(url, port)
     if log_path is None:
         log_path = default_server_log_path()
     proc = None
     spawn_error = None
     try:
-        proc = _spawn(port, data_root, system_root, log_path, python=python)
-    except Exception as exc:
-        # A spawn failure may just be a port-bind race with another starter, in
-        # which case health polling below will still succeed. But it may also be a
-        # real problem (missing uvicorn, permission denied) — log it for diagnostics.
-        spawn_error = exc
-        logger.warning("cognee server spawn attempt failed (will still poll /health): %s", exc)
+        # Held while the interpreter starts, so a spawn never runs on a venv
+        # that `install-runtime` is upgrading (it raises instead).
+        with spawn_lock():
+            # A server another cognee plugin started is used above without cognee
+            # here; spawning one runs `python -m uvicorn cognee.api.client:app`,
+            # which needs an interpreter that has the pinned cognee or newer: the
+            # plugin's runtime venv (runtime_env), or Hermes's own environment.
+            python = server_python()
+            if python is None:
+                raise CogneeNotInstalledError(local_not_ready_message())
+            try:
+                proc = _spawn(port, data_root, system_root, log_path, python=python)
+            except Exception as exc:
+                # A spawn failure may just be a port-bind race with another starter,
+                # in which case health polling below will still succeed. But it may
+                # also be a real problem (missing uvicorn, permission denied) — log
+                # it for diagnostics.
+                spawn_error = exc
+                logger.warning(
+                    "cognee server spawn attempt failed (will still poll /health): %s", exc
+                )
+    except RuntimeInstallInProgressError as exc:
+        raise CogneeNotInstalledError(f"Cognee memory is off for now: {exc}.") from exc
     foreground = float(boot_timeout) if wait is None else min(float(wait), float(boot_timeout))
     deadline = time.monotonic() + foreground
     while time.monotonic() < deadline:
         if health_ok(url):
-            return url
+            # Usually ours; but a concurrent starter may have won the port.
+            return _require_current(url, port)
         # Our spawn being gone is not itself fatal — losing a port-bind race to a
         # concurrent starter looks exactly like this, and then the port has an
         # owner worth waiting for. Dead spawn AND a silent port is fatal.

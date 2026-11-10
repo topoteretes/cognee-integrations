@@ -7,7 +7,9 @@ Usage:
 
 --node-set: node set for categorization (default: user_context)
             user_context | project_docs | agent_actions
---dataset:  dataset name (default: this launch's active dataset)
+--dataset:  dataset name (default: this launch's active dataset); under
+            shared memory it resolves to the user's canonical copy, as a
+            dataset switch does. "auto" is reserved for auto recall and refused.
 --file:     upload a file under its REAL filename instead of inline text.
             The extension is the server's routing signal: code files
             (.py/.ts/.go/...) ride the zero-LLM code-graph route on
@@ -40,7 +42,7 @@ UNREACHABLE = "UNREACHABLE"
 
 def _runtime() -> dict:
     """The server URL, key and dataset this launch writes with."""
-    from cognee_search import _cached_api_key
+    from cognee_search import _cached_api_key, _configured_dataset
 
     service_url = (
         os.environ.get("COGNEE_BASE_URL")
@@ -48,7 +50,7 @@ def _runtime() -> dict:
         or "http://localhost:8011"
     ).strip()
     api_key = (os.environ.get("COGNEE_API_KEY") or "").strip() or _cached_api_key(service_url)
-    dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+    dataset = _configured_dataset()
     dataset_id = ""
     # The launch record wins (dataset chosen with switch-dataset.py, its
     # canonical UUID under shared memory, the plugin-agent key the hooks use).
@@ -73,9 +75,30 @@ def _runtime() -> dict:
     return {
         "service_url": service_url,
         "api_key": api_key,
-        "dataset": dataset or os.environ.get("COGNEE_PLUGIN_DATASET") or "agent_sessions",
+        "dataset": dataset or _configured_dataset() or "agent_sessions",
         "dataset_id": dataset_id,
     }
+
+
+def _shared_dataset_id(dataset: str) -> str:
+    """The canonical UUID an explicit --dataset name resolves to ("" if none).
+
+    Resolved the way a dataset switch does: under shared memory, to the
+    canonical copy the user owns (created if missing). Sent by name instead,
+    the server would find or create an agent-owned copy of the same name that
+    nobody else sees. Separated memory keeps the name. A UUID already addresses
+    one dataset (_remember_http sends it as datasetId).
+    """
+    try:
+        from _dataset_access import dataset_id as as_dataset_id
+        from _plugin_common import resolve_shared_dataset
+
+        if as_dataset_id(dataset):
+            return ""
+        shared = resolve_shared_dataset(dataset)
+        return str(shared["dataset_id"]) if shared.get("mode") == "shared" else ""
+    except Exception:
+        return ""
 
 
 def main(argv: list[str]) -> int:
@@ -87,6 +110,7 @@ def main(argv: list[str]) -> int:
     content = ""
     node_set = "user_context"
     file_path = ""
+    dataset_explicit = False
     args = list(argv)
     if args and args[0] != "--file":
         content = args.pop(0)
@@ -99,8 +123,17 @@ def main(argv: list[str]) -> int:
         elif arg in ("--dataset", "-d"):
             i += 1
             dataset = (args[i] if i < len(args) else "") or dataset
-            # The canonical UUID belongs to the launch's active dataset only.
+            # "auto" is reserved for auto recall (SDK-1393): no save lands in a
+            # dataset that could never be pinned afterwards.
+            if " ".join(dataset.split()).lower() == "auto":
+                print(
+                    "Error: 'auto' is reserved for auto recall, not a dataset name", file=sys.stderr
+                )
+                return 2
+            # An explicit name wins over the launch's dataset; its canonical
+            # UUID is resolved below, after every flag is read.
             dataset_id = ""
+            dataset_explicit = True
         elif arg == "--file":
             i += 1
             file_path = args[i] if i < len(args) else ""
@@ -112,6 +145,9 @@ def main(argv: list[str]) -> int:
     if not content and not file_path:
         print("Error: no content provided", file=sys.stderr)
         return 1
+
+    if dataset_explicit:
+        dataset_id = _shared_dataset_id(dataset)
 
     # Server-first: POST to /api/v1/remember through _remember_http, which
     # prints the result (and refreshes the credits marker). UNREACHABLE → fall

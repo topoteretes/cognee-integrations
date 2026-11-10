@@ -32,6 +32,7 @@ from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
+    auto_recall_active,
     bounded_dim_mismatch_hint,
     buffered_saves_segments,
     clear_payment_required,
@@ -212,7 +213,8 @@ def _outage_output(state: str) -> dict:
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
     summary = outage_header(state, saves, warmup_backlog(), " · ")
-    header = f"{render_status_for_host(get_session_key())}\n{summary}"
+    key = get_session_key()
+    header = f"{render_status_for_host(key, auto_recall_active(key))}\n{summary}"
     return {
         "systemMessage": header,
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": header},
@@ -461,6 +463,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
+    # Auto recall (SDK-1393): unless recall is pinned (a picked dataset,
+    # COGNEE_PLUGIN_RECALL_MODE=pinned, an explicit read set), the graph scope names
+    # no dataset and the server routes it (cognee 1.6.6; an older server reads
+    # every readable dataset). Local state only: it costs no request.
+    auto_route = False
+    if scope_specs and cloud_mode:
+        try:
+            auto_route = auto_recall_active()
+        except Exception as exc:
+            hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's call. Returns ``(dataset, part, exc, elapsed_ms)``.
@@ -501,6 +513,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     dataset_ids=scope_dataset_ids,
                     code_query=scope_code_query,
                     timeout=scope_timeout,
+                    auto_route=auto_route and scope_list == ["graph"],
                 )
             else:
                 query_type = getattr(SearchType, qtype, None) if qtype else None
@@ -566,8 +579,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             # (scopes_answered_err) so real failures stay visible (SDK-469).
             # It IS an answer, though: the server was reached and said so. Since
             # memory became one request (SDK-741) nothing else answers on such a
-            # prompt, so this must count as ok or the ready marker, the breaker
-            # and the dataset hint would all read a fresh dataset as an outage.
+            # prompt, so this must count as ok or the ready marker and the
+            # breaker would both read a fresh dataset as an outage.
             hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
             scopes_ok += 1
             continue
@@ -796,7 +809,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
-    status_line = render_status_for_host(_session_key)
+    # The mode this recall ran under, asked once above: the header says what it did.
+    status_line = render_status_for_host(_session_key, auto_route)
     header = f"{status_line}\n" + _memory_summary(
         total,
         _totals,
@@ -956,7 +970,7 @@ def main():
     try:
         from _capture_policy import sanitize
 
-        # Every recall lane, the audit line and the tags see only this copy.
+        # Every recall lane and the audit line see only this copy.
         prompt = sanitize(prompt) if isinstance(prompt, str) else ""
     except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
         hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})

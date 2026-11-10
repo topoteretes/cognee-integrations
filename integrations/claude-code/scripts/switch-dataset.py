@@ -1,20 +1,42 @@
 #!/usr/bin/env python3
 """Move this launch to another Cognee dataset (``/cognee-memory:cognee-switch-datasets``).
 
-A Cognee session never spans two datasets, so a switch is: sync the current
-session into its dataset, register a NEW session bound to the new dataset,
-retire the old one, and repoint every hook at the new triple.
+A Cognee session never spans two datasets, so a switch is: hand the current
+session to a background sync into its dataset, register a NEW session bound to
+the new dataset, retire the old one, and repoint every hook at the new triple.
+The switch never waits for that sync: in cloud mode it is an improve request the
+cloud worker submits in its own time, locally a detached sync process. The
+retired session stays in the launch record's ``touched`` list, so the final sync
+at session end bridges it again if this one never lands.
 
 Usage:
     switch-dataset.py --list [--json]          # datasets you can switch to
-    switch-dataset.py <dataset-name> [--force] [--json]
+    switch-dataset.py <dataset-name> [--json]
+    switch-dataset.py auto [--json]            # let routing pick the dataset for recall
+    switch-dataset.py pin [--json]             # pin recall to the active dataset
+
+Recall is "auto" by default: graph recall names no dataset and the server routes
+it (a cognee 1.6.6 server picks the best-matching dataset(s); an older one
+searches every readable dataset). COGNEE_PLUGIN_RECALL_MODE=pinned (exported or
+in ~/.cognee/.env) starts every session pinned to its dataset instead. The
+session's own choice wins over that setting: switching to a dataset, or ``pin``
+(also what picking the active dataset by name does), pins recall to the active
+dataset; ``auto`` unpins it. Neither ``pin`` nor ``auto`` starts a new session
+or moves saves, which always go to the active dataset. "auto" is reserved: no
+dataset can be named so.
+
+``--list --json`` reports ``recall`` ("auto" or "pinned") as in effect and, when
+pinned, ``reason``: ``dataset_picked``, ``configured_pin`` or
+``read_dataset_ids``. Every successful result, ``--list`` included, carries
+``message``: one or two plain sentences for the user, the same text the
+non-JSON output prints.
 
 Runs under the host's shell tool (no hook payload), so it finds its own launch
 record via ``resolve_host_key_outside_hook``; pass ``--session-key <host id>``
 to pin one when several launches share a directory.
 
 Exit codes:
-    0  switched / listed            3  sync of the current session failed (use --force)
+    0  switched / listed            3  (retired: the switch no longer waits for its sync)
     1  unexpected error              4  registering the new session failed (nothing changed)
     2  launch record not found       5  dataset not writable / not found for this principal
 """
@@ -42,11 +64,14 @@ from _plugin_common import (  # noqa: E402
     list_writable_datasets,
     load_resolved,
     mint_switch_session_id,
-    positive_float_env,
+    recall_is_pinned,
+    recall_mode,
+    recall_pin_reason,
     register_agent_via_http,
     resolve_host_key_outside_hook,
     resolve_shared_dataset,
     resolved_http_endpoint_auth,
+    set_recall_pinned,
     set_session_key,
     switch_launch_record,
     touch_activity,
@@ -119,64 +144,155 @@ def _list(host_key: str, rec: dict) -> dict:
     except Exception as exc:
         raise SwitchError(EXIT_ERROR, f"GET /api/v1/datasets failed ({exc})")
     current = str(rec.get("dataset") or resolved.get("dataset") or "")
-    rows = [{**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]]
-    return {
+    # Under shared memory the active dataset is the record's canonical id, and
+    # same-named copies (another principal's, a legacy per-agent one) are other
+    # datasets: only the canonical row is current. Name-addressed, the name.
+    current_id = str(rec.get("dataset_id") or "").strip()
+    listed_ids = {row["id"] for row in listing["datasets"]}
+    if current_id and current_id in listed_ids:
+        rows = [{**row, "current": row["id"] == current_id} for row in listing["datasets"]]
+    else:
+        rows = [
+            {**row, "current": current in (row["name"], row["id"])} for row in listing["datasets"]
+        ]
+    mode, reason = recall_mode(host_key)
+    result = {
         "current": current,
+        "recall": mode,
+        **({"reason": reason} if reason else {}),
         "session_id": str(rec.get("session_id") or ""),
         "datasets": rows,
         "hidden_readonly": listing["hidden_readonly"],
         "filtered": listing["filtered"],
     }
+    return {**result, "message": _message("list", result)}
+
+
+# ── the user-facing message ────────────────────────────────────────────────
+
+
+def _message(kind: str, result: dict) -> str:
+    """The one or two sentences a result means for the user.
+
+    The only place the wording lives: ``--json`` carries it as ``message`` and
+    the text output prints it, so the pickers, the skills and the terminal all
+    say the same thing. ``kind`` is "list", "switch", "pin" or "auto".
+    """
+    dataset = str(result.get("current") or result.get("dataset") or "")
+    reason = str(result.get("reason") or "")
+    recall = result.get("recall")
+    if kind == "list":
+        if recall == "pinned" and reason == "read_dataset_ids":
+            return (
+                "Recall is restricted to the datasets in COGNEE_PLUGIN_READ_DATASET_IDS; "
+                f"saves go to {dataset!r}."
+            )
+        if recall == "pinned" and reason == "configured_pin":
+            return (
+                f"Recall is pinned to {dataset!r}, where saves go, because "
+                "COGNEE_PLUGIN_RECALL_MODE=pinned. Set recall to auto to lift it for this session."
+            )
+        if recall == "pinned":
+            return (
+                f"Recall is pinned to {dataset!r}, where saves go, as picked in this session. "
+                "Set recall to auto to let the server pick the best-matching dataset."
+            )
+        return (
+            "Recall is auto: the server picks the best-matching dataset for each recall. "
+            f"Saves go to {dataset!r}."
+        )
+    if kind == "switch":
+        prev = result.get("previous") or {}
+        text = (
+            f"Switched to dataset {dataset!r} (new session {result.get('session_id', '')}); "
+            "saves go there and recall is pinned to it."
+        )
+        if prev.get("sync") == "queued":
+            text += (
+                f" The previous session on {prev.get('dataset', '')!r} is syncing "
+                "in the background."
+            )
+        elif prev.get("sync") == "not_started":
+            text += (
+                f" The previous session on {prev.get('dataset', '')!r} could not be "
+                f"queued for sync ({prev.get('sync_error', 'no detail')}); it is synced "
+                "when this Claude Code session ends."
+            )
+        return text
+    if kind == "pin":
+        if reason == "already_active":
+            return (
+                f"Recall is already pinned to {dataset!r}, the active dataset; saves go there too."
+            )
+        return f"Recall is now pinned to {dataset!r}, the active dataset; saves go there too."
+    # kind == "auto"
+    if recall != "auto":
+        return (
+            "Recall is set to auto for this session, but COGNEE_PLUGIN_READ_DATASET_IDS "
+            f"still restricts it to its datasets; saves go to {dataset!r}."
+        )
+    if reason == "already_auto":
+        return f"Recall is already auto; saves go to {dataset!r}."
+    if result.get("lifted") == "configured_pin":
+        return (
+            "Recall is auto for this session (COGNEE_PLUGIN_RECALL_MODE=pinned no longer "
+            f"applies to it); saves stay in {dataset!r}."
+        )
+    return (
+        "Recall is auto again: the server picks the best-matching dataset for each recall. "
+        f"Saves stay in {dataset!r}."
+    )
 
 
 # ── the switch ─────────────────────────────────────────────────────────────
 
 
-def _sync_current(host_key: str, session_id: str, dataset: str) -> None:
-    """Bridge the session we are about to retire, strictly (non-zero = failure)."""
-    env = os.environ.copy()
-    env["COGNEE_SESSION_KEY"] = host_key
-    env["COGNEE_SYNC_SESSION_ID"] = session_id
-    env["COGNEE_SYNC_DATASET"] = dataset
-    started = time.monotonic()
-    timeout = positive_float_env("COGNEE_SWITCH_SYNC_TIMEOUT", 900.0)
+def _sync_current(host_key: str, session_id: str, dataset: str) -> str:
+    """Start the sync of the session we are about to retire; never waits for it.
+
+    Cloud: an improve request for the cloud worker, filed as ``switch``. Local:
+    a detached ``sync-session-to-graph.py`` aimed at the retiring pair. Returns
+    "" once the sync is queued or started, else why it could not be; the switch
+    goes ahead either way, since the final sync retries every ``touched`` pair.
+    """
     try:
-        proc = subprocess.run(
-            [sys.executable, str(_SYNC_SCRIPT), "--strict"],
+        from _cloud_worker import enabled as cloud_enabled
+
+        if cloud_enabled():
+            from _cloud_worker import request_improve
+
+            set_session_key(host_key)
+            request_improve(dataset, session_id, "switch")
+            hook_log(
+                "switch_sync_queued",
+                {"session": session_id, "dataset": dataset, "via": "cloud_worker"},
+            )
+            return ""
+        env = os.environ.copy()
+        env["COGNEE_SESSION_KEY"] = host_key
+        env["COGNEE_SYNC_SESSION_ID"] = session_id
+        env["COGNEE_SYNC_DATASET"] = dataset
+        proc = subprocess.Popen(
+            [sys.executable, str(_SYNC_SCRIPT)],
             stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=env,
-            timeout=timeout,
+            start_new_session=True,
+            close_fds=True,
         )
-    except subprocess.TimeoutExpired:
-        # run() has already killed the sync. Nothing has changed yet: the old
-        # session is still the registered one. Raised as a sync failure so the
-        # exit code says so and --force can continue past it.
         hook_log(
-            "switch_sync_timeout",
-            {"session": session_id, "dataset": dataset, "timeout_s": timeout},
+            "switch_sync_started",
+            {"session": session_id, "dataset": dataset, "via": "detached", "pid": proc.pid},
         )
-        raise SwitchError(
-            EXIT_SYNC_FAILED,
-            f"sync of session {session_id} (dataset {dataset}) timed out after {timeout:g}s",
-        ) from None
-    hook_log(
-        "switch_sync_result",
-        {
-            "session": session_id,
-            "dataset": dataset,
-            "returncode": proc.returncode,
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-            "stderr": (proc.stderr or "")[-400:],
-        },
-    )
-    if proc.returncode != 0:
-        tail = (proc.stderr or "").strip().splitlines()[-1:] or ["no detail"]
-        raise SwitchError(
-            EXIT_SYNC_FAILED,
-            f"sync of session {session_id} (dataset {dataset}) failed: {tail[0]}",
+        return ""
+    except Exception as exc:
+        error = str(exc)[:200] or type(exc).__name__
+        hook_log(
+            "switch_sync_not_started",
+            {"session": session_id, "dataset": dataset, "error": error},
         )
+        return error
 
 
 def _register_new(session_id: str, dataset: str, dataset_id: str = "") -> str:
@@ -279,7 +395,7 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
         hook_log("switch_watcher_restart_failed", {"error": str(exc)[:200]})
 
 
-def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
+def _switch(host_key: str, rec: dict, target: str) -> dict:
     target = target.strip()
     if not target:
         raise SwitchError(EXIT_ERROR, "dataset name is empty")
@@ -298,12 +414,8 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     )
     old_conn = str(rec.get("conn_uuid") or "")
     if target == old_dataset:
-        return {
-            "switched": False,
-            "reason": "already_active",
-            "dataset": target,
-            "session_id": old_session,
-        }
+        # Picking the active dataset pins recall to it; no new session.
+        return _pin(host_key, rec)
 
     resolved = load_resolved(session_key=host_key)
     user_id = str(resolved.get("user_id") or "")
@@ -327,6 +439,11 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     if matches:
         row = matches[0]
         target = row["id"] if row["owner_id"] != user_id else row["name"]
+        # Compared as resolved: the record holds another principal's dataset
+        # by its id (and a shared-memory one by name plus ``dataset_id``), so
+        # the active dataset picked by name or id only pins recall.
+        if target == old_dataset or row["id"] == str(rec.get("dataset_id") or "").strip():
+            return _pin(host_key, rec)
         if row["writable"] is not True:
             raise SwitchError(EXIT_NOT_WRITABLE, "Write permission could not be verified")
 
@@ -335,21 +452,25 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
 
         require_typed_dataset_id_support()
 
-    # 1. Sync the session we are leaving. Abort on failure unless forced — the
-    #    retired triple stays in `touched`, so the final sync retries it.
-    sync_ok = True
-    sync_error = ""
-    try:
-        _sync_current(host_key, old_session, old_dataset)
-    except SwitchError as exc:
-        if not force:
-            raise
-        sync_ok, sync_error = False, str(exc)
-        hook_log("switch_sync_forced_past_failure", {"error": sync_error[:300]})
+    # 1. Start syncing the session we are leaving, without waiting for it. If
+    #    it cannot even be started, the switch still goes ahead: the retired
+    #    triple stays in `touched`, so the final sync retries it.
+    sync_error = _sync_current(host_key, old_session, old_dataset) or ""
 
     # 2. Make sure the dataset exists for this principal (idempotent); under
     #    shared memory this also resolves its canonical UUIDs.
+    # A dataset addressed by id (another principal's, or one picked by its
+    # UUID) is that dataset: remembered so the periodic refresh, which
+    # re-resolves by name, keeps writing to it.
+    picked_id = target if dataset_id(target) else ""
     write_id, read_ids = _ensure_dataset(target)
+    picked_id = picked_id if picked_id and picked_id == write_id else ""
+    if write_id and matches:
+        # Shared memory addresses the dataset by name plus its canonical id:
+        # the record keeps the name, so every later by-name resolution (the
+        # idle watcher's refresh, the status row) finds this dataset and not
+        # one whose name happens to be the id.
+        target = matches[0]["name"]
 
     # 3. Register the new session first (fresh handle) ...
     new_session = mint_switch_session_id(host_key)
@@ -364,6 +485,7 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
             conn_uuid=new_conn,
             dataset_id=write_id,
             dataset_ids=read_ids,
+            picked_id=picked_id,
         )
     except Exception:
         try:
@@ -384,19 +506,69 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
     _restart_idle_watcher(host_key, new_session, target, user_id)
     touch_activity()
 
-    return {
+    result = {
         "switched": True,
         "dataset": target,
+        "recall": "pinned",
         "session_id": new_session,
         "conn_uuid": new_conn,
         "previous": {
             "dataset": old_dataset,
             "session_id": old_session,
-            "synced": sync_ok,
+            "sync": "not_started" if sync_error else "queued",
             **({"sync_error": sync_error} if sync_error else {}),
             "unregistered": old_released,
         },
     }
+    return {**result, "message": _message("switch", result)}
+
+
+def _active_dataset(host_key: str, rec: dict) -> str:
+    return str(rec.get("dataset") or load_resolved(session_key=host_key).get("dataset") or "")
+
+
+def _pin(host_key: str, rec: dict) -> dict:
+    """Pin recall to the active dataset; no new session, saves stay where they are.
+
+    Recorded explicitly even when COGNEE_PLUGIN_RECALL_MODE=pinned already pins
+    it, so the choice outlives a later change to that configuration.
+    """
+    reason = "already_active" if recall_is_pinned(host_key) else "recall_restricted"
+    if _read_map_record(host_key).get("recall_pinned") is not True:
+        set_recall_pinned(host_key, True)
+    result = {
+        "switched": False,
+        "reason": reason,
+        "dataset": _active_dataset(host_key, rec),
+        "session_id": str(rec.get("session_id") or ""),
+        "recall": "pinned",
+    }
+    return {**result, "message": _message("pin", result)}
+
+
+def _auto(host_key: str, rec: dict) -> dict:
+    """Lift the recall restriction; the active dataset (where saves go) stays."""
+    dataset = _active_dataset(host_key, rec)
+    # "Already auto" is the mode in effect, not the record: a configured pin
+    # (COGNEE_PLUGIN_RECALL_MODE=pinned) has nothing in the record to say so.
+    lifted = recall_pin_reason(host_key)
+    # Saved explicitly either way: an explicit False is what lifts a configured
+    # pin for this launch.
+    if _read_map_record(host_key).get("recall_pinned") is not False:
+        set_recall_pinned(host_key, False)
+    # "recall" says what is in effect (an explicit read set still scopes it).
+    mode, why = recall_mode(host_key)
+    result = {
+        "switched": False,
+        "reason": "recall_auto" if lifted else "already_auto",
+        "dataset": dataset,
+        "session_id": str(rec.get("session_id") or ""),
+        "recall": mode,
+        # Named for a configured pin: the lift lasts this session only.
+        **({"lifted": lifted} if lifted == "configured_pin" else {}),
+        **({"recall_reason": why} if why else {}),
+    }
+    return {**result, "message": _message("auto", result)}
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
@@ -407,6 +579,7 @@ def _print_listing(result: dict, as_json: bool) -> None:
         print(json.dumps(result))
         return
     print(f"Current dataset: {result['current']}  (session {result['session_id']})")
+    print(result["message"])
     if not result["datasets"]:
         print("No other writable datasets found.")
     for row in result["datasets"]:
@@ -422,21 +595,12 @@ def _print_switch(result: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result))
         return
-    if not result.get("switched"):
-        print(f"Already on dataset {result['dataset']!r} (session {result['session_id']}).")
-        return
-    prev = result["previous"]
-    synced = "synced" if prev["synced"] else f"NOT synced ({prev.get('sync_error', '')})"
-    print(
-        f"Switched to dataset {result['dataset']!r} — new session {result['session_id']}. "
-        f"Previous session {prev['session_id']} ({prev['dataset']}) {synced}."
-    )
+    print(result["message"])
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
-    force = "--force" in args
     do_list = "--list" in args
     explicit_key = ""
     if "--session-key" in args:
@@ -447,10 +611,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         host_key, rec = _resolve_launch(explicit_key)
+        if positional and positional[0].strip().lower() == "auto":
+            _print_switch(_auto(host_key, rec), as_json)
+            return EXIT_OK
+        if positional and positional[0].strip().lower() == "pin":
+            _print_switch(_pin(host_key, rec), as_json)
+            return EXIT_OK
         if do_list or not positional:
             _print_listing(_list(host_key, rec), as_json)
             return EXIT_OK
-        result = _switch(host_key, rec, positional[0], force=force)
+        result = _switch(host_key, rec, positional[0])
         _print_switch(result, as_json)
         return EXIT_OK
     except SwitchError as exc:

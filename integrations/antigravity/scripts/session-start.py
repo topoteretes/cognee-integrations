@@ -43,6 +43,7 @@ from _plugin_common import (
     _https_context,
     _reexec_into_venv,
     apply_cognee_env,
+    auto_recall_active,
     clear_server_pidfile,
     ensure_launch_record,
     get_session_key,
@@ -146,7 +147,7 @@ _HOST_PYTHON_CANDIDATES = (
 # refusal reaches the user as a systemMessage (the worker that hits it runs
 # detached, with nothing it prints visible). Cleared once a venv is ready.
 _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
-_PINNED_COGNEE_VERSION = "1.6.5"
+_PINNED_COGNEE_VERSION = "1.6.6"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Maps a configured backend provider env var to the cognee package "extra" that
@@ -386,7 +387,7 @@ def _venv_cognee_version() -> str:
 
 
 # One distribution per extra whose presence in the venv proves that extra's
-# drivers are installed (verified against cognee 1.6.5's optional-dependencies:
+# drivers are installed (verified against cognee 1.6.6's optional-dependencies:
 # fastembed and codegraph are empty extras there, their packages being core).
 # Probing the venv is deliberately preferred over recording installed extras in
 # venv-ready.json: that marker is shared with plugins that don't know about
@@ -2142,7 +2143,7 @@ async def _start(payload: dict | None = None) -> dict:
         file=sys.stderr,
     )
 
-    status_line = render_status_for_host(session_key)
+    status_line = render_status_for_host(session_key, auto_recall_active(session_key))
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
@@ -2179,6 +2180,62 @@ def _update_nudge_suffix() -> str:
         f"\n\nCognee update available {installed} → {latest} — run "
         "your Antigravity plugin manager to update."
     )
+
+
+#: Said once per machine and dataset (SDK-1393): recall is auto by default, so
+#: a configured dataset no longer restricts it.
+RECALL_MODE_NOTICE = (
+    "Cognee: recall now searches every dataset you can read, not only `{dataset}` "
+    "(saves still go there). To keep recall on `{dataset}`, set "
+    "`COGNEE_PLUGIN_RECALL_MODE=pinned`, or ask to pin recall for this session. To "
+    "search one dataset once, name it in your request."
+)
+
+
+def _apply_recall_mode_notice(output: dict, payload: dict | None = None) -> dict:
+    """Tell a user whose configured dataset used to restrict recall that it no longer does.
+
+    Shown once per machine and dataset, in the message the user sees (not the
+    agent's context), when ``COGNEE_PLUGIN_DATASET`` names a non-default
+    dataset, ``COGNEE_PLUGIN_RECALL_MODE`` was never set (exported or in
+    ``~/.cognee/.env``) and this session has not pinned recall itself. Not on a
+    compaction, which lands mid-task.
+    """
+    if str((payload or {}).get("source") or "") == "compact":
+        return output
+    try:
+        import _plugin_common
+        from _recall_text import mark_notice_shown, notice_due
+        from config import _DEFAULTS
+
+        if os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip():
+            return output
+        dataset = str(load_config().get("dataset") or "").strip()
+        if not dataset or dataset == _DEFAULTS["dataset"]:
+            return output
+        if not _plugin_common.auto_recall_active(get_session_key()):
+            return output
+        # The resume notice's once-only marker, keyed by the dataset.
+        marker = f"recall-mode:{dataset}"
+        if not notice_due(_plugin_common._PLUGIN_DIR, marker, 1.0):
+            return output
+        mark_notice_shown(_plugin_common._PLUGIN_DIR, marker, 1.0)
+    except Exception as exc:
+        hook_log("recall_mode_notice_failed", {"error": str(exc)[:200]})
+        return output
+    hook_log("recall_mode_notice_shown", {"dataset": dataset})
+    message = RECALL_MODE_NOTICE.format(dataset=dataset)
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    # The user sees the top-level systemMessage (where Claude Code documents it,
+    # and where the Antigravity adapter reads it).
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    return result
 
 
 def main():
@@ -2221,6 +2278,7 @@ def main():
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     output = _apply_host_python_warning(output)
     output = _apply_key_limit_warning(output)
+    output = _apply_recall_mode_notice(output, payload)
     print(json.dumps(output))
 
 

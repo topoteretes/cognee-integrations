@@ -13,6 +13,7 @@ the Claude Code renderer with Cursor's state directory, plugin manifest and
 config file. Only the CLI renders it; the Cursor IDE has no status line.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+(``auto (<dataset-name>)`` in place of the name while recall is auto)
 """
 
 from __future__ import annotations
@@ -156,10 +157,36 @@ def _active_dataset(session_id: str = "") -> str:
         return recorded
     # 2. env var (inherited from the shell that launched the Cursor CLI)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
-    if v:
+    if v and v.lower() != "auto":  # reserved: "auto" means the default dataset
         return v
     # 3. default
     return _DEFAULT_DATASET
+
+
+def _recall_auto(host_id: str = "") -> bool:
+    """Whether graph recall is auto for this launch, from local state only.
+
+    Mirrors ``_plugin_common.recall_mode`` (this renderer does not import it): an
+    explicit read set pins; the launch record's own ``recall_pinned`` wins either
+    way, and a switch on a record written before recall modes existed pins;
+    otherwise ``COGNEE_PLUGIN_RECALL_MODE=pinned`` pins. Anything else is auto.
+    """
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return False
+    rec = _launch_record(str(host_id or ""))
+    if "recall_pinned" in rec:
+        return rec.get("recall_pinned") is not True
+    if rec.get("switched_at"):
+        return False
+    return os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip().lower() != "pinned"
+
+
+def _dataset_label(host_id: str = "", recall_auto: bool = False) -> str:
+    """The dataset as the status shows it: ``auto (<dataset>)`` while recall is
+    auto (the server picks the readable datasets each recall searches, and saves
+    go to ``<dataset>``), else the name, as Claude Code's row does."""
+    dataset = _active_dataset(str(host_id or ""))
+    return f"auto ({dataset})" if recall_auto else dataset
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -673,7 +700,7 @@ def _runtime_python_missing() -> bool:
 
 
 def _credits_segment() -> str:
-    """Cloud credits balance + approximate cost of the last memory operation.
+    """Cloud credits balance.
 
     Pure-local like everything here: reads only ``credits.json``, which the
     hooks write around each billable operation (see
@@ -683,9 +710,9 @@ def _credits_segment() -> str:
     talks to, and not opted out. A reading older than
     ``_CREDITS_AGE_HINT_SECONDS`` renders with a faint age hint. Balance is green —
     red once negative, which is exactly the state the user most needs to see
-    (a negative balance is real unfunded spend). The last-op cost renders at
-    normal weight and carries a ``~``: spend aggregates asynchronously
-    server-side, so the delta is an attribution, not an invoice.
+    (a negative balance is real unfunded spend). The marker's ``last_op``
+    (the approximate cost of the last memory operation) is not shown: in cloud
+    mode it was mostly a stale, sub-cent remember reading ("~$0.00").
     """
     if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
         "0",
@@ -742,15 +769,6 @@ def _credits_segment() -> str:
     seg = f" · {color}credits: {sign}${abs(remaining):,.2f}\033[0m"
     if refused_op and not exhausted:
         seg += f" \033[31m(not enough for {refused_op})\033[0m"
-    last_op = entry.get("last_op")
-    if isinstance(last_op, dict):
-        label = str(last_op.get("label") or "").strip()
-        cost = last_op.get("cost_usd")
-        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            # Normal weight (like the `cognee: <dataset>` text), NOT faint like
-            # the recall/saved counters: what the last operation cost is a
-            # first-class signal, not diagnostics.
-            seg += f" · last {label} ~${cost:,.2f}"
     hint = _credits_age_hint(age)
     if hint:
         seg += f" \033[2m({hint})\033[0m"
@@ -805,7 +823,7 @@ def _status_prefix(session_id: str = "") -> str:
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def render_status_for_host(host_id: str) -> str:
+def render_status_for_host(host_id: str, recall_auto: bool = False) -> str:
     """Plain-text status for the context header.
 
     ``session-start.py`` and ``session-context-lookup.py`` import this to put
@@ -813,12 +831,15 @@ def render_status_for_host(host_id: str) -> str:
     only status surface the Cursor IDE has. No ANSI (it lands in the model's
     context, not a terminal) and no recall segment (the header that follows
     already spells the counts out). ``host_id`` is this session's key, so only
-    this session's connection and LLM-key verdicts are shown.
+    this session's connection and LLM-key verdicts are shown. ``recall_auto``
+    (the hooks pass ``_plugin_common.auto_recall_active``) shows the dataset as
+    ``auto (<dataset>)``: recall is routed by the server across the readable
+    datasets, and saves go to ``<dataset>``.
     """
     key = str(host_id or "")
     text = (
         f"{_status_prefix(key)}"
-        f"cognee: {_active_dataset(key)} · {_mode_label()}"
+        f"cognee: {_dataset_label(key, recall_auto)} · {_mode_label()}"
         f"{_credits_segment()}{_update_segment()}"
     )
     return _ANSI_RE.sub("", text)
@@ -867,7 +888,7 @@ def main() -> None:
     # of the steady-state line.
     sys.stdout.write(
         f"{_status_prefix(_session_id)}"
-        f"cognee: {_active_dataset(_session_id)} · {_mode_label()}"
+        f"cognee: {_dataset_label(_session_id, _recall_auto(_session_id))} · {_mode_label()}"
         f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )
 

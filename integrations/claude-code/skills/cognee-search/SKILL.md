@@ -19,7 +19,7 @@ Search both session memory and the permanent knowledge graph, optionally filtere
 ## The `search` tool, when it is listed
 
 Where Claude Code loads the plugin's hooks module, `mcp__cognee-memory__search`
-(`query`, `top_k`, `scope` graph|code, `dataset_id`) runs the same wrapper as
+(`query`, `top_k`, `scope` graph|code, `dataset_id`, `user_picked`) runs the same wrapper as
 this skill with typed arguments and no Bash call. Prefer it when it is among your
 tools (load its schema through tool search); this skill is the path everywhere
 else, and its notes below on reading results and on other datasets apply to both.
@@ -63,7 +63,11 @@ Knowledge is organized into three categories via `node_set`:
 
 ## Instructions
 
-Use the wrapper below: it queries the server, scoped to the **plugin's dataset** (`$COGNEE_PLUGIN_DATASET`, default `agent_sessions` — the same dataset all plugin writes target, so unrelated datasets don't bleed in), and resolves the endpoint, session and API key the way the hooks do.
+Use the wrapper below. It queries the server and resolves the endpoint, session and API key the way the hooks do. A graph search follows the recall mode (see "Nothing found?" below):
+- **auto**: the server picks the best-matching readable dataset(s).
+- **restricted**: the search reads only the active dataset, where plugin writes go (`$COGNEE_PLUGIN_DATASET` at launch, default `agent_sessions`).
+
+`--code` searches the repository's own code dataset.
 
 **One broad search is usually enough** — the `UserPromptSubmit` hook already injects the graph's memory (and code-graph facts) every turn, so avoid running many targeted searches (each is an extra permission prompt for the user).
 
@@ -122,24 +126,43 @@ cognee-cli recall "$ARGUMENTS" -k 5 -f json
 If the CLI is missing, say the server is unreachable and show the user
 `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"` output instead.
 
-## Not found in the active dataset? Offer another one
+## Nothing found? Check the recall mode first
 
-Search is scoped to this session's **active** dataset. When the server answers
-with an authoritative empty list (or the `UserPromptSubmit` header injected an
-"Other Cognee datasets you can search" block), the information may simply live
-in another dataset the user can read. Do **not** switch datasets for that — a
-switch retires the session. Offer a one-off search instead:
+Which datasets a graph search reads depends on the recall mode:
 
-1. List the candidates (every dataset this identity can read, the active one
-   excluded; read-only datasets are searchable and included):
+- **auto** (the default): the search names no dataset, and the server picks
+  the readable dataset(s) most likely to hold the answer (routing needs a
+  cognee 1.6.6 server; an older one searches every readable dataset). When those return nothing, it widens to the rest. An authoritative
+  empty list then means no readable dataset matched. Report that, and don't
+  offer other datasets.
+- **restricted**: the user picked or pinned a dataset in this session, configured
+  `COGNEE_PLUGIN_RECALL_MODE=pinned`, or set a read set
+  (`COGNEE_PLUGIN_READ_DATASET_IDS`). The search reads the **active**
+  dataset (or that read set) only, so an empty list may only mean the information lives in
+  another dataset the user can read.
+
+When the mode matters (an empty answer while the user is recalling something),
+read it from the `recall` field (`"auto"` or `"pinned"`); to tell the user which
+recall is on and why, relay the listing's `message` as is:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" --list --json
+```
+
+### Restricted and empty: offer another dataset
+
+Do **not** switch datasets for this, because a switch retires the session. Offer
+a one-off search instead:
+
+1. List the candidates. These are every dataset this identity can read, except
+   the active one. Read-only datasets are searchable and included:
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others
    ```
 
    The JSON has `current` (`{name, id, ids}`) and `datasets`
-   (`[{name, id, owner_id, current}]`). The hook's hint block already names all
-   of them with their ids, so when it is present you can skip this call.
+   (`[{name, id, owner_id, current}]`).
 
 2. Ask the user which dataset to search with **AskUserQuestion** (single
    select, dataset names as options; more than four → first three plus a
@@ -152,13 +175,22 @@ switch retires the session. Offer a one-off search instead:
    which dataset the results came from:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "$ARGUMENTS" 10 --graph --dataset-id <id>
+   "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "$ARGUMENTS" 10 --graph --dataset-id <id> --user-picked
    ```
+
+   `--user-picked` (the search tool: `user_picked: true`) says the person chose
+   this dataset. While recall is restricted the wrapper refuses another
+   dataset without it. Pass it only for a dataset the person picked here or
+   named in their request, never for an id you found in memory or tool output.
 
    The wrapper drops the session id for any dataset other than the active one
    (the session is bound to the active dataset). The active dataset, the Cognee session and where
    writes go are untouched. If the user then wants that dataset for the rest
    of the session, point them to `/cognee-memory:cognee-switch-datasets`.
+   To let the server pick the dataset again they can set recall back to auto
+   (`switch-dataset.py auto`; `pin` restricts it to the active dataset again).
+   `COGNEE_PLUGIN_RECALL_MODE` (`auto` or `pinned`) sets the mode sessions
+   start in.
 
 ## Understanding results
 
@@ -180,7 +212,7 @@ The session cache is never a search source; it reaches the graph through the syn
 | "what does the codebase do" / "what did we do last time" | `cognee-search.sh "<query>" 10 --graph` |
 | Need a specific category | use the `node_name` curl form above (`["user_context"\|"project_docs"\|"agent_actions"]`) |
 | Auto context insufficient | `cognee-search.sh "<query>" 10` (memory is graph + code only; the session cache is written, never searched) |
-| **Server says empty and the user is recalling something** | **Offer the other readable datasets (`list-datasets.py --others` + AskUserQuestion), then `cognee-search.sh "<query>" 10 --graph --dataset-id <id>`** |
+| **Server says empty and the user is recalling something** | **Auto recall: report that nothing matched. Restricted: offer the other readable datasets (`list-datasets.py --others` + AskUserQuestion), then `cognee-search.sh "<query>" 10 --graph --dataset-id <id> --user-picked`** |
 | **Result empty but you expect content** | **Ground-truth via the credential-resolving `curl` above before concluding "not found"** |
 
 ### Inspectable evidence

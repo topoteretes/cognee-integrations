@@ -44,7 +44,6 @@ _WATCHER_PID = _STATE_DIR / "watcher.pid"
 _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _DETACHED_ARG = "--detached-final"
 _SESSION_END_ARG = "--session-end"
-_STRICT_ARG = "--strict"
 _FINAL_SYNC_ONCE_DIR = _STATE_DIR / "final-sync-once"
 _FINAL_SYNC_ONCE_TTL_SECONDS = 3600
 _DETACHED_RETRIES_DEFAULT = 3
@@ -468,7 +467,6 @@ def main():
 
         resolved = load_resolved(identity=False)
         key = get_session_key()
-        requested_at = time.time()
         pairs = [
             (
                 os.environ.get("COGNEE_SYNC_SESSION_ID") or resolved.get("session_id"),
@@ -478,35 +476,14 @@ def main():
         if is_session_end or detached_final:
             pairs.extend((p["session_id"], p["dataset"]) for p in touched_pairs(key))
             update_stats(key, metadata={"ended_at": time.time()})
-        pending_paths = []
+        # Queued for the cloud worker, never waited on: a /cognee-sync or a
+        # dataset switch returns at once, and the worker submits the improve
+        # in its own time (retrying with backoff).
         for sid, dataset in pairs:
             if sid and dataset:
-                pending_paths.append(
-                    request_improve(
-                        dataset, sid, "final" if is_session_end or detached_final else "manual"
-                    )
+                request_improve(
+                    dataset, sid, "final" if is_session_end or detached_final else "manual"
                 )
-        if _STRICT_ARG in sys.argv:
-            from _cloud_worker import improve_wait_detail, read, session_dir
-
-            deadline = time.monotonic() + 840
-            while time.monotonic() < deadline:
-                result = read(session_dir(key) / "last-improve.json")
-                if (
-                    result.get("ok")
-                    and result.get("session_id") == pairs[0][0]
-                    and result.get("at", 0) >= requested_at
-                ):
-                    return
-                time.sleep(0.2)
-            detail = (
-                improve_wait_detail(pending_paths[0]) if pending_paths else "No target session."
-            )
-            print(
-                "Cognee sync is still queued; the dataset was not switched. " + detail,
-                file=sys.stderr,
-            )
-            sys.exit(1)
         return
 
     if detached_final:
@@ -547,11 +524,6 @@ def main():
             os.environ.get("COGNEE_SYNC_RETRY_DELAY", str(_DETACHED_RETRY_DELAY_DEFAULT))
         )
 
-    # --strict: the caller (switch-dataset.py, syncing the session it is about
-    # to retire) needs a verdict — exit non-zero when the bridge is incomplete
-    # instead of the hook-friendly swallow below.
-    strict_cli = _STRICT_ARG in sys.argv
-
     last_error: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
@@ -561,7 +533,7 @@ def main():
                     unregister_on_finish=unregister_on_finish,
                     # The detached-final run is the session's last sync: an
                     # incomplete result raises so this loop retries it.
-                    strict=detached_final or strict_cli,
+                    strict=detached_final,
                     # ...and it covers every session this launch touched (a
                     # dataset switch retires sessions mid-launch).
                     include_touched=detached_final,
@@ -587,8 +559,6 @@ def main():
             hook_log("final_sync_once_released", {"marker": str(_CLAIMED_MARKER)})
         except OSError:
             pass
-    if strict_cli and last_error is not None:
-        sys.exit(1)
 
 
 if __name__ == "__main__":

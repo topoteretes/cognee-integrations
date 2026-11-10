@@ -117,19 +117,27 @@ FORGET_SCHEMA = {
 SWITCH_DATASET_SCHEMA = {
     "name": "cognee_switch_dataset",
     "description": (
-        "Move this conversation to another Cognee dataset. action='list' shows the "
-        "datasets visible to this principal, 'current' reports the active one, "
-        "'switch' bridges the current session into its dataset and re-points "
-        "capture, recall and the session-end improve at the target (creating it "
-        "if needed), 'reset' returns to the configured default dataset."
+        "Move this conversation to another Cognee dataset, or set its recall mode. "
+        "Recall is auto unless pinned: it names no dataset and the server picks the "
+        "best-matching one (cognee 1.6.6; an older server searches every readable "
+        "dataset). The configured recall mode (COGNEE_PLUGIN_RECALL_MODE, auto by "
+        "default) applies until this conversation chooses. action='list' shows the "
+        "datasets visible to this principal, 'current' reports the active one and the "
+        "recall mode in effect (with the reason when pinned), 'pin' pins recall to the "
+        "active dataset (no new session), 'switch' bridges the current session into its "
+        "dataset and re-points capture and the session-end improve at the target "
+        "(creating it if needed) and pins recall to it (the dataset in use: same as "
+        "'pin'), 'auto' lets the server pick the dataset for this conversation (saves "
+        "stay where they are), 'reset' returns to the configured dataset and recall "
+        "mode. Each result carries a 'message' to relay to the user."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "description": "list, current, switch, or reset.",
-                "enum": ["list", "current", "switch", "reset"],
+                "description": "list, current, pin, switch, auto, or reset.",
+                "enum": ["list", "current", "pin", "switch", "auto", "reset"],
             },
             "dataset": {
                 "type": "string",

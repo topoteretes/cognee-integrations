@@ -1,6 +1,6 @@
 {
   "name": "@cognee/cognee-openclaw",
-  "version": "2026.11.2",
+  "version": "2026.11.3",
   "type": "module",
   "description": "OpenClaw Cognee-backed memory plugin with auto-recall/capture",
   "author": {

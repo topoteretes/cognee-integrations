@@ -149,15 +149,17 @@ def test_thousands_separator(sl):
     assert "credits: $1,234.50" in strip_ansi(sl._credits_segment())
 
 
-def test_last_op_appended(sl):
+def test_last_op_cost_is_not_shown(sl):
+    """The marker still records the last operation's cost, but no bar shows it:
+    in cloud mode it was mostly a stale, sub-cent reading ("~$0.00")."""
     _marker(sl, last_op={"label": "improve", "cost_usd": 0.14, "at": time.time()})
-    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 · last improve ~$0.14"
+    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23"
 
 
-def test_turn_label_renders(sl):
+def test_turn_cost_is_not_shown(sl):
     # The turn-end hook attributes the finished turn's spend as "turn".
     _marker(sl, last_op={"label": "turn", "cost_usd": 0.04, "at": time.time()})
-    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 · last turn ~$0.04"
+    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23"
 
 
 def test_last_op_without_cost_shows_balance_only(sl):
@@ -207,14 +209,14 @@ def test_idle_reading_shows_days(sl):
     assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 (2d ago)"
 
 
-def test_age_hint_follows_last_op(sl):
-    """Balance and cost come from the same fetch, so the hint qualifies both."""
+def test_age_hint_follows_balance_with_last_op(sl):
+    """A recorded last-op cost does not come between the balance and its age hint."""
     _marker(
         sl,
         checked_at=time.time() - 45 * 60,
         last_op={"label": "turn", "cost_usd": 0.04, "at": time.time() - 45 * 60},
     )
-    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 · last turn ~$0.04 (45m ago)"
+    assert strip_ansi(sl._credits_segment()) == " · credits: $14.23 (45m ago)"
 
 
 def test_age_hint_matches_writer_prune_horizon(suite, sl, isolated_modules):
@@ -256,12 +258,9 @@ def test_age_hint_is_faint(styled):
     assert styled._credits_segment() == expected
 
 
-def test_last_op_is_not_faint(styled):
-    """The cost is a first-class signal, unlike the recall/saved diagnostics."""
+def test_styled_balance_has_no_cost(styled):
     _marker(styled, last_op={"label": "improve", "cost_usd": 0.14, "at": time.time()})
-    seg = styled._credits_segment()
-    assert seg == f" · {_GREEN}credits: $14.23{_RESET} · last improve ~$0.14"
-    assert _FAINT not in seg, "last-op cost must not be faint"
+    assert styled._credits_segment() == f" · {_GREEN}credits: $14.23{_RESET}"
 
 
 # ── plain-text guard (codex only) ──────────────────────────────────────────
@@ -410,14 +409,14 @@ def test_malformed_refusal_is_ignored(sl):
 
 
 def test_top_up_link_comes_last(sl):
-    """After the cost and the age hint: the link is the way out, read last."""
+    """After the age hint: the link is the way out, read last."""
     _marker(
         sl,
         remaining_usd=0.61,
         checked_at=time.time() - 20 * 60,
         last_op={"label": "turn", "cost_usd": 0.02, "at": time.time()},
     )
-    expected = f" · credits: $0.61 · last turn ~$0.02 (20m ago) · top up: {_BILLING}"
+    expected = f" · credits: $0.61 (20m ago) · top up: {_BILLING}"
     assert strip_ansi(sl._credits_segment()) == expected
 
 

@@ -2,7 +2,7 @@
   "name": "cognee-cursor-status",
   "displayName": "Cognee Memory Status for Cursor",
   "description": "Shows the Cognee memory plugin's status in Cursor's status bar (connection, dataset, mode, memory hits) and switches the chat's dataset on click.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "cognee",
   "license": "Apache-2.0",
   "repository": {

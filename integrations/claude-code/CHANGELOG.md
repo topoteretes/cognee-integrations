@@ -10,6 +10,132 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.8]
+
+### Added
+- **Recall is auto by default (SDK-1393).** Unless recall is pinned, the graph recall on
+  each prompt, and a `cognee-search` that names no dataset, send no dataset: a cognee 1.6.6 server
+  picks the readable dataset(s) most likely to hold the answer, or searches every readable one
+  when it cannot narrow (dataset routing, SDK-1317; best effort). Routing needs a cognee 1.6.6 server;
+  an older one searches every readable dataset. Pin a dataset to keep recall on one.
+  Saves still go to the active dataset. Session history and guidance, the code
+  lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
+  memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
+- **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
+  (stored as `recall_pinned` in the launch record); the new `switch-dataset.py pin` restricts
+  recall to the active dataset without a new session, and so does naming the active dataset (by
+  name or id, also when another principal owns it); `switch-dataset.py auto` lifts the
+  restriction and leaves saves where they are. `--list` reports the mode in effect (`recall:
+  auto|pinned`, and when pinned why: `dataset_picked`, `configured_pin` or `read_dataset_ids`). A
+  session switched before this release stays restricted. `auto` is a reserved name: no dataset can
+  be switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
+- **One message per result.** `switch-dataset.py --json` adds `message`, one or two plain
+  sentences for the user, to the `--list` output (which recall is on and why) and to every switch,
+  `pin` and `auto` result; the text output prints the same sentences, and the skills relay them.
+- **`COGNEE_PLUGIN_RECALL_MODE` sets the recall mode a session starts in.** `auto` (the default)
+  or `pinned` (recall restricted to the session's dataset, reason `configured_pin`), exported or
+  in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
+  a switch) wins over it for that session. **Behaviour change:** a configured non-default
+  `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
+- **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
+  `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
+- **The status-row picker and `/cognee-dataset` know about auto recall.** The picker starts with
+  `auto (best-matching dataset)` and the row reads `auto (<dataset>)` while recall is auto;
+  `/cognee-dataset auto` lifts a restriction, `/cognee-dataset pin` restricts recall to the active
+  dataset, and `/cognee-dataset` alone says which mode is on. Picking the active dataset runs
+  `switch-dataset.py pin`; toasts and the listing show the script's `message`. The `search` tool
+  reports results "from memory" unless recall is restricted.
+
+### Changed
+- **A dataset switch no longer waits for the session it leaves to sync.** It used to run
+  `sync-session-to-graph.py --strict` and block until the sync finished. In cloud mode that meant
+  waiting for the cloud worker to reach the request behind other sessions' queued syncs (each up
+  to 7 minutes), so the row read "switching dataset…" for 10 minutes until the band gave up. The
+  switch now only starts that sync: in cloud mode it files an improve request (`switch`) for the
+  cloud worker, and locally it starts a detached sync. The switch takes seconds. The retired session
+  stays in `touched`, so the session-end sync retries it if this sync never lands. A sync that
+  cannot even be started no longer stops the switch; the result reports it. `previous.synced` is
+  replaced by `previous.sync` (`"queued"` or `"not_started"`, with `sync_error`), and the message
+  says the previous session "is syncing in the background". `--strict` is gone from
+  `sync-session-to-graph.py` (a cloud `/cognee-sync` also returns once queued), `--force` from
+  `switch-dataset.py`, and exit code 3 is retired. The band's switch timeout drops from 10 min to 2.
+- **Reopening a chat names the dataset it was saved to, without the brain icon.** The
+  notice now reads "This conversation was sent to the agent_sessions dataset in Cognee's
+  long-term memory when you left at 14:13." A failed save names its dataset, and the earlier
+  save it mentions names its own when that differs. The save record keeps the dataset of the
+  last successful save (`improved_dataset`) beside the one a later failed attempt targeted.
+- **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+- **The memory credit names the dataset (SDK-1393).** Every graph item the recall hook injects
+  is marked `[dataset <name>]`, since under auto recall the server picks the dataset and the mark
+  is the only place the answer learns which one; an item from a server that names no dataset, and
+  every other item, keeps its origin mark (`[agent trace, …]`, `[code graph]`). The credit line is
+  now `> Cognee memory: <what>, from the <dataset> dataset`, with no `[mN]` tags or brain, and the
+  hidden per-session tags (`tags.json`) are gone. "Cognee found N memories" counts the items that
+  survive the size budget and the dedupe (two results from one dataset no longer count as one),
+  and the instruction is left out when none does. The recall hook records the turn it injected
+  memory on (`injected_turn` in `credit.json`); the Stop hook counts a credit when the answer on
+  that turn ends with the credit line. The `memory_credit` event now carries `{injected,
+  credited}`, and `memory_tags_write_failed` is now `memory_credit_write_failed`.
+- **The settings-file status line says when recall is auto.** It shows the dataset as
+  `auto (<dataset>)` while recall is not pinned, as the row above the prompt does.
+- **The terminal dataset picker is drawn from the start.** It shows the selected name and lights
+  under the pointer; a click or `ctrl+x tab` gives it the focus, which opens the list and lists the
+  datasets afresh. The `▾` button that opened it is gone.
+
+### Removed
+- **The status line no longer shows the last operation's cost** (`last remember ~$0.00`). In
+  cloud mode only a remember ever recorded one, so it was usually a stale, sub-cent reading from
+  days earlier. The credit balance and the **top up** link stay. The credits marker still records
+  `last_op`.
+- **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
+  search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
+  `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`
+  cache are gone. A one-off search of one dataset (`cognee-search.sh --dataset-id`,
+  `list-datasets.py`) is unchanged.
+
+### Fixed
+- **The status row no longer shows a switch as done before it lands.** Picking a dataset left the
+  picker showing the pick while the switch was still running (or after it failed), and a turn's
+  save finishing meanwhile replaced "switching dataset…" with "✓ memory saved". While a switch
+  runs, the row now reads `<current> → <target>` with no picker, and the hooks' marker no longer
+  replaces or clears the module's own activity (a switch, a search, a remember).
+- **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
+  shared agent memory the parent account owns the datasets, so the switch addressed the target
+  by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to
+  an empty dataset named after the id (creating one when none existed) while reporting the right
+  id. A dataset picked by id now resolves as that dataset, the record keeps its name with its
+  canonical id, and a dataset the shared role cannot hold is addressed by its id instead of
+  forking a copy. Picked by id among datasets that share a name, it also stays the write target,
+  including across the periodic refresh, rather than giving way to the parent's same-named copy.
+  Present since shared memory became the default. Delete any leftover empty dataset whose name
+  is a UUID.
+- **No empty agent-owned copy of the shared dataset (SDK-1393).** Under shared memory the sync's
+  pre-improve dataset ensure posted the launch's dataset by name with the agent key, and the server,
+  which matches a name only among the caller's own datasets, created an empty agent-owned
+  `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
+  has a canonical id, and the dataset listing marks only the canonical row as current, not every
+  dataset of that name.
+- **The status row no longer vanishes when the dataset picker opens on same-named datasets.**
+  The terminal picker offered a name once per dataset so named; the engine refuses a `Select` whose
+  values repeat and dropped the whole row, for the rest of the session. Each name is offered once.
+- **The status row follows `/clear` and `/resume`.** The engine sends no session start for the
+  conversation that replaces the ended one, so the row stayed unbound until the next prompt and
+  could show the ended session's sync as `✓ session saved`. The module now drops the ended
+  session's marker and binds the new conversation as soon as its id is out (watching for up to
+  30 s), with the snapshot, warm-up poll and dataset listing a session start gets.
+- **Searching another dataset while recall is restricted takes the person's pick (SDK-1393).**
+  The skills already said to list the other datasets and ask before a one-off search of one, but
+  `cognee-search.sh --dataset-id` and the `search` tool's `dataset_id` searched any id they were
+  given, so an agent could leave a pinned dataset on an id it found in a recalled memory. While
+  recall is pinned or limited to a read set, the wrapper now refuses a dataset other than the
+  active one (exit 2, a JSON `error` saying how to ask, no request sent) unless `--user-picked`
+  marks it as the person's choice: one they picked when asked or named in their request. The
+  `search` tool passes it for `user_picked: true`; the skills, the `cognee-recall` agent and the
+  README carry the flag. Auto recall, and the active dataset named by hand, need no flag.
+
 ## [1.7.7]
 
 ### Security

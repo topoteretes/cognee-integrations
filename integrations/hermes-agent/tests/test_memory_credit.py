@@ -113,6 +113,41 @@ def test_desktop_gets_the_pixel_logo(cite_on):
     assert memory_credit.render_credit(PLAIN, "desktop") == RENDERED
 
 
+def test_desktop_sets_the_named_datasets_as_code(cite_on):
+    answer = (
+        "Maya wears EU 39.\n\n> Cognee: Maya's orders, based on dataset "
+        "live_context_support_agent and dataset agent_sessions."
+    )
+    line = memory_credit.render_credit(answer, "desktop").splitlines()[-1]
+    assert line.endswith(
+        " Maya's orders, based on dataset `live_context_support_agent`"
+        " and dataset `agent_sessions`."
+    )
+    assert memory_credit.has_credit(memory_credit.render_credit(answer, "desktop"))
+    assert memory_credit.strip_credit_lines(memory_credit.render_credit(answer, "desktop")) == (
+        "Maya wears EU 39."
+    )
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "based on Cognee memory.",
+        "based on dataset `x`.",
+        "a dataset is a set of documents, based on Cognee memory.",
+    ],
+)
+def test_only_a_named_dataset_is_set_as_code(sentence):
+    assert memory_credit.highlight_datasets(sentence) == sentence
+
+
+def test_three_datasets_are_each_set_as_code():
+    sentence = "based on dataset a, dataset b and dataset c."
+    assert memory_credit.highlight_datasets(sentence) == (
+        "based on dataset `a`, dataset `b` and dataset `c`."
+    )
+
+
 def test_the_pixel_logo_follows_the_grid():
     # One rule per vertical run of squares; a single-letter check keeps it readable.
     # E: a full left column, then squares in rows 0, 2 and 4 (raised 0.8, 0.4, 0).
@@ -225,6 +260,67 @@ def test_recall_tool_results_are_tagged(cite_on):
     assert '"> Cognee:"' in out["credit"]
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_the_credit_names_the_dataset_only_when_recall_read_it(cite_on, pinned):
+    # Auto recall may answer from any readable dataset, so naming the active
+    # one would credit the wrong source.
+    expected = "based on dataset hermes" if pinned else "based on Cognee memory"
+    with fake_backend() as fake:
+        fake.results["recall"] = [{"text": "Mika likes tennis.", "source": "graph"}]
+        provider = make_provider()
+        provider._recall_pinned = pinned
+        provider.queue_prefetch("what does mika like")
+        prompt = provider.prefetch("what does mika like")
+        tool = json.loads(provider.handle_tool_call("cognee_recall", {"query": "mika"}))
+    assert expected in prompt
+    assert expected in tool["credit"]
+    if not pinned:
+        assert "based on dataset" not in prompt + tool["credit"]
+
+
+def test_auto_recall_tags_and_credits_the_dataset_the_server_named(cite_on):
+    # A routed result carries the dataset it came from (SearchResult.dataset_name):
+    # each tag names it, and the credit asks for the datasets the used items' tags
+    # name, not "Cognee memory" and not the conversation's own dataset.
+    with fake_backend() as fake:
+        fake.results["recall"] = [
+            {"text": "Maya ordered boots.", "source": "graph", "dataset_name": "shop_support"},
+            {"text": "Leo swapped sizes.", "source": "graph", "dataset_name": "returns"},
+        ]
+        provider = make_provider()
+        provider.queue_prefetch("what did maya order")
+        prompt = provider.prefetch("what did maya order")
+        tool = json.loads(provider.handle_tool_call("cognee_recall", {"query": "maya"}))
+    assert "· dataset shop_support]" in prompt
+    assert "· dataset returns]" in prompt
+    assert "dataset named in the tag of each item you used" in prompt
+    assert "based on dataset shop_support" in prompt  # the example
+    assert "dataset hermes" not in prompt  # the conversation's dataset is not credited
+    assert [item["tag"].endswith("· dataset shop_support]") for item in tool["results"]] == [
+        True,
+        False,
+    ]
+    assert "dataset named in the tag of each item you used" in tool["credit"]
+    # A credit line naming the datasets is still the answer's credit.
+    answer = (
+        "Maya ordered boots.\n\n> Maya's boots, based on dataset shop_support and dataset returns."
+    )
+    assert memory_credit.has_credit(answer)
+
+
+def test_auto_recall_falls_back_to_cognee_memory_when_a_result_names_no_dataset(cite_on):
+    with fake_backend() as fake:
+        fake.results["recall"] = [
+            {"text": "Maya ordered boots.", "source": "graph", "dataset_name": "shop_support"},
+            {"text": "Leo swapped sizes.", "source": "graph"},
+        ]
+        provider = make_provider()
+        provider.queue_prefetch("what did maya order")
+        prompt = provider.prefetch("what did maya order")
+    assert "based on Cognee memory" in prompt
+    assert "dataset named in the tag" not in prompt
+
+
 def test_the_stored_answer_has_no_credit_line(cite_on):
     with fake_backend() as fake:
         provider = make_provider()
@@ -272,6 +368,7 @@ def test_the_terminal_ui_gets_the_logo_appended(cite_on):
     # with it, so a replaced credit line would show the answer twice.
     out = memory_credit.render_credit(PLAIN, "tui")
     top, bottom = memory_credit.LOGOTYPE
+    # PLAIN names no "dataset <name>", so the logo signs alone.
     assert out == f"{PLAIN}\n\n{top}\n{bottom}"
     assert out.startswith(PLAIN)
 
@@ -280,7 +377,9 @@ def test_the_streaming_classic_cli_gets_the_logo_appended(cite_on, monkeypatch):
     # A streamed answer is already on screen; Hermes shows only an appended suffix
     # cleanly (a replaced answer would be printed a second time).
     monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
-    assert memory_credit.render_credit(PLAIN, "cli") == memory_credit.render_credit(PLAIN, "tui")
+    top, bottom = memory_credit.LOGOTYPE
+    # The CLI prints the suffix as is under the answer's closing line: one newline.
+    assert memory_credit.render_credit(PLAIN, "cli") == f"{PLAIN}\n{top}\n{bottom}"
 
 
 def test_the_non_streaming_classic_cli_gets_the_line_replaced(cite_on, monkeypatch):
@@ -325,9 +424,9 @@ def test_the_terminal_instruction_asks_for_an_unlabelled_line(platform):
 def test_the_terminal_signs_an_unlabelled_line_with_the_logo(cite_on, monkeypatch):
     monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
     top, bottom = memory_credit.LOGOTYPE
-    for platform in ("tui", "cli"):
+    for platform, gap in (("tui", "\n\n"), ("cli", "\n")):
         out = memory_credit.render_credit(SIGNED, platform)
-        assert out == f"{SIGNED}\n\n{top}\n{bottom}"
+        assert out == f"{SIGNED}{gap}{top}  based on agent_sessions dataset\n{bottom}"
         assert memory_credit.has_credit(out)
         assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
     monkeypatch.setattr(memory_credit, "_cli_streams", lambda: False)
@@ -365,7 +464,8 @@ def test_the_signed_line_is_recognised_however_it_is_worded(cite_on, line):
     answer = f"Mika likes Yuji.\n\n{line}"
     top, bottom = memory_credit.LOGOTYPE
     out = memory_credit.render_credit(answer, "tui")
-    assert out == f"{answer}\n\n{top}\n{bottom}"
+    assert out.startswith(f"{answer}\n\n{top}")
+    assert out.endswith(f"\n{bottom}")
     assert memory_credit.has_credit(out)
     assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
 
@@ -375,3 +475,28 @@ def test_a_quote_naming_a_dataset_mid_answer_is_left_alone(cite_on):
     assert memory_credit.render_credit(answer, "tui") is None
     assert not memory_credit.has_credit(answer)
     assert memory_credit.strip_credit_lines(answer) == answer
+
+
+@pytest.mark.parametrize(
+    ("line", "signed"),
+    [
+        (
+            "> Alice's story, based on dataset alice_in_wonderland.",
+            "  based on alice_in_wonderland dataset",
+        ),
+        (
+            "> Maya's orders, based on dataset shop and dataset returns.",
+            "  based on shop and returns datasets",
+        ),
+        ("> Notes, based on dataset a, dataset b and dataset c.", "  based on a, b and c datasets"),
+        ("> Mika likes Yuji, as remembered in Cognee memory.", ""),
+    ],
+)
+def test_the_terminal_logo_names_the_credited_datasets(cite_on, monkeypatch, line, signed):
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
+    top, bottom = memory_credit.LOGOTYPE
+    answer = f"Answer.\n\n{line}"
+    out = memory_credit.render_credit(answer, "cli")
+    assert out == f"{answer}\n{top}{signed}\n{bottom}"
+    assert memory_credit.has_credit(out)
+    assert memory_credit.strip_credit_lines(out) == "Answer."

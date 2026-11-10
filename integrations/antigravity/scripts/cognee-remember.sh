@@ -7,7 +7,9 @@
 #
 # --node-set: node set for categorization (default: user_context)
 #             user_context | project_docs | agent_actions
-# --dataset:  dataset name (default: this launch's active dataset)
+# --dataset:  dataset name (default: this launch's active dataset); under
+#             shared memory it resolves to the user's canonical copy, as a
+#             dataset switch does
 # --file:     upload a file under its REAL filename instead of inline text.
 #             The extension is the server's routing signal: code files
 #             (.py/.ts/.go/...) ride the zero-LLM code-graph route on
@@ -24,6 +26,12 @@ set -euo pipefail
 
 PLUGIN_DIR="${HOME}/.cognee-plugin/antigravity"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+
+# "auto" is not a dataset name: COGNEE_PLUGIN_DATASET=auto means the default
+# dataset (SDK-1393), which is what an unset variable gives.
+case "$(printf '%s' "${COGNEE_PLUGIN_DATASET:-}" | tr '[:space:]' ' ' | sed -e 's/^ *//' -e 's/ *$//' | tr '[:upper:]' '[:lower:]')" in
+    auto) COGNEE_PLUGIN_DATASET="" ;;
+esac
 runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
 import json
 import pathlib
@@ -55,6 +63,13 @@ if not api_key:
             pass
 
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+# ~/.cognee/.env (loaded above) can hold the reserved "auto" too: normalise as
+# config.py does, so it never reaches a save or search as a dataset name.
+try:
+    from _plugin_common import configured_dataset_name
+    dataset = configured_dataset_name(dataset)
+except Exception:
+    dataset = "" if dataset.lower() == "auto" else dataset
 dataset_id = ""
 # The launch record wins (dataset chosen with switch-dataset.py, its canonical
 # UUID under shared memory, the plugin-agent key the hooks use).
@@ -112,6 +127,7 @@ PY
 CONTENT=""
 NODE_SET="user_context"
 FILE_PATH=""
+DATASET_EXPLICIT=""
 
 if [ "${1:-}" != "--file" ]; then
     CONTENT="${1:-}"
@@ -126,8 +142,18 @@ while [ $# -gt 0 ]; do
         --dataset|-d)
             shift
             DATASET="${1:-$DATASET}"
-            # The canonical UUID belongs to the launch's active dataset only.
+            # "auto" is reserved for auto recall (SDK-1393): no save lands in a
+            # dataset that could never be pinned afterwards.
+            case "$(printf '%s' "$DATASET" | tr '[:space:]' ' ' | sed -e 's/^ *//' -e 's/ *$//' | tr '[:upper:]' '[:lower:]')" in
+                auto)
+                    echo "Error: 'auto' is reserved for auto recall, not a dataset name" >&2
+                    exit 2
+                    ;;
+            esac
+            # An explicit name wins over the launch's dataset; its canonical
+            # UUID is resolved below, after every flag is read.
             DATASET_ID=""
+            DATASET_EXPLICIT=1
             ;;
         --file)
             shift
@@ -146,6 +172,23 @@ fi
 if [ -z "$CONTENT" ] && [ -z "$FILE_PATH" ]; then
     echo "Error: no content provided" >&2
     exit 1
+fi
+
+# An explicit --dataset name resolves the way a dataset switch does: under
+# shared memory, to the canonical copy the user owns (created if missing).
+# Sent by name instead, the server would find or create an agent-owned copy
+# of the same name that nobody else sees. Separated memory keeps the name.
+if [ -n "$DATASET_EXPLICIT" ]; then
+    DATASET_ID="$(python3 - <<'PY' "${SELF_DIR}" "${DATASET}" 2>/dev/null || true
+import sys
+sys.path.insert(0, sys.argv[1])
+from _dataset_access import dataset_id
+from _plugin_common import resolve_shared_dataset
+# A UUID already addresses one dataset (_remember_http sends it as datasetId).
+shared = {} if dataset_id(sys.argv[2]) else resolve_shared_dataset(sys.argv[2])
+print(shared["dataset_id"] if shared.get("mode") == "shared" else "")
+PY
+)"
 fi
 
 # Server-first: POST to /api/v1/remember via _remember_http.py.

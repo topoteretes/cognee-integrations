@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentSyncIndexes, CodeGraphRecord, CodeGraphsFile, DatasetOverride, DatasetOverridesFile, RetiredSession, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
+import type { AgentSyncIndexes, CodeGraphRecord, CodeGraphsFile, DatasetOverride, DatasetOverridesFile, RecallChoice, RetiredSession, DatasetState, MemoryScope, ScopedSyncIndexes, SyncIndex } from "./types.js";
 import { MAX_PREVIOUS_DATASETS, pruneRetired } from "./retired.js";
 
 // ---------------------------------------------------------------------------
@@ -186,8 +186,13 @@ export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH
     const out: DatasetOverridesFile = {};
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (!v || typeof v !== "object") continue;
-      const o = v as Partial<DatasetOverride>;
-      if (typeof o.dataset !== "string" || !o.dataset) continue;
+      const o = v as Partial<DatasetOverride> & Partial<RecallChoice>;
+      const recall = o.recall === "auto" || o.recall === "pinned" ? o.recall : undefined;
+      if (typeof o.dataset !== "string" || !o.dataset) {
+        // A recall-mode choice without a switch (action=pin / action=auto).
+        if (recall && !("dataset" in o)) out[k] = { recall, chosenAt: typeof o.chosenAt === "string" ? o.chosenAt : "" };
+        continue;
+      }
       out[k] = {
         dataset: o.dataset,
         sessionSuffix: typeof o.sessionSuffix === "number" && o.sessionSuffix >= 2 ? o.sessionSuffix : 2,
@@ -198,6 +203,7 @@ export async function loadDatasetOverrides(path: string = DATASET_OVERRIDES_PATH
               .filter((r): r is RetiredSession => !!r && typeof r === "object" && typeof (r as RetiredSession).dataset === "string" && typeof (r as RetiredSession).sessionId === "string")
               .map((r) => ({ dataset: r.dataset, sessionId: r.sessionId, synced: r.synced === true, retiredAt: typeof r.retiredAt === "string" ? r.retiredAt : "" }))
           : []),
+        ...(recall ? { recall } : {}),
       };
     }
     return out;

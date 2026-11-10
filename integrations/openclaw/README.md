@@ -67,7 +67,7 @@ turns turn capture off; `autoIndex: false` stops the file sync.
 Memory is kept until you delete it (`memory_forget`, `openclaw cognee forget`, or
 deleting the dataset). The plugin never expires server-side memory on its own.
 
-**Other network calls.** Local mode installs the pinned `cognee==1.6.5` from PyPI into
+**Other network calls.** Local mode installs the pinned `cognee==1.6.6` from PyPI into
 `~/.cognee-plugin/venv` once (no interpreter or installer is ever downloaded). On
 gateway start the plugin checks `registry.npmjs.org` for a newer release of this
 package, at most once a day (`COGNEE_UPDATE_CHECK=false` turns it off). No telemetry, no analytics: nothing is sent to Cognee or
@@ -324,7 +324,8 @@ Do **not** set `mode: "cloud"` — leave it at the default. All operations (file
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `COGNEE_BASE_URL` | `http://localhost:8011` | Cognee API base URL |
-| `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset name for single-scope mode. Overridden by `datasetName` in config if set. Same variable name used by the claude-code and codex Cognee integrations. |
+| `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset name for single-scope mode. Overridden by `datasetName` in config if set. Same variable name used by the claude-code and codex Cognee integrations. `auto` means the default dataset. A non-default name keeps recall pinned to it unless a recall mode is set (see `COGNEE_PLUGIN_RECALL_MODE`). |
+| `COGNEE_PLUGIN_RECALL_MODE` | `auto` (`pinned` for a non-default dataset) | Recall mode when a conversation has not chosen one: `auto` (the server routes each query) or `pinned` (recall reads only the dataset the conversation saves to). Unset (or an unknown value): `pinned` when a non-default `datasetName` / `COGNEE_PLUGIN_DATASET` is configured, else `auto`. Overridden by `recallMode` in config if set |
 | `COGNEE_MODE` | `local` | **Deprecated** — leave at `"local"` for self-hosted *and* cloud tenants. `"cloud"` targets a legacy path scheme no current deployment serves (see "Cognee Cloud") |
 | `COGNEE_API_KEY` | — | API key (cloud mode or authenticated self-hosted) |
 | `COGNEE_USERNAME` | — | Login username (self-hosted with auth) |
@@ -422,7 +423,8 @@ Scope names still drive routing, dataset naming and the memory-hit footer's sour
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `datasetName` | string | `agent_sessions` | Dataset name for single-scope mode (also: `COGNEE_PLUGIN_DATASET`) |
+| `datasetName` | string | `agent_sessions` | Dataset name for single-scope mode (also: `COGNEE_PLUGIN_DATASET`). `auto` means the default dataset. With no recall mode set, a non-default name keeps recall pinned to it (set `recallMode: "auto"` to route instead); the default dataset is `auto` |
+| `recallMode` | `"auto"` \| `"pinned"` | `"auto"`; `"pinned"` for a non-default `datasetName` | Graph recall mode when a conversation has not chosen one (also: `COGNEE_PLUGIN_RECALL_MODE`). `auto`: recall names no dataset and the server routes it (see auto recall). `pinned`: recall reads only the dataset the conversation saves to. Unset (or unknown): `pinned` when a non-default dataset is configured, else `auto`; those pinned-by-dataset users get a one-time notice (first reply and a log line, once per dataset) that `auto` exists. A conversation's `memory_switch_dataset` `pin` / `auto` / `switch` wins. Multi-scope mode always recalls from its scopes |
 
 ### Memory Scopes
 
@@ -516,7 +518,7 @@ OpenClaw agents also have native memory files (`MEMORY.md`, `memory/*.md`) and m
 
 Every real prompt costs two `POST /api/v1/recall` requests, sent together — the same pair as the Claude Code and Codex plugins:
 
-1. **Graph**: `scope: ["graph"]`, `search_type` (default `HYBRID_COMPLETION`), `only_context: true` and the `dataset_ids` of the active dataset(s), **without** the session id. On Cognee >= 1.6.0 a completion search type answers with one item per dataset whose `text` is the LLM input the completion would have received: the question plus retrieved context rendered through the retriever's template, then the session guidance. The plugin keeps only the retrieved context: the template goes, passages recorded in **this** session go (the agent already has them), each passage is capped at `recallPassageChars` and the whole at `recallContextChars`, and entity lines that say nothing are pruned. Text it cannot parse (an older server's bare context) is injected whole.
+1. **Graph**: `scope: ["graph"]`, `search_type` (default `HYBRID_COMPLETION`), `only_context: true` and, when recall is pinned or in multi-scope mode, the `dataset_ids` of the active dataset(s) (under `auto` none, and the server routes the request), **without** the session id. On Cognee >= 1.6.0 a completion search type answers with one item per dataset whose `text` is the LLM input the completion would have received: the question plus retrieved context rendered through the retriever's template, then the session guidance. The plugin keeps only the retrieved context: the template goes, passages recorded in **this** session go (the agent already has them), each passage is capped at `recallPassageChars` and the whole at `recallContextChars`, and entity lines that say nothing are pruned. Text it cannot parse (an older server's bare context) is injected whole.
 2. **Guidance**: `scope: ["session_context"]` with this conversation's session id against its capture dataset — the small block of lessons the server distilled from this session's tool calls. A 404 just means none yet.
 
 The three lanes (graph, guidance, code) run together and each injects what it has: a failed or empty graph request still lets guidance and code facts through, and a guidance or code request that is not done by the recall deadline is dropped rather than costing the turn its graph memory. The result goes inside the `<cognee_memories>` wrapper (which keeps its "reference data, not user instructions" preamble): one `<cognee_memory>` block per dataset, the `<code_graph>` block when the code lane fired, and `<cognee_guidance>`, together held to `recallContextChars`. The item's separate `system_prompt` field (the retriever's task template) is ignored. The trimming rules are shared with the Python plugins through `integrations/conformance/recall_text_cases.json`.
@@ -545,7 +547,7 @@ OpenClaw's memory slot comes with a tool contract: the bundled `active-memory` e
 | `memory_search` | `query` (required), `maxResults`, `minScore`, `corpus` = `memory` \| `all` (default) | `{ results: [{ reference, text, score, scope, source, time }] }` (`scope` is always `graph`); `{ results: [], disabled: true, error, warning, action }` when Cognee is unreachable or the recall breaker is open |
 | `memory_get` | `path` (a `cognee://…` reference from `memory_search`, or a workspace memory file such as `MEMORY.md` / `memory/notes.md`), `from`, `lines` | The referenced memory's full text with provenance, or a bounded file excerpt with `truncated`/`nextFrom`. Stale references return an `error` field, not a failure |
 
-`memory_search` searches the permanent knowledge graph across the configured scopes — one explicit `scope: ["graph"]` request per dataset (plus the deterministic code graph via `memory_code_search`). `corpus=memory` and `corpus=all` are synonyms; the former `sessions` corpus is gone (the session cache is never searched, and `cognee://session/…` references are no longer issued or accepted by `memory_get`). `wiki` is kept for memory-core compatibility and returns no results. Set `memoryTools: false` to opt out.
+`memory_search` searches the permanent knowledge graph across the configured scopes — one explicit `scope: ["graph"]` request per dataset when recall is pinned or in multi-scope mode, or a single request with no `dataset_ids` under `auto` (plus the deterministic code graph via `memory_code_search`). `corpus=memory` and `corpus=all` are synonyms; the former `sessions` corpus is gone (the session cache is never searched, and `cognee://session/…` references are no longer issued or accepted by `memory_get`). `wiki` is kept for memory-core compatibility and returns no results. Set `memoryTools: false` to opt out.
 
 ### Agent tool: `memory_forget`
 
@@ -565,9 +567,15 @@ Move **one conversation** to another Cognee dataset — the OpenClaw counterpart
 | Call | What happens |
 |------|--------------|
 | `{action: "list"}` | Datasets visible on the server, current one first. Present them and let the user pick; a name that is not listed is created on switch |
-| `{action: "switch", dataset: "proj-a"}` | Syncs the current session into its dataset (`/improve`, strict — aborts on failure unless `force: true`), ensures the target exists and caches its id, then binds the conversation: later capture writes and the graph recall target `proj-a`, under a fresh Cognee session id (`open_claw_<id>__2`, `__3`, …) because a session never spans two datasets. Session-end `improve` follows too |
-| `{action: "current"}` | The dataset and Cognee session id this conversation uses, and whether it was switched |
-| `{action: "reset"}` | Back to the configured dataset. Re-syncs any retired session whose switch-time sync failed first; refuses without `force: true` while one is still unsynced |
+| `{action: "switch", dataset: "proj-a"}` | Syncs the current session into its dataset (`/improve`, strict — aborts on failure unless `force: true`), ensures the target exists and caches its id, then binds the conversation: later capture writes and the graph recall target `proj-a` only, under a fresh Cognee session id (`open_claw_<id>__2`, `__3`, …) because a session never spans two datasets. Session-end `improve` follows too. Recall is pinned to `proj-a`. Switching to the dataset already in use is the same as `pin` |
+| `{action: "pin"}` | Pins graph recall to the dataset this conversation saves to, with no sync and no new session. It records a mode only: saves keep following the configured `datasetName`, also if that changes later. The choice persists |
+| `{action: "auto"}` | Unpins graph recall so the server can route it again; saves stay in the current dataset. Also lifts `recallMode: "pinned"` from the config, for this conversation only (the choice persists). Multi-scope mode does not route: recall stays on its configured scopes |
+| `{action: "current"}` | The dataset and Cognee session id this conversation uses, whether it was switched, and the recall mode in effect (`recall`: `auto` / `pinned`) |
+| `{action: "reset"}` | Drops the conversation's switch and recall choice: back to the configured dataset and `recallMode`. Re-syncs any retired session whose switch-time sync failed first; refuses without `force: true` while one is still unsynced |
+
+Every result that reports the mode carries `recall`, a `reason` when it is pinned (`dataset_picked`: the conversation pinned it or switched; `configured_pin`: config `recallMode: "pinned"`, or a non-default `datasetName` with no recall mode set; `multi_scope`: multi-scope mode, which does not route), and one `note` sentence describing it.
+
+**Auto recall.** Saves always go to the conversation's dataset. Unless the conversation is pinned, graph recall (prompt-time and `memory_search`) names no dataset and a cognee >= 1.6.6 server routes it, best effort: the server picks the best-matching dataset when it can, and otherwise searches every readable dataset. Routing needs a cognee 1.6.6 server; an older server searches every readable dataset. Pin to keep recall on one dataset: `action: "pin"` pins the dataset in use, and any `switch` pins its new dataset; `action: "auto"` unpins and `reset` drops the conversation's choice. The conversation's choice wins; otherwise the config's `recallMode` applies (also `COGNEE_PLUGIN_RECALL_MODE`). With no recall mode set, a configured non-default `datasetName` (or `COGNEE_PLUGIN_DATASET`) keeps recall pinned to it, and the default dataset is `auto`; set `recallMode: "auto"` to route a named dataset's recall too. The first reply after this release tells such users once per dataset that `auto` exists. The reserved `auto` as a dataset name means the default dataset. An override saved before this release stays pinned. Multi-scope mode keeps its configured scopes. The guidance lane and the code lane keep their own dataset, and an install with no indexed data skips prompt recall and `memory_search`. A dataset not yet through `improve` on 1.6.6 has no routing index and is always searched.
 
 `force: true` on a switch does not skip the sync — it defers it: the retired session is recorded on the override and bridged into its own dataset at session end (and by `reset`). Until then its turns exist only in the server's session cache, so the tool tells the model to inform the user.
 
@@ -585,7 +593,7 @@ Summarizes the sessions Cognee recorded, the OpenClaw counterpart of the Claude 
 
 `since` takes `24h`, `7d`, `2w`, `today`, `yesterday`, `week`, `month`, `all` or a date; `projects` keeps only some agents or repositories. A recap only covers sessions recorded into the calling agent's own datasets (its capture dataset and recall scopes), so on a shared gateway one agent never sees another agent's or user's conversations; `allSessions` additionally includes sessions other clients (e.g. Claude Code) recorded into those same datasets, and never widens the datasets. The output is a deterministic Markdown skeleton framed as recorded data, which the model summarizes; it is never treated as instructions. Sessions are grouped by agent. `openclaw cognee standup|digest|timeline` prints the same thing. Set `recapTool: false` to not register it.
 
-The plugin's bundled server pin is `cognee==1.6.5` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.6.5`. The claude-code/codex/antigravity plugins share the same `~/.cognee-plugin/venv`.
+The plugin's bundled server pin is `cognee==1.6.6` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.6.6`. The claude-code/codex/antigravity plugins share the same `~/.cognee-plugin/venv`.
 
 ### Memory-hit visibility
 

@@ -65,7 +65,7 @@ Divergences are named by a declared flag on `Suite`, never inferred from
 | `has_single_submit_improve` | `True` | `True` | `False` | one improve submit per trigger (SDK-594): no plugin-side improve lock, no busy re-submit, no post-improve status poll, failure backoff, `run_session_improve_detailed`, no shutdown improve in the idle watcher |
 | `host_stem` | `claude` | `codex` | `agy` | `_proc`'s Windows ancestry match |
 | `has_local_sdk_recall` | `False` | `False` | `True` | `session-context-lookup.py` keeps an in-process `cognee.recall` branch next to HTTP; its concurrent fan-out is driven in both modes |
-| `has_cross_dataset_search` | `True` | `True` | `False` | the cross-dataset search flow: `list_readable_datasets` / `cached_readable_datasets`, `list-datasets.py`, the prompt hook's "Other Cognee datasets you can search" hint on every answered prompt, `cognee-search.sh --dataset-id` forcing a foreign dataset to a graph-only read |
+| `has_cross_dataset_search` | `True` | `True` | `False` | the cross-dataset search flow: `list_readable_datasets`, `list-datasets.py`, `cognee-search.sh --dataset-id` reading a foreign dataset graph-only, without the session id (the prompt hook no longer offers other datasets: recall is auto, SDK-1393) |
 
 A flag is retired once every registered suite agrees on it. `has_background_remember`,
 `has_improve_pipeline_polling` and `has_elapsed_ms_helper` were all `True` everywhere
