@@ -38,7 +38,7 @@ from _plugin_common import (
     touch_activity,
 )
 from _proc import pid_alive
-from config import get_dataset, get_session_id, load_config
+from config import coding_memory_enabled, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
 _STATE_DIR = Path.home() / ".cognee-plugin" / "codex"
@@ -132,12 +132,12 @@ def _prompt_context(payload: dict) -> str:
 
 
 async def _store(prompt: str, payload: dict):
-    from _capture_policy import capture_enabled, redact
+    from _capture_policy import capture_enabled, sanitize
 
     if not capture_enabled():
         return
-    prompt = redact(prompt)
-    payload = redact(payload)
+    prompt = sanitize(prompt)
+    payload = sanitize(payload)
     session_id, dataset, user_id, tenant_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})
@@ -153,12 +153,15 @@ async def _store(prompt: str, payload: dict):
     # transcripts can carry lone surrogates, and one stored surrogate 500s
     # the session-detail endpoint and wedges the improve pipeline server-side.
     safe_prompt = prompt[:MAX_TEXT].encode("utf-8", errors="replace").decode("utf-8")
-    remember_pending_prompt(
-        session_id,
-        safe_prompt,
-        turn_id=str(payload.get("turn_id") or ""),
-        context=_prompt_context(payload),
-    )
+    if not coding_memory_enabled():
+        # Coding memory keeps the request in its own state (session-context-lookup
+        # records it synchronously); nothing would pop a pending prompt.
+        remember_pending_prompt(
+            session_id,
+            safe_prompt,
+            turn_id=str(payload.get("turn_id") or ""),
+            context=_prompt_context(payload),
+        )
     hook_log("prompt_pending", {"chars": len(prompt), "turn_id": payload.get("turn_id")})
     notify(f"user prompt pending ({len(prompt)} chars)")
     bump_save_counter(session_id, "prompt")

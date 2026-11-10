@@ -131,6 +131,8 @@ describe("memory_switch_dataset end to end", () => {
     await h.emit("llm_output", { assistantTexts: ["answer"] }, CONVO_B);
     await flush();
 
+    // The other conversation keeps the config pin: a non-default datasetName
+    // with no recallMode recalls from that dataset only (SDK-1393).
     expect(mockRecall.mock.calls.map((c) => c[0]).find((c) => c.scope?.includes("graph"))!.datasetIds).toEqual(["ds-1"]);
     const qa = mockRememberEntry.mock.calls.map((c) => c[0] as { datasetName: string; sessionId: string }).pop()!;
     expect(qa).toMatchObject({ datasetName: "testds", sessionId: "open_claw_s2" });

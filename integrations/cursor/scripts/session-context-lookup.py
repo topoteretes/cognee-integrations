@@ -33,18 +33,16 @@ from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
+    auto_recall_active,
     buffered_saves_segments,
-    cached_readable_datasets,
     clear_payment_required,
     clear_slow_streak,
-    cross_dataset_search_command,
     elapsed_ms,
     get_session_key,
     hook_log,
     load_resolved,
     mark_server_ready,
     notify,
-    other_readable_datasets,
     outage_header,
     probe_health,
     quiet_hook_output,
@@ -68,13 +66,15 @@ from _plugin_common import (
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
     CREDITS_OFF_NOTE,
-    MemoryTags,
     begin_turn,
     code_facts,
     credit_enabled,
     credit_instruction,
     format_code_facts,
     has_credited,
+    item_mark,
+    mark_graph,
+    mark_injected,
     strip_credit,
     trim_recall_text,
 )
@@ -100,55 +100,6 @@ TRUNCATE_RETURN = 400
 # Smallest deadline worth dispatching; with less budget than this, nothing is
 # fired rather than sending every scope a doomed request.
 MIN_SCOPE_TIMEOUT = 0.2
-
-# Cross-dataset search hint. Recall reads the active dataset only, and whether
-# what came back actually answers the user is a judgement only the model can
-# make — graph retrieval is nearest-neighbour, so it returns *something* from
-# any populated dataset, and "zero hits" never happens in practice. So every
-# prompt the server answered carries the list of the other readable datasets
-# and how to run a one-off graph search on one (not a switch), worded for the
-# model to act on only when memory did not answer. The listing comes from the
-# per-plugin cache (``cached_readable_datasets``) and is refreshed only when
-# stale, inside what is left of the recall budget. Every other readable dataset
-# is named: nothing ranks them, so the user picks. COGNEE_RECALL_DATASET_HINT=off
-# disables the hint.
-
-
-def _dataset_hint_enabled() -> bool:
-    raw = os.environ.get("COGNEE_RECALL_DATASET_HINT", "").strip().lower()
-    return raw not in ("0", "false", "off", "no")
-
-
-def _format_dataset_hint(active: str, others: list) -> str:
-    rows = "\n".join(f"  - {row.get('name', '')} [{row.get('id', '')}]" for row in others)
-    return (
-        f"Other Cognee datasets you can search (active: {active or 'unknown'}):\n{rows}\n"
-        "Memory above was recalled from the active dataset only. If the user is asking to recall "
-        "something and that context does not answer it, do not conclude that memory has nothing: "
-        "present all of these datasets as a numbered list and ask the user to reply with a number, "
-        'a name, or "no". Do not switch datasets. Then run the graph-only search on their choice '
-        "and say which dataset the answer came from:\n"
-        f"  {cross_dataset_search_command()}"
-    )
-
-
-def _other_datasets_hint(active: str, active_ids: list, service_url: str, deadline: float) -> str:
-    """The hint block, or "" when there is no other dataset to offer.
-
-    Cache first; one bounded network refresh only when the cache is stale and
-    the recall budget still has room for an honest attempt.
-    """
-    remaining = deadline - time.monotonic()
-    rows = cached_readable_datasets(
-        service_url=service_url,
-        refresh=remaining >= MIN_SCOPE_TIMEOUT,
-        timeout=max(MIN_SCOPE_TIMEOUT, min(2.0, remaining)),
-    )
-    others = other_readable_datasets(rows, active, active_ids)
-    if not others:
-        return ""
-    hook_log("recall_dataset_hint", {"active": active, "offered": len(others)})
-    return _format_dataset_hint(active, others)
 
 
 def _load_session_id() -> str:
@@ -263,23 +214,27 @@ def _memory_summary(
     return "Cognee memory: " + " · ".join(parts)
 
 
-def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
-    """``_format_entry`` with the item's credit tag (SDK-1071), when tagging is on.
+def _marked_entry(entry: dict, keys: list | None) -> str:
+    """``_format_entry`` with the item's credit mark (SDK-1071), when crediting is on.
 
-    Graph memory is tagged per passage plus one tag each for its entities and
-    facts; every other item gets one tag naming where it came from. An earlier
-    turn or trace is known by its server id, so it keeps its tag when recalled
-    again.
+    Graph memory is marked per passage plus one mark each for its entities and
+    facts, naming the dataset the server says it came from (SDK-1393); every
+    other item, or graph memory from a server that names no dataset, gets one
+    mark naming where it came from. ``keys`` collects the text each marked item
+    opens with, so the caller can count the ones injected.
     """
-    if tags is None:
+    if keys is None:
         return _format_entry(entry)
     source = entry.get("source", "")
     if source == "graph_context":
         entry = dict(entry)
-        entry["text"] = tags.tag_graph(str(entry.get("text", "") or entry.get("content", "")))
+        entry["text"] = mark_graph(
+            str(entry.get("text", "") or entry.get("content", "")),
+            str(entry.get("dataset_name") or "").strip(),
+            keys,
+        )
         return _format_entry(entry)
     body = _format_entry(entry)
-    ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
     if source == "code":
         origin = "code graph"
     elif source == "session_context":
@@ -289,7 +244,21 @@ def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
     else:
         day = str(entry.get("time", "") or "")[:10]
         origin = f"earlier session turn, {day}" if day else "earlier session turn"
-    return f"{tags.label(source or 'session', origin, body, ident)}\n{body}"
+    marked = f"{item_mark(origin)}\n{body}"
+    keys.append(marked)
+    return marked
+
+
+def _count_injected(marked: list | None, text: str) -> int:
+    """How many marked items reach ``text``; records an injected turn for the
+    Stop hook's credit check when any do (SDK-1071)."""
+    found = len({opening for opening in marked or [] if opening in text})
+    if found:
+        try:
+            mark_injected(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_credit_write_failed", {"error": str(exc)[:200]})
+    return found
 
 
 def _outage_output(state: str) -> dict:
@@ -297,7 +266,8 @@ def _outage_output(state: str) -> dict:
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
     summary = outage_header(state, saves, warmup_backlog(), " · ")
-    header = f"{render_status_for_host(get_session_key())}\n{summary}"
+    key = get_session_key()
+    header = f"{render_status_for_host(key, auto_recall_active(key))}\n{summary}"
     return {
         "systemMessage": header,
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": header},
@@ -329,13 +299,12 @@ def _has_entry_content(entry: dict) -> bool:
 
 async def _run(prompt: str, cwd: str = "") -> dict | None:
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
-        # First, so a recall that returns early leaves this turn with no tags
-        # and the Stop hook cannot check the answer against the previous
-        # turn's (SDK-1071).
+        # First, so a recall that returns early is not an injected turn and
+        # the Stop hook cannot credit the previous turn's memory to it (SDK-1071).
         try:
             begin_turn(_plugin_common._PLUGIN_DIR, get_session_key())
         except Exception as exc:
-            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
+            hook_log("memory_credit_write_failed", {"error": str(exc)[:200]})
     config = load_config()
     runtime = resolve_runtime_mode()
     # Readiness gate, redesigned (SDK-356): the recall attempt itself is the
@@ -514,6 +483,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
+    # Auto recall (SDK-1393): unless recall is pinned (a picked dataset,
+    # COGNEE_PLUGIN_RECALL_MODE=pinned, an explicit read set), the graph scope names
+    # no dataset and the server routes it (cognee 1.6.6; an older server reads
+    # every readable dataset). Local state only: it costs no request.
+    auto_route = False
+    if scope_specs:
+        try:
+            auto_route = auto_recall_active()
+        except Exception as exc:
+            hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.
@@ -554,6 +533,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 dataset_ids=scope_dataset_ids,
                 code_query=scope_code_query,
                 timeout=scope_timeout,
+                auto_route=auto_route and scope_list == ["graph"],
             )
         except Exception as caught:
             exc = caught
@@ -596,8 +576,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             # (scopes_answered_err) so real failures stay visible (SDK-469).
             # It IS an answer, though: the server was reached and said so. Since
             # memory became one request (SDK-741) nothing else answers on such a
-            # prompt, so this must count as ok or the ready marker, the breaker
-            # and the dataset hint would all read a fresh dataset as an outage.
+            # prompt, so this must count as ok or the ready marker and the
+            # breaker would both read a fresh dataset as an outage.
             hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
             scopes_ok += 1
             continue
@@ -764,8 +744,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # on 12 of 40 turns" activation number in the header. Carried forward from
     # the marker only when the marker is ours (codex keeps a single shared
     # file, so another terminal may have prompted last); keyed by host session,
-    # so a new session starts over and a resumed one continues. Read here,
-    # before the dataset hint, which it gates.
+    # so a new session starts over and a resumed one continues.
     _session_key = get_session_key()
     _totals = {"turns": 0, "turns_with_hits": 0}
     _state = None
@@ -790,28 +769,6 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     _totals["turns"] += 1
     if total > 0:
         _totals["turns_with_hits"] += 1
-
-    # Name the other datasets the user could search instead (see
-    # _other_datasets_hint). The block is static text, so it rides along on
-    # the session's FIRST answered prompt — the model keeps it from there —
-    # and again on any prompt memory answered with nothing, the moment it is
-    # actually needed (SDK-904). Not when nothing answered: the search it
-    # recommends would fail the same way. Decoration on the recall path — it
-    # must never break the hook output.
-    dataset_hint = ""
-    if scopes_ok and _dataset_hint_enabled() and (_totals["turns"] <= 1 or total == 0):
-        try:
-            dataset_hint = _other_datasets_hint(
-                session_dataset,
-                read_ids or ([write_id] if write_id else []),
-                service_url,
-                budget_deadline,
-            )
-        except Exception as exc:
-            hook_log(
-                "recall_error",
-                {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
-            )
 
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
@@ -850,7 +807,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
-    status_line = render_status_for_host(_session_key)
+    # The mode this recall ran under, asked once above: the header says what it did.
+    status_line = render_status_for_host(_session_key, auto_route)
     header = f"{status_line}\n" + _memory_summary(
         total,
         _totals,
@@ -859,22 +817,19 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         backlog=warmup_backlog(),
     )
 
-    # Tag each recalled item so the answer can credit it (SDK-1071).
-    tags = (
-        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
-        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
-        else None
-    )
+    # Mark each recalled item so the answer can credit it (SDK-1071); ``marked``
+    # holds the text each one opens with, to count the ones injected.
+    marked = [] if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT) else None
     section_lines = []
     if by_source.get("code"):
         section_lines.append("=== Code graph facts ===")
         for e in by_source["code"]:
-            section_lines.append(_tagged_entry(e, tags))
+            section_lines.append(_marked_entry(e, marked))
             section_lines.append("")
     if by_source.get("graph_context"):
         section_lines.append("=== Cognee memory ===")
         for e in by_source["graph_context"]:
-            section_lines.append(_tagged_entry(e, tags))
+            section_lines.append(_marked_entry(e, marked))
             section_lines.append("")
     # A server older than 1.6.0 answers the graph scope with the bare context
     # and nothing else arrives on this request; whatever a server does tag with
@@ -887,29 +842,31 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         if by_source.get(src):
             section_lines.append(title)
             for e in by_source[src]:
-                section_lines.append(_tagged_entry(e, tags))
+                section_lines.append(_marked_entry(e, marked))
                 section_lines.append("")
     if total > 0:
         # The credit instruction goes right under the header, not after the
         # memory: Claude Code replaces hook context over 10,000 characters with
         # a file and a 2 KB preview, so a large recall would cut off anything
         # at the end (SDK-1071).
-        instruction = ""
-        if tags is not None and tags.found:
-            first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first, len(tags.found), session_dataset) + "\n\n"
-        elif tags is None:
-            instruction = CREDITS_OFF_NOTE + "\n\n"
         # Recalled memory can hold credit lines and the credit instruction from
         # sessions that stored them (Claude Code, or before stripping existed):
         # they are cut on the way out, so only this turn's instruction remains.
         memory_text = strip_credit("\n".join(section_lines)).strip()
+        instruction = ""
+        found = _count_injected(marked, memory_text)
+        if found:
+            first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
+            # A routed recall searched whichever datasets the server picked, so the
+            # credit names none.
+            credit_dataset = "" if auto_route else session_dataset
+            instruction = credit_instruction(first, found, credit_dataset) + "\n\n"
+        elif marked is None:
+            instruction = CREDITS_OFF_NOTE + "\n\n"
         full_context = (
             f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
             + memory_text
         )
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
         hook_log(
             "context_lookup_hit",
             {
@@ -924,8 +881,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     else:
         # Nothing recalled: the agent gets no memory header (a "0 hits" line on
         # most turns read as "Cognee does nothing", SDK-1071). The header stays
-        # in systemMessage; the dataset hint, when due, still goes in.
-        full_context = dataset_hint
+        # in systemMessage.
+        full_context = ""
         hook_log(
             "context_lookup_empty",
             {
@@ -942,6 +899,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _capture_policy import sanitize as _sanitize
         from _logfiles import append_line as _append_log_line
 
         _audit = _Path.home() / ".cognee-plugin" / "cursor" / "recall-audit.log"
@@ -961,19 +919,12 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     # The header the user sees: an empty recall no longer
                     # puts it in the injected context (SDK-1071).
                     "header": header,
-                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                    "context": _audit_clip(_sanitize(full_context), _AUDIT_CONTEXT_CHARS),
                 }
             ),
         )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
-
-    # The Stop hook checks the answer's citations against these (SDK-1071).
-    if tags is not None:
-        try:
-            tags.save(_plugin_common._PLUGIN_DIR, get_session_key())
-        except Exception as exc:
-            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
     # additionalContext is the MODEL injection channel and must carry the full
     # recalled content — trimming it to the status line would silently disable
@@ -1025,6 +976,14 @@ def main():
         return
 
     prompt = payload.get("prompt", "")
+    try:
+        from _capture_policy import sanitize
+
+        # Every recall lane and the audit line see only this copy.
+        prompt = sanitize(prompt) if isinstance(prompt, str) else ""
+    except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
+        hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})
+        return
     if not prompt or len(prompt) < 5:
         return
     # Only a raised floor applies here: the stock gate above keeps its exact

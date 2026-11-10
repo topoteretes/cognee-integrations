@@ -132,6 +132,8 @@ _ENV_MAP = {
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
     "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
     "COGNEE_SHARED_AGENT_MEMORY": "shared_agent_memory",
+    # Coding memory mode (SDK-1336): capture once per request, one lesson block
+    # per session. Off unless set to true.
     # Background remember + cognify polling (read at the call sites via _float_env;
     # registered here for config-file support and discoverability).
     "COGNEE_COGNIFY_POLL_INTERVAL": "cognify_poll_interval",
@@ -168,9 +170,18 @@ def load_config() -> dict:
             config[config_key] = val
 
     raw_dataset = str(config.get("dataset") or "")
-    config["dataset"] = sanitize_dataset_name(raw_dataset)
-    if config["dataset"] != raw_dataset.strip():
-        _config_log("dataset_name_sanitized", {"from": raw_dataset[:200], "to": config["dataset"]})
+    if raw_dataset.strip().lower() == "auto":
+        # "auto" is reserved (switch-dataset.py auto): a configured "auto" means
+        # the default dataset (the recall mode is COGNEE_PLUGIN_RECALL_MODE's
+        # business), so it never reaches the
+        # launch record (and from there saves, shared memory and registration).
+        config["dataset"] = _DEFAULTS["dataset"]
+    else:
+        config["dataset"] = sanitize_dataset_name(raw_dataset)
+        if config["dataset"] != raw_dataset.strip():
+            _config_log(
+                "dataset_name_sanitized", {"from": raw_dataset[:200], "to": config["dataset"]}
+            )
 
     backend = str(config.get("backend") or "auto").lower()
     if backend in ("native", "local", "sdk"):
@@ -193,6 +204,16 @@ def load_config() -> dict:
             config["base_url"] = ""
 
     return config
+
+
+def coding_memory_enabled() -> bool:
+    """True when ``COGNEE_CODING_MEMORY`` is on (see ``_coding_memory``)."""
+    return str(os.environ.get("COGNEE_CODING_MEMORY", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
@@ -233,7 +254,10 @@ def get_dataset(config: dict) -> str:
                 return recorded
     except Exception:
         pass
-    return config.get("dataset", "agent_sessions")
+    # "auto" is reserved (switch-dataset.py auto): COGNEE_PLUGIN_DATASET=auto
+    # means the default dataset.
+    name = str(config.get("dataset") or "").strip()
+    return name if name and name.lower() != "auto" else "agent_sessions"
 
 
 def is_cloud_mode(config: dict) -> bool:

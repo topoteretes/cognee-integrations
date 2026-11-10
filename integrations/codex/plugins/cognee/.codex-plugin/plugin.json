@@ -1,6 +1,6 @@
 {
   "name": "cognee",
-  "version": "1.7.7",
+  "version": "1.8.0",
   "description": "Long-term memory for Codex: Cognee captures your sessions into a knowledge graph and recalls relevant context on every prompt, with knowledge-graph and codebase skills.",
   "author": {
     "name": "Cognee",

@@ -65,6 +65,7 @@ function createApi() {
       captureSession: false,
       memorySteer: false, // steer also rides before_prompt_build; these tests read recall's result
       datasetName: "testds",
+      recallMode: "pinned", // self-healing re-resolves the pinned dataset's id
       minScore: 0,
     },
     runtime: {},

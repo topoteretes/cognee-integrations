@@ -95,7 +95,8 @@ class TestPerPromptRequests(unittest.TestCase):
         # Without a session id the server does not put this conversation's own
         # turns into the item: Hermes already has them.
         self.assertIsNone(kwargs["session_id"])
-        self.assertEqual(kwargs["datasets"], ["hermes"])
+        # Auto recall (SDK-1393): unpinned, it names no dataset and the server picks.
+        self.assertIsNone(kwargs["datasets"])
         self.assertIsNone(kwargs["code_query"])
 
     def test_the_guidance_request_carries_the_session_and_the_capture_dataset(self):
@@ -401,14 +402,15 @@ class TestSdkBackendLanes(unittest.TestCase):
     serving the other.
     """
 
-    def _sdk_provider(self, config=None):
+    def _sdk_provider(self, config=None, *, pinned=False):
         backend = SdkBackend()
         provider = make_provider(backend=backend, config={**_LAYERED, **(config or {})})
+        provider._recall_pinned = pinned
         return backend, provider
 
     def test_memory_request_reaches_cognee_recall_explicitly(self):
         with fake_cognee() as fake:
-            backend, provider = self._sdk_provider()
+            backend, provider = self._sdk_provider(pinned=True)
             try:
                 _prefetch(provider)
                 calls = fake.kwargs_for("recall")
@@ -421,6 +423,17 @@ class TestSdkBackendLanes(unittest.TestCase):
         self.assertEqual(graph["datasets"], ["hermes"])
         (guidance,) = _by_scope(calls, "session_context")
         self.assertEqual(guidance["session_id"], "hermes_s-1")
+
+    def test_an_unpinned_memory_request_names_no_dataset(self):
+        with fake_cognee() as fake:
+            backend, provider = self._sdk_provider()
+            try:
+                _prefetch(provider)
+                calls = fake.kwargs_for("recall")
+            finally:
+                backend.close(unregister=False)
+        (graph,) = _by_scope(calls, "graph")
+        self.assertNotIn("datasets", graph)
 
     def test_lanes_interleave_on_the_single_sdk_loop(self):
         with fake_cognee() as fake:
@@ -584,10 +597,11 @@ class TestExplicitRecallReadsTheGraph(unittest.TestCase):
             provider.handle_tool_call("cognee_recall", args)
             return fake.only_call("recall")
 
-    def test_the_tool_sends_the_graph_scope_with_the_dataset_and_no_session(self):
+    def test_the_tool_sends_the_graph_scope_with_no_dataset_and_no_session(self):
         kwargs = self._recall_kwargs({"query": "q"})
         self.assertEqual(kwargs["scope"], ["graph"])
-        self.assertEqual(kwargs["datasets"], ["hermes"])
+        # Auto recall (SDK-1393): unpinned, it names no dataset.
+        self.assertIsNone(kwargs["datasets"])
         # As openclaw's memory_search: the conversation is already Hermes'.
         self.assertIsNone(kwargs["session_id"])
         self.assertIsNone(kwargs["query_type"])

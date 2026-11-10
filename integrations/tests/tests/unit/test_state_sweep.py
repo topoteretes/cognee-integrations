@@ -268,10 +268,10 @@ def test_idle_session_folders_are_swept(pc, suite):
     if suite.name == "antigravity":
         pytest.skip("no per-session folders")
     sessions = pc._PLUGIN_DIR / "sessions"
-    _write(sessions / "idle-host" / "tags.json", {}, 8 * DAY)
-    _write(sessions / "busy-host" / "tags.json", {}, 8 * DAY)
+    _write(sessions / "idle-host" / "stored.log", {}, 8 * DAY)
+    _write(sessions / "busy-host" / "stored.log", {}, 8 * DAY)
     _write(sessions / "busy-host" / "credit.json", {}, 60)
     counts = pc.sweep_stale_state()
     assert not (sessions / "idle-host").exists()
-    assert (sessions / "busy-host" / "tags.json").is_file()  # one fresh file keeps it
+    assert (sessions / "busy-host" / "stored.log").is_file()  # one fresh file keeps it
     assert counts.get("sessions") == 1

@@ -51,7 +51,7 @@ from _plugin_common import (
     touch_activity,
     write_outcome_ambiguous,
 )
-from config import get_dataset, get_session_id, load_config
+from config import coding_memory_enabled, get_dataset, get_session_id, load_config
 
 # Hard cap per field to avoid ballooning the cache with massive tool outputs.
 _MAX_PARAMS_BYTES = 4000
@@ -194,8 +194,8 @@ async def _store_tool_call(payload: dict) -> None:
         allow_tool,
         is_plugin_invocation,
         low_signal_bash,
-        redact,
         safe_first_token,
+        sanitize,
     )
 
     try:
@@ -208,9 +208,9 @@ async def _store_tool_call(payload: dict) -> None:
         return
     if not allowed:
         return
-    tool_input = redact(tool_input)
-    tool_output = redact(tool_output)
-    payload = redact(payload)
+    tool_input = sanitize(tool_input)
+    tool_output = sanitize(tool_output)
+    payload = sanitize(payload)
 
     command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
     status, error_message = _infer_status(payload)
@@ -390,18 +390,17 @@ async def _store_tool_call(payload: dict) -> None:
 
 
 def _check_memory_credit(payload: dict) -> None:
-    """Check the answer's Cognee credits against the session's tags (SDK-1071).
+    """Check whether the answer credits the memory this turn injected (SDK-1071).
 
-    The recall hook tags each injected item ``m1``, ``m2``… and keeps a
-    memory's tag for the whole session. A cited tag the session handed out is
-    a valid credit (``earlier`` when it was not injected on this turn); one it
-    never handed out is invented. Both go to the log, which measures how
-    reliably agents credit memory, and the first valid credit switches off the
-    longer first-credit wording for the rest of the session. Local only:
-    nothing is sent anywhere.
+    The recall hook records the turn it injected memory on with the credit
+    instruction; an answer on that turn that ends with the credit line is a
+    credit. The result goes to the log, which measures how reliably agents
+    credit memory (a credit on a turn that injected nothing is logged too, and
+    not counted), and the first credit switches off the longer first-credit
+    wording for the rest of the session. Local only: nothing is sent anywhere.
     """
     import _plugin_common
-    from _recall_text import MemoryTags, check_credits, credit_enabled, record_credit
+    from _recall_text import check_credits, credit_enabled, injected_this_turn, record_credit
 
     if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         return
@@ -409,20 +408,20 @@ def _check_memory_credit(payload: dict) -> None:
     if not msg or msg == "null":
         return
     key = get_session_key()
-    result = check_credits(msg, MemoryTags.load(_plugin_common._PLUGIN_DIR, key))
-    if not result["cited"] and not result["available"]:
-        return  # nothing injected, nothing cited: not a turn that could credit
+    result = check_credits(msg, injected_this_turn(_plugin_common._PLUGIN_DIR, key))
+    if not result["credited"] and not result["injected"]:
+        return  # nothing injected, nothing credited: not a turn that could credit
     record_credit(_plugin_common._PLUGIN_DIR, key, result, ts=str(int(time.time())))
     hook_log("memory_credit", result)
 
 
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
-    from _capture_policy import capture_enabled, redact
+    from _capture_policy import capture_enabled, sanitize
 
     if not capture_enabled():
         return
-    payload = redact(payload)
+    payload = sanitize(payload)
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
     if not msg or msg == "null":
         return
@@ -453,9 +452,9 @@ async def _store_assistant_stop(payload: dict) -> None:
     # separate question-only and answer-only QA entries for the same turn.
     entry = {
         "type": "qa",
-        "question": redact(pending.get("prompt", "")),
+        "question": sanitize(pending.get("prompt", "")),
         "answer": msg,
-        "context": redact(pending.get("context", "")),
+        "context": sanitize(pending.get("context", "")),
     }
 
     if cloud_enabled(runtime):
@@ -575,6 +574,10 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
 
 def main():
     if is_observer_child():
+        return
+    if coding_memory_enabled():
+        # Coding memory (SDK-1336): nothing is sent while the agent works; send-unit.py
+        # sends the whole request at Stop.
         return
     payload_raw = sys.stdin.read()
     if not payload_raw.strip():

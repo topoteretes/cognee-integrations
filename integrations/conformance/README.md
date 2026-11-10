@@ -141,7 +141,8 @@ what is stored. The Python hook plugins implement it in `_capture_policy.py`
   npm `_authToken=` / `_auth=`), vendor keys (including `npm_…` and `pypi-…`
   tokens), AWS access key ids (`AKIA…`, `ASIA…`), bcrypt hashes, secret-named
   object keys and `COGNEE_CAPTURE_REDACT_PATTERNS` matches with
-  `[redacted:<kind>]`.
+  `[redacted:<kind>]`. Object keys are redacted like any string; a secret-named
+  key keeps its name and has its value masked.
 
 `capture_policy_cases.json` holds `tool_cases` (`{ note, env, tool, params,
 expected }`, where `expected` is `true`, `false` or `"error"`) and

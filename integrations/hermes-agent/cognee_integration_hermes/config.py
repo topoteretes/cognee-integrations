@@ -13,6 +13,15 @@ from typing import Any
 # under ~/.cognee-plugin. Hermes joins that convention — same names, same paths —
 # so memory written in any of them is recalled in all of them.
 DEFAULT_DATASET = "agent_sessions"
+# Graph recall modes (SDK-1393): "auto" names no dataset and the server picks
+# the best-matching one; "pinned" keeps recall on the active dataset.
+RECALL_MODE_AUTO = "auto"
+RECALL_MODE_PINNED = "pinned"
+RECALL_MODES = (RECALL_MODE_AUTO, RECALL_MODE_PINNED)
+# Where the configured recall mode came from (load_config's recall_mode_source).
+RECALL_MODE_SOURCE_ENV = "env"  # COGNEE_PLUGIN_RECALL_MODE, which wins over cognee.json
+RECALL_MODE_SOURCE_FILE = "file"  # recall_mode in cognee.json
+RECALL_MODE_SOURCE_DEFAULT = "default"
 SHARED_PLUGIN_STATE_DIR = Path.home() / ".cognee-plugin"
 SHARED_COGNEE_HOME = Path.home() / ".cognee"
 # Port for the local cognee server. 8011 matches the other cognee agent plugins
@@ -49,7 +58,7 @@ DEFAULT_USER_PASSWORD = "default_password"
 # 1.5.4 is the floor (code-graph indexing moved its repo-spec form field to
 # raw_data there); 1.6.0 is what the plugin is written against: the password-less
 # default user and the only_context prompt contract.
-LOCAL_COGNEE_REQUIREMENT = "cognee==1.6.5"
+LOCAL_COGNEE_REQUIREMENT = "cognee==1.6.6"
 # Recall trimming defaults, the shared reference values (recall_text.py).
 DEFAULT_RECALL_PASSAGE_CHARS = 2000
 DEFAULT_RECALL_CONTEXT_CHARS = 12000
@@ -201,6 +210,52 @@ def resolve_hermes_home(hermes_home: str | Path | None = None) -> Path | None:
         return None
 
 
+def configured_dataset_name(value: Any) -> str:
+    """A dataset name from the env or config, or the default when it is unset.
+
+    "auto" (any case, surrounding whitespace ignored) is reserved for the
+    recall mode (``cognee_switch_dataset action='auto'``), so a configured
+    "auto" means the default dataset, never a dataset named "auto". It says
+    nothing about the recall mode: that is ``recall_mode``. Same rule as the
+    hook-family plugins' ``configured_dataset_name``.
+    """
+    name = str(value or "").strip()
+    if not name or name.lower() == "auto":
+        return DEFAULT_DATASET
+    return name
+
+
+def configured_recall_mode(value: Any) -> str:
+    """The configured recall mode: "pinned" (any case, surrounding whitespace
+    ignored) or "auto" for anything else, unset and unknown values included."""
+    mode = str(value or "").strip().lower()
+    return RECALL_MODE_PINNED if mode == RECALL_MODE_PINNED else RECALL_MODE_AUTO
+
+
+def recall_mode_is_set(config: dict[str, Any]) -> bool:
+    """True when the user set a recall mode: ``COGNEE_PLUGIN_RECALL_MODE`` or
+    ``recall_mode`` in cognee.json (load_config's ``recall_mode_source``)."""
+    source = config.get("recall_mode_source")
+    if source is None:  # a config dict not built by load_config
+        return "recall_mode" in config
+    return source in (RECALL_MODE_SOURCE_ENV, RECALL_MODE_SOURCE_FILE)
+
+
+def effective_recall_mode(config: dict[str, Any], dataset: Any = None) -> str:
+    """The configured recall mode in effect.
+
+    A set recall mode decides. With none set, a configured dataset other than
+    the default keeps recall pinned to it, as before SDK-1393 (a user who picked
+    a dataset to keep agents or projects apart keeps that); the default dataset
+    is auto. ``dataset`` overrides ``config["dataset"]`` (the provider passes the
+    name it actually uses).
+    """
+    if recall_mode_is_set(config):
+        return configured_recall_mode(config.get("recall_mode"))
+    name = configured_dataset_name(config.get("dataset") if dataset is None else dataset)
+    return RECALL_MODE_PINNED if name != DEFAULT_DATASET else RECALL_MODE_AUTO
+
+
 def config_path(hermes_home: str | Path | None = None) -> Path | None:
     home = resolve_hermes_home(hermes_home)
     return home / "cognee.json" if home else None
@@ -250,6 +305,10 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
         # COGNEE_DATASET is this plugin's 0.1.x name, kept as an alias.
         "dataset": os.environ.get("COGNEE_PLUGIN_DATASET")
         or os.environ.get("COGNEE_DATASET", DEFAULT_DATASET),
+        # Graph recall mode: "auto" (the server picks the dataset) or "pinned"
+        # (recall stays on the active dataset). Same variable as the hook family.
+        # Set below, after cognee.json: the exported variable wins over the file.
+        "recall_mode": RECALL_MODE_AUTO,
         "top_k": str_to_int(os.environ.get("COGNEE_TOP_K"), 5),
         "auto_route": str_to_bool(os.environ.get("COGNEE_AUTO_ROUTE"), True),
         "improve_on_end": str_to_bool(os.environ.get("COGNEE_IMPROVE_ON_END"), True),
@@ -303,6 +362,7 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
     }
 
     path = config_path(hermes_home)
+    file_recall_mode = None
     if path and path.exists():
         try:
             file_config = json.loads(path.read_text(encoding="utf-8"))
@@ -310,9 +370,28 @@ def load_config(hermes_home: str | Path | None = None) -> dict[str, Any]:
                 config.update(
                     {key: value for key, value in file_config.items() if value is not None}
                 )
+                file_recall_mode = file_config.get("recall_mode")
         except Exception:
             pass
 
+    # "auto" is reserved for the recall mode, never a dataset: saves go to the
+    # default (configured_dataset_name). It does not set the mode. A blank name
+    # is left as it is (see the tests).
+    if str(config.get("dataset") or "").strip().lower() == "auto":
+        config["dataset"] = DEFAULT_DATASET
+    # The recall mode is the one setting an exported variable overrides
+    # cognee.json for: COGNEE_PLUGIN_RECALL_MODE is the hook family's setting of
+    # the same name, and the setup wizard always writes recall_mode, so the file
+    # would otherwise silence it. recall_mode_source says which one applied.
+    env_recall_mode = os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip()
+    if env_recall_mode:
+        config["recall_mode"] = env_recall_mode
+        config["recall_mode_source"] = RECALL_MODE_SOURCE_ENV
+    elif file_recall_mode is not None:
+        config["recall_mode_source"] = RECALL_MODE_SOURCE_FILE
+    else:
+        config["recall_mode_source"] = RECALL_MODE_SOURCE_DEFAULT
+    config["recall_mode"] = configured_recall_mode(config.get("recall_mode"))
     config["top_k"] = max(1, str_to_int(config.get("top_k"), 5))
     config["recall_timeout"] = max(1, str_to_int(config.get("recall_timeout"), 120))
     config["write_timeout"] = max(1, str_to_int(config.get("write_timeout"), 120))

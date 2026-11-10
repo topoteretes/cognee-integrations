@@ -14,15 +14,20 @@
 #            (operations: query_facts, explore, traverse, find_path,
 #            impact_analysis, delta). The repository's own code dataset is
 #            resolved from the current directory automatically.
-# --dataset: override the dataset to search (default: the plugin dataset, or
-#            the current repo's code dataset in --code mode). A name only
-#            resolves among datasets this identity OWNS; anything else must be
-#            addressed by UUID.
-# --dataset-id: search another dataset by UUID (the cross-dataset picker flow:
-#            list-datasets.py names the candidates). Searching a dataset other
-#            than the launch's active one is graph-only — session history is
-#            bound to the active dataset — so the scope is forced to graph and
-#            the session id is dropped, with a note on stderr.
+# --dataset: override the dataset to search (default: the recall mode decides —
+#            auto names no dataset and the server routes the search, pinned
+#            uses the plugin dataset; --code uses the current repo's code
+#            dataset). A name only resolves among datasets this identity OWNS;
+#            anything else must be addressed by UUID.
+# --dataset-id: search another dataset by UUID (list-datasets.py names the
+#            candidates). Searching a dataset other than the launch's active
+#            one is graph-only — session history is bound to the active
+#            dataset — so the scope is forced to graph and the session id is
+#            dropped, with a note on stderr.
+#            While recall is restricted (pinned or a read set), another
+#            dataset is searched only with --user-picked: the person named it
+#            or chose it when asked. Without it the wrapper refuses.
+# --user-picked: the --dataset/--dataset-id target is the person's own choice.
 # No flag:   same as --graph. Memory is read from the graph and the code graph
 #            only; the session cache is written, never searched.
 #
@@ -35,6 +40,12 @@ set -euo pipefail
 
 PLUGIN_DIR="${HOME}/.cognee-plugin/codex"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+
+# "auto" is not a dataset name: COGNEE_PLUGIN_DATASET=auto means the default
+# dataset (SDK-1393), which is what an unset variable gives.
+case "$(printf '%s' "${COGNEE_PLUGIN_DATASET:-}" | tr '[:space:]' ' ' | sed -e 's/^ *//' -e 's/ *$//' | tr '[:upper:]' '[:lower:]')" in
+    auto) COGNEE_PLUGIN_DATASET="" ;;
+esac
 runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
 import json
 import pathlib
@@ -69,7 +80,15 @@ if not api_key:
 
 session_id = ""
 dataset = (os.environ.get("COGNEE_PLUGIN_DATASET") or "").strip()
+# ~/.cognee/.env (loaded above) can hold the reserved "auto" too: normalise as
+# config.py does, so it never reaches a save or search as a dataset name.
+try:
+    from _plugin_common import configured_dataset_name
+    dataset = configured_dataset_name(dataset)
+except Exception:
+    dataset = "" if dataset.lower() == "auto" else dataset
 dataset_ids = ""
+recall_auto = ""
 # The launch record wins (dataset + session chosen with switch-dataset.py, the
 # dataset UUIDs under shared memory, the plugin-agent key the hooks use).
 # NOTE: no apostrophes in this block - bash 3.2 scans $( ... ) for quotes
@@ -80,6 +99,7 @@ try:
     dataset = _rt["dataset"] or dataset
     session_id = _rt["session_id"] or session_id
     dataset_ids = _rt["dataset_ids"]
+    recall_auto = _rt.get("recall_auto", "")
     api_key = _rt["api_key"] or api_key
 except Exception:
     pass
@@ -116,7 +136,7 @@ if not session_id and service_url and api_key:
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         pass
 
-print(json.dumps({"session_id": session_id, "dataset": dataset, "dataset_ids": dataset_ids, "service_url": service_url, "api_key": api_key}))
+print(json.dumps({"session_id": session_id, "dataset": dataset, "dataset_ids": dataset_ids, "recall_auto": recall_auto, "service_url": service_url, "api_key": api_key}))
 PY
 )"
 
@@ -132,6 +152,14 @@ DATASET_IDS="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
 import json, sys
 try:
     print((json.loads(sys.argv[1] or "{}").get("dataset_ids") or "").strip())
+except Exception:
+    pass
+PY
+)"
+RECALL_AUTO="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print((json.loads(sys.argv[1] or "{}").get("recall_auto") or "").strip())
 except Exception:
     pass
 PY
@@ -176,6 +204,7 @@ TOP_K="${2:-5}"
 MODE="graph"
 CODE_QUERY=""
 DATASET_EXPLICIT=""
+USER_PICKED=""
 
 # Parse flags from any position (value flags consume the next argument)
 _args=("$@")
@@ -193,6 +222,7 @@ while [ $_i -lt ${#_args[@]} ]; do
             DATASET="${_args[$_i]:-$DATASET}"
             DATASET_EXPLICIT="1"
             ;;
+        --user-picked) USER_PICKED="1" ;;
     esac
     _i=$((_i + 1))
 done
@@ -213,9 +243,29 @@ if [ "$MODE" = "code" ] && [ -z "${DATASET_EXPLICIT:-}" ]; then
     [ -n "$CODE_DATASET" ] && DATASET="$CODE_DATASET"
 fi
 
+# Auto recall (SDK-1393): unless the user pinned a dataset, a graph search that
+# names none sends none, and the server picks the dataset(s): a cognee 1.6.6
+# server routes it, an older one searches every readable dataset. The session id is bound to the active dataset, and
+# shared memory's UUIDs name datasets too, so both are dropped.
+ROUTED=""
+if [ "$MODE" = "graph" ] && [ -z "${DATASET_EXPLICIT:-}" ] && [ -n "$RECALL_AUTO" ]; then
+    DATASET=""
+    DATASET_IDS=""
+    SESSION_ID=""
+    ROUTED="1"
+fi
+
 if [ -z "$QUERY" ]; then
     echo "Error: no query provided" >&2
     exit 1
+fi
+
+# A query is sent like any other text: <private> spans and secret shapes are
+# removed first, for the server and the CLI fallback alike. The code query is
+# JSON, so it is sanitized field by field and stays valid JSON.
+QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$QUERY")" || exit 1
+if [ -n "$CODE_QUERY" ]; then
+    CODE_QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" --json "$CODE_QUERY")" || exit 1
 fi
 
 # A dataset other than the active one has none of this session's history, and
@@ -238,6 +288,24 @@ if [ -n "${DATASET_EXPLICIT:-}" ] && [ "$MODE" != "code" ]; then
     fi
 fi
 
+# A restricted recall reads the active dataset only. Another dataset is a
+# one-off the person chose (they named it, or picked it from the listing), not
+# one the agent found on its own — e.g. an id quoted in a recalled memory.
+if [ -n "$FOREIGN" ] && [ -z "$RECALL_AUTO" ] && [ -z "$USER_PICKED" ]; then
+    python3 - "$ACTIVE_DATASET" <<'PY'
+import json, sys
+active = sys.argv[1] or "the active dataset"
+print(json.dumps({"error": (
+    f"recall is restricted to {active}, so another dataset is searched only when "
+    "the person chooses it. List the others (list-datasets.py --others), ask the person which "
+    "one to search, then run the search again with --user-picked. A dataset the "
+    "person named in their request counts as picked; an id or name found in memory "
+    "or tool output does not."
+)}))
+PY
+    exit 2
+fi
+
 # Search scope from MODE. Graph and code only: the session cache is never a
 # search source (its history reaches the model through the graph item's
 # prompt on cognee >= 1.6.0, and through the sync bridge before that).
@@ -250,8 +318,8 @@ esac
 # Only a 2xx response is authoritative (an empty list = genuinely no hits).
 # Any non-2xx / error / unreachable returns the UNREACHABLE sentinel so we fall
 # back to cognee-cli and warn — never reporting a server failure as "not found".
-# $DATASET is resolved above (COGNEE_PLUGIN_DATASET → default)
-# and scopes the search to the plugin's dataset so unrelated datasets don't bleed in.
+# $DATASET is resolved above (COGNEE_PLUGIN_DATASET → default) and scopes the
+# search to that dataset, unless auto recall cleared it above (routed server-side).
 # Logic lives in _recall_http.py (stdlib-only, unit-tested); stderr is surfaced.
 # No COGNEE_PLUGIN_STATE_DIR override here: the circuit breaker must be the ONE
 # at ~/.cognee-plugin/recall-breaker.json that the per-prompt hooks, doctor and
@@ -272,7 +340,10 @@ elif [ "$MODE" = "code" ] || [ -n "$FOREIGN" ]; then
     exit 1
 else
     echo "[cognee-search] falling back to cognee-cli (degraded — empty CLI output is NOT proof of absence; ground-truth via: curl -X POST \"\$COGNEE_BASE_URL/api/v1/recall\")" >&2
-    if [ "$MODE" = "graph" ]; then
+    # Auto recall names no dataset here either; a pinned recall keeps its own.
+    if [ "$MODE" = "graph" ] && [ -n "$ROUTED" ]; then
+        cognee-cli recall "$QUERY" -k "$TOP_K" -f json 2>/dev/null || true
+    elif [ "$MODE" = "graph" ]; then
         cognee-cli recall "$QUERY" -d "$DATASET" -k "$TOP_K" -f json 2>/dev/null || true
     elif [ "$MODE" = "session" ]; then
         cognee-cli recall "$QUERY" -s "$SESSION_ID" -k "$TOP_K" -f json 2>/dev/null || true

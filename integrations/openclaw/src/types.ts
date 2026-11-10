@@ -44,6 +44,15 @@ export type CogneePluginConfig = {
 
   // --- Legacy flat dataset (still supported as fallback) ---
   datasetName?: string;
+  /**
+   * Graph recall mode when a conversation has not chosen one (SDK-1393):
+   * "auto" names no dataset so a cognee >= 1.6.6 server routes each query;
+   * "pinned" restricts recall to the dataset the conversation saves to.
+   * Unset (or unknown): "pinned" for a non-default datasetName, else "auto".
+   * Also settable via COGNEE_PLUGIN_RECALL_MODE.
+   * Multi-scope mode always recalls from its configured scopes.
+   */
+  recallMode?: "auto" | "pinned";
 
   // --- Multi-scope memory ---
   companyDataset?: string;
@@ -172,7 +181,7 @@ export type CogneePluginConfig = {
   memoryForgetTool?: boolean;
   /**
    * Also register `memory_switch_dataset`: move ONE conversation to another
-   * dataset (list / current / switch / reset). The switch syncs the current
+   * dataset (list / current / switch / pin / auto / reset). The switch syncs the current
    * session, then repoints capture, session-end improve and the agent/single
    * recall scope for that conversation, with a fresh Cognee session id.
    * Overrides persist in ~/.openclaw/memory/cognee/dataset-overrides.json.
@@ -213,6 +222,13 @@ export type CogneePluginConfig = {
    * excluded from auto-recall and QA capture. Set [] to disable this layer.
    */
   noisePatterns?: string[];
+
+  /**
+   * Workspace-relative globs (*, **, ?) for memory files the sync skips, e.g.
+   * "memory/drafts/**". Default: ["memory/dreaming/**", "memory/.dreams/**"]
+   * (OpenClaw dreaming reports). Replaces the defaults when set; [] disables it.
+   */
+  memoryFileExclude?: string[];
 
   // --- Automation ---
   autoRecall?: boolean;
@@ -343,10 +359,29 @@ export type DatasetOverride = {
    * whose sync failed at switch time (`force`), so no captured turn is lost.
    */
   retired: RetiredSession[];
+  /**
+   * The conversation's recall mode (SDK-1393). "pinned" (the default for a
+   * switch, and for an override saved before the mode existed): graph recall
+   * reads only `dataset`. "auto": it names no dataset and the server routes it.
+   */
+  recall?: "auto" | "pinned";
 };
 
-/** Keyed by `key:<sessionKey>` and `sid:<sessionId>` (both written per switch). */
-export type DatasetOverridesFile = Record<string, DatasetOverride>;
+/**
+ * A conversation's recall-mode choice without a dataset switch
+ * (memory_switch_dataset action=pin / action=auto). It carries no dataset, so
+ * saves keep following the configured dataset.
+ */
+export type RecallChoice = {
+  recall: "auto" | "pinned";
+  chosenAt: string;
+};
+
+/**
+ * Keyed by `key:<sessionKey>` and `sid:<sessionId>`; every write goes to all of
+ * a conversation's keys, so its aliases always agree.
+ */
+export type DatasetOverridesFile = Record<string, DatasetOverride | RecallChoice>;
 
 /** One repository indexed into a code-graph dataset via `openclaw cognee index-repo`. */
 export type CodeGraphRecord = {

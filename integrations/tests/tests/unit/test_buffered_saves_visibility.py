@@ -321,22 +321,15 @@ def _joiner(suite) -> str:
     return "; " if suite.name == "claude-code" else " · "
 
 
-def _message(suite, output: dict) -> str:
-    """The hook's terminal message, wherever this host carries it."""
-    if suite.name == "claude-code":
-        return output["hookSpecificOutput"]["systemMessage"]
-    return output["systemMessage"]
-
-
-def _header(suite, output: dict) -> str:
+def _header(suite, run) -> str:
     """The ``Cognee memory: …`` line of the terminal message."""
-    message = _message(suite, output)
+    message = run.message()
     return next(line for line in message.splitlines() if line.startswith("Cognee memory:"))
 
 
 def test_header_shows_buffered_writes_and_the_backlog(suite, lookup, monkeypatch):
     run = drive_recall(lookup, monkeypatch, recall=HIT, saves_last_turn=_OUTAGE_SAVES)
-    header = _header(suite, run.output)
+    header = _header(suite, run)
     j = _joiner(suite)
     assert (
         f"{j}saved last turn 1 prompt / 0 trace / 0 answer"
@@ -352,7 +345,7 @@ def test_header_reads_as_before_when_nothing_was_buffered(suite, lookup, monkeyp
         lookup, "warmup_backlog", lambda: {"pending": 0, "oldest_age_seconds": None}
     )
     run = drive_recall(lookup, monkeypatch, recall=HIT)
-    header = _header(suite, run.output)
+    header = _header(suite, run)
     assert "saved last turn 0 prompt / 0 trace / 0 answer" in header
     assert "buffered" not in header and "awaiting replay" not in header
 
@@ -372,14 +365,14 @@ def test_skipped_recall_still_reports_the_outage(suite, lookup, monkeypatch):
     assert run.calls == [], "no scope was requested against a known-bad server"
 
     j = _joiner(suite)
-    assert _header(suite, run.output) == (
+    assert _header(suite, run) == (
         f"Cognee memory: recall skipped (server unreachable)"
         f"{j}saved last turn 1 prompt / 0 trace / 0 answer"
         f"{j}buffered last turn 6 trace / 1 answer (not saved yet)"
         f"{j}7 awaiting replay, oldest 20d"
     )
     # The model sees exactly what the terminal shows.
-    assert run.output["hookSpecificOutput"]["additionalContext"] == _message(suite, run.output)
+    assert run.output["hookSpecificOutput"]["additionalContext"] == run.message()
     assert run.output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     # Codex-derived hosts keep their plain status line on top.
     if suite.name != "claude-code":
@@ -395,4 +388,4 @@ def test_inconclusive_probe_names_the_recorded_failure(suite, lookup, monkeypatc
         recall=HIT,
         prior_state={"state": "server_error", "base_url": URL},
     )
-    assert _header(suite, run.output).startswith("Cognee memory: recall skipped (server error)")
+    assert _header(suite, run).startswith("Cognee memory: recall skipped (server error)")

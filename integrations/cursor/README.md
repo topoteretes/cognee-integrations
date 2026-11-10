@@ -117,7 +117,7 @@ EOF
 chmod 600 ~/.cognee/.env
 ```
 
-`COGNEE_BACKEND=local|cloud` pins the mode for every Cognee plugin; `COGNEE_CURSOR_BACKEND` does the same for this plugin only. The IDE's hooks inherit the Cursor app's environment, not a terminal's, so put these in `~/.cognee/.env` (re-read by every hook) rather than exporting them in a shell, unless you start Cursor from that shell. All other knobs are the Codex plugin's and are documented in the [Codex README](../codex/README.md): `COGNEE_PLUGIN_DATASET` under *Dataset*, `COGNEE_CAPTURE` and the `COGNEE_CAPTURE_*` allow/deny/redaction lists under capture, and the improve cooldowns under *Session sync and watchers*.
+`COGNEE_BACKEND=local|cloud` pins the mode for every Cognee plugin; `COGNEE_CURSOR_BACKEND` does the same for this plugin only. The IDE's hooks inherit the Cursor app's environment, not a terminal's, so put these in `~/.cognee/.env` (re-read by every hook) rather than exporting them in a shell, unless you start Cursor from that shell. All other knobs are the Codex plugin's and are documented in the [Codex README](../codex/README.md): `COGNEE_PLUGIN_DATASET` under *Dataset* and `COGNEE_PLUGIN_RECALL_MODE` (`auto` or `pinned`) under *Auto recall*, `COGNEE_CAPTURE` and the `COGNEE_CAPTURE_*` allow/deny/redaction lists under capture, and the improve cooldowns under *Session sync and watchers*.
 
 ## Verify
 
@@ -139,11 +139,11 @@ When an answer uses recalled memory, the agent says so in one line at the end, a
 > [​](https://www.cognee.ai) You chose the server over the CLI, based on the agent_sessions dataset.
 ```
 
-The recall tags every item it injects with `m1`, `m2`… and where it came from, and adds an instruction asking for the line; the tags tell the agent which items it was given, but stay out of the answer. When the answer is stored, `memory.credit` logs whether it has the credit line and how many items the turn injected. With no tags in the line, a credit cannot be traced to one memory, and an invented one cannot be caught.
+The recall marks every graph item it injects with the dataset the server says it came from, `[dataset <name>]` (an item with no dataset, or from another source, with where it came from, such as `[agent trace, …]`), and adds an instruction asking for the line, which says how many marked items reached the context. It records the turn it injected memory on; when the answer is stored, `memory.credit` logs `injected` (this turn injected memory) and `credited` (the answer has the credit line), and only a credit on an injected turn is counted. A credit cannot be traced to one memory.
 
-A save ends the same way, with a receipt instead of a credit: `cognee-remember.sh` prints the instruction above a successful result, so the answer ends with `> [​](https://www.cognee.ai) Saved to the agent_sessions dataset: Yuna likes Yukki.` The answer check does not count the receipt as a memory credit.
+A save ends the same way, with a receipt instead of a credit: `cognee-remember.sh` prints the instruction above a successful result, so the answer ends with `> [​](https://www.cognee.ai) Saved to the <dataset> dataset: <what was saved>.` The answer check does not count the receipt as a memory credit.
 
-The memory block usually rides on the agent's own `cognee-search.sh` call. Cursor saves a large tool result to a file and shows the agent only a pointer to it, so the agent answers from the file, away from the instruction. A graph search with hits therefore prints the same instruction as its first line, above the results, which are never cut. Credit lines and the credit instruction are removed from prompts and answers before they are stored, so an earlier answer that left the line off does not come back in a later recall as an example to follow. The tags arrive with the memory block, on the turn's first tool call other than `Read` (see [Known limitations](#known-limitations)), so a turn that calls no such tool writes no credit line. Set `COGNEE_PLUGIN_CITE_MEMORY=false` in `~/.cognee/.env` to turn the tags and the line off.
+The memory block usually rides on the agent's own `cognee-search.sh` call. Cursor saves a large tool result to a file and shows the agent only a pointer to it, so the agent answers from the file, away from the instruction. A graph search with hits therefore prints the same instruction as its first line, above the results, which are never cut. Credit lines and the credit instruction are removed from prompts and answers before they are stored, so an earlier answer that left the line off does not come back in a later recall as an example to follow. The marks and the instruction arrive with the memory block, on the turn's first tool call other than `Read` (see [Known limitations](#known-limitations)), so a turn that calls no such tool writes no credit line. Set `COGNEE_PLUGIN_CITE_MEMORY=false` in `~/.cognee/.env` to turn the marks and the line off.
 
 ## Status line (Cursor CLI)
 
@@ -153,13 +153,13 @@ In the Cursor CLI (`cursor-agent` / `agent`) the plugin can draw the same status
 ● cognee: agent_sessions · local · 5 memory hits · 12/40 turns had hits this session
 ```
 
-The glyph is the connection/LLM-key health (green `●`, red `✕ …` with the reason), then the dataset and mode, cloud credits when applicable, this turn's recall hits with the session's activation ratio, and an amber `⬆ Cognee update available` when one is.
+The glyph is the connection/LLM-key health (green `●`, red `✕ …` with the reason), then the dataset (`auto (agent_sessions)` while recall is auto: the server picks the readable datasets each recall searches, and saves go to `agent_sessions`; the bare name once recall is pinned) and mode, cloud credits when applicable, this turn's recall hits with the session's activation ratio, and an amber `⬆ Cognee update available` when one is.
 
 With the opt-in set, `sessionStart` registers it: `scripts/_statusline_config.py` writes `statusLine` into `~/.cursor/cli-config.json` pointing at `scripts/cognee-statusline.sh` of the running plugin copy (the CLI spawns the command directly, without a shell). Without it (or with `COGNEE_STATUSLINE=false`) the plugin's own entry is removed again. A `statusLine` you configured yourself is never replaced or removed; the plugin's own entry is updated in place when the plugin moves and removed by the renderer when the plugin folder is gone. Edits take a lock, yield to a concurrent write by the CLI, keep a symlinked `cli-config.json` a symlink and keep its permissions. Knobs: `COGNEE_STATUSLINE_TIMEOUT_MS` / `COGNEE_STATUSLINE_PADDING` map to the CLI's `timeoutMs` / `padding`, `COGNEE_STATUSLINE_COUNTS=full|false` switches the recall segment to the per-scope strip or hides it. The renderer is pure-local (state files under `~/.cognee-plugin/cursor/`, no network). Register it by hand with `python3 scripts/_statusline_config.py` (`--remove` to undo); restart the CLI session to pick up a new `cli-config.json`.
 
 ## Status bar (Cursor IDE)
 
-The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that switches the chat's dataset. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
+The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that opens a dataset picker: `auto (best-matching dataset)` sets recall back to auto, the active dataset (its row shows the recall mode and the script's sentence about it) restricts recall to it without a new session (`switch-dataset.py pin`), and another dataset switches the chat to it. A dataset named `auto` is never offered as a target. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
 
 Without it, the same text (without ANSI) is the first line of the context the plugin injects at session start and on each turn's first tool call, so the agent can relay it.
 
@@ -170,6 +170,7 @@ Everything goes to the Cognee server at `COGNEE_BASE_URL`: your own local server
 - **Sent per turn:** your prompt, the agent's final answer, and each tool call with its input and output (truncated), as session memory in the active dataset (`agent_sessions` by default). When the conversation ends, that session memory is turned into graph memory on the server.
 - **Sent per prompt:** the prompt as a recall query, to fetch the memory the agent gets.
 - **Redacted first:** API keys, tokens, private keys, connection strings, `Authorization` headers and similar secrets are replaced with `[redacted:<kind>]` before anything is sent. Credit lines and the plugin's own instructions are removed as well.
+- **Private spans:** text inside `<private>…</private>` is replaced with `[private]` before it is logged, stored, sent as a query or uploaded, for automatic capture and explicit remember alike; neither `COGNEE_CAPTURE` nor `COGNEE_CAPTURE_REDACT` turns that off, and a `--file` upload is sent unchanged (see [private spans](../claude-code/README.md#private-spans)). The agent still sees the span in the live turn.
 - **Not sent:** reads of sensitive paths such as `.env` files and key files, and the plugin's own Cognee commands.
 - **Kept locally:** logs and per-session state under `~/.cognee-plugin/cursor/`. The API key stays in `~/.cognee/.env` or your shell, never in the plugin.
 
@@ -179,7 +180,7 @@ Everything goes to the Cognee server at `COGNEE_BASE_URL`: your own local server
 | `COGNEE_CAPTURE_TOOLS` / `COGNEE_CAPTURE_DENY_TOOLS` | which tool calls are stored, e.g. `COGNEE_CAPTURE_DENY_TOOLS=Bash(curl:*)` |
 | `COGNEE_CAPTURE_DENY_PATHS` | more paths whose reads are never stored |
 | `COGNEE_CAPTURE_REDACT_PATTERNS` | your own regexes to redact, one per line |
-| `COGNEE_CAPTURE_REDACT=false` | turn redaction off (not recommended) |
+| `COGNEE_CAPTURE_REDACT=false` | turn the secret patterns off (not recommended); `<private>` spans are removed regardless |
 
 Forget something with the `cognee-forget` skill ("forget what we said about X"), which deletes the matching documents and the graph built from them.
 

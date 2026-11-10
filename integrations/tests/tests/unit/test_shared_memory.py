@@ -338,6 +338,110 @@ def test_refresh_picks_up_a_sibling_dataset_without_restart(pc, bootstrap, mock_
     assert {"read", "write"} <= ident.acl[sibling_copy["id"]][role["id"]]
 
 
+def test_dataset_picked_by_id_resolves_that_dataset_not_one_named_after_it(
+    pc, bootstrap, mock_server
+):
+    """The switch addresses a parent-owned dataset by its id. Resolved as a
+    name, that id found (or created) a dataset NAMED after it — the switch
+    pinned the session to an empty impostor while reporting the right id."""
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    ident = mock_server.identity
+    alice = ident.seed_dataset("alice_in_wonderland")
+    impostor = ident.seed_dataset(alice["id"])  # a dataset whose NAME is alice's id
+    before = set(ident.dataset_rows)
+
+    shared = pc.resolve_shared_dataset(alice["id"])
+    assert shared["mode"] == "shared"
+    assert shared["dataset_id"] == alice["id"]
+    assert impostor["id"] not in shared["dataset_ids"]
+    assert set(ident.dataset_rows) == before  # nothing created
+
+
+def test_ungranted_dataset_picked_by_id_keeps_no_canonical_id(pc, bootstrap, mock_server):
+    """Someone else's dataset the role cannot hold, picked by id, gets no
+    canonical id (the caller addresses it by that id) and no parent copy."""
+    ident = mock_server.identity
+    _, tenant = ident.tenants_create(PRINCIPAL_KEY, "org")
+    stranger_key = ident.seed_owner_key("stranger@example.com")
+    stranger = ident.users["stranger@example.com"]["id"]
+    ident.tenant_add_user(PRINCIPAL_KEY, stranger, tenant["tenant_id"])
+    ident.tenant_select(stranger_key, tenant["tenant_id"])
+    foreign = ident.seed_dataset("their_notes", stranger)
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    before = set(ident.dataset_rows)
+
+    shared = pc.resolve_shared_dataset(foreign["id"])
+    assert shared["dataset_id"] == ""
+    assert set(ident.dataset_rows) == before
+
+
+def _parent_and_sibling_copies(pc, bootstrap, mock_server) -> tuple[str, str]:
+    """Two same-named datasets the shared role holds: the parent's canonical
+    ``agent_sessions`` and a sibling agent's copy (granted by the refresh).
+    Picking by name is ambiguous there, so the person picks by id."""
+    module, run = bootstrap
+    _uid, _k, _n, ok = run({})
+    assert ok
+    ident = mock_server.identity
+    parent_copy, _ = pc.resolve_active_dataset_ids("host-shared-1")
+    _, body = ident.plugins_provision("codex", PRINCIPAL_KEY)
+    sibling_copy = ident.seed_dataset("agent_sessions", body["agentId"])
+    assert pc.refresh_shared_memory("host-shared-1") is True
+    return parent_copy, sibling_copy["id"]
+
+
+def test_same_named_dataset_picked_by_id_is_the_write_target(pc, bootstrap, mock_server):
+    """Picked by id among same-named datasets, the picked one takes the saves.
+    Turned back into its name and re-picked, the parent's own copy won and the
+    saves landed in a dataset the person did not choose."""
+    parent_copy, sibling_copy = _parent_and_sibling_copies(pc, bootstrap, mock_server)
+
+    shared = pc.resolve_shared_dataset(sibling_copy)
+    assert shared["mode"] == "shared"
+    assert shared["dataset_id"] == sibling_copy
+    assert parent_copy in shared["dataset_ids"]  # the name's other copy stays readable
+    # The name itself still resolves to the parent's copy.
+    marker = pc.load_shared_memory_marker(mock_server.url)
+    assert marker["canonical"]["agent_sessions"] == parent_copy
+    assert pc.resolve_shared_dataset("agent_sessions")["dataset_id"] == parent_copy
+
+
+def test_refresh_keeps_a_dataset_picked_by_id(pc, bootstrap, mock_server):
+    """The idle watcher's refresh re-resolves by name; a dataset the person
+    picked by id stays the write target instead of the name's canonical copy."""
+    parent_copy, sibling_copy = _parent_and_sibling_copies(pc, bootstrap, mock_server)
+    host = "host-shared-1"
+    pc.switch_launch_record(
+        host,
+        session_id="s2",
+        dataset="agent_sessions",
+        conn_uuid="c2",
+        dataset_id=sibling_copy,
+        dataset_ids=[sibling_copy, parent_copy],
+        picked_id=sibling_copy,
+    )
+    pc.refresh_shared_memory(host)
+    write_id, read_ids = pc.resolve_active_dataset_ids(host)
+    assert write_id == sibling_copy
+    assert parent_copy in read_ids
+
+    # Switched to by name, the refresh moves the saves back to the canonical copy.
+    pc.switch_launch_record(
+        host,
+        session_id="s3",
+        dataset="agent_sessions",
+        conn_uuid="c3",
+        dataset_id=sibling_copy,
+        dataset_ids=[sibling_copy, parent_copy],
+    )
+    assert pc.refresh_shared_memory(host) is True
+    assert pc.resolve_active_dataset_ids(host)[0] == parent_copy
+
+
 def test_switch_record_carries_the_new_dataset_ids(pc):
     pc.ensure_launch_record("host-x", "/w", dataset="a")
     pc.set_launch_dataset_ids("host-x", "ds-a", ["ds-a", "ds-a2"])
@@ -806,3 +910,91 @@ def test_launch_ids_write_yields_to_an_in_progress_switch(pc, monkeypatch):
     assert pc.resolve_active_dataset_ids("host-ids-lock") == ("", [])
     assert pc.set_launch_dataset_ids("host-ids-lock", "ds-a", ["ds-a"]) is True
     assert pc.resolve_active_dataset_ids("host-ids-lock") == ("ds-a", ["ds-a"])
+
+
+# -- Coding memory: the coding agent itself gets delete on its write target (SDK-1336) ----
+
+
+def _coding_only(suite):
+    if suite.name not in ("claude-code", "codex"):
+        pytest.skip("coding memory ships for Claude Code and Codex only")
+
+
+def _recording_control(pc, monkeypatch, deny=()):
+    calls = []
+
+    def control(path, body, *, api_key=None, **kwargs):
+        principal, permission = path.split("/datasets/", 1)[1].split("?permission_name=")
+        calls.append((principal, permission, tuple(body)))
+        return (403, {}) if permission in deny else (200, {})
+
+    monkeypatch.setattr(pc, "_control_plane_request", control)
+    return calls
+
+
+def test_the_shared_role_never_gets_delete(pc, suite, monkeypatch):
+    """Read+write only for the role every sibling agent is in, coding mode or not."""
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    calls = _recording_control(pc, monkeypatch)
+    holds = pc._grant_role_on_datasets(PRINCIPAL_KEY, "role-1", ["ds-1", "ds-2"], {})
+    assert holds == {"ds-1", "ds-2"}
+    assert {permission for _, permission, _ in calls} == {"read", "write"}
+
+
+@pytest.mark.parametrize("coding", [False, True])
+def test_the_coding_agent_gets_delete_on_its_write_target_only(pc, suite, monkeypatch, coding):
+    _coding_only(suite)
+    if coding:
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    else:
+        monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+    calls = _recording_control(pc, monkeypatch)
+    marker = {}
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert calls == ([("agent-1", "delete", ("ds-write",))] if coding else [])
+
+    # Memoised: a later session start asks nothing again.
+    calls.clear()
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert calls == []
+
+
+def test_an_existing_install_gets_delete_on_upgrade(pc, suite, monkeypatch):
+    """A marker from before this change (read+write granted, no delete memo)."""
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    calls = _recording_control(pc, monkeypatch)
+    marker = {"granted": {"ds-write": "ok"}}
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert calls == [("agent-1", "delete", ("ds-write",))]
+    assert marker["delete_granted"] == {"ds-write": "ok"}
+
+
+def test_a_delete_denial_is_memoised_and_keeps_read_write(pc, suite, monkeypatch):
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    _recording_control(pc, monkeypatch, deny=("delete",))
+    marker = {"granted": {"ds-write": "ok"}}
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert marker["granted"] == {"ds-write": "ok"}
+    assert isinstance(marker["delete_granted"]["ds-write"], dict)  # denied, retried hourly
+
+
+def test_shared_memory_grants_delete_to_the_agent_on_the_write_target(
+    pc, bootstrap, mock_server, monkeypatch, suite
+):
+    """End to end against the fake server: after wiring with coding mode on, the
+    agent holds delete on the launch's dataset, the shared role holds none."""
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    ident = mock_server.identity
+    _module, run = bootstrap
+    _uid, _agent_key, _n, ok = run({})
+    assert ok
+    write_id, _read_ids = pc.resolve_active_dataset_ids("host-shared-1")
+    marker = pc.load_shared_memory_marker(mock_server.url)
+    assert write_id
+    assert "delete" in ident.acl[write_id].get(marker["agent_id"], set())
+    for dataset_id, principals in ident.acl.items():
+        assert "delete" not in principals.get(marker["role_id"], set()), dataset_id

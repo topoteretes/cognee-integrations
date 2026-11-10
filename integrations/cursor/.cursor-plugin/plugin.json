@@ -1,6 +1,6 @@
 {
   "name": "cognee-memory",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Cognee memory for Cursor: automatic capture of prompts, tool traces and answers, and relevant recall on every prompt, over the Cognee server's HTTP API. Local mode and Cognee Cloud.",
   "author": {
     "name": "Cognee",
@@ -14,8 +14,9 @@
     "memory",
     "knowledge-graph",
     "cognee",
-    "cursor",
-    "agents"
+    "reasoning",
+    "session",
+    "persistent-memory"
   ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json"

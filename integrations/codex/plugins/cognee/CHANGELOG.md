@@ -10,7 +10,69 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.8.0]
+
+### Added
+- **Coding memory mode (SDK-1336), opt-in with `COGNEE_CODING_MEMORY=true`.** Built for the
+  server's coding distillation (`DISTILLATION_MODE=coding`, cognee PR #6568). With the setting
+  unset nothing changes. With it on, the plugin does nothing while the agent works (per-call traces, the `Stop` QA entry, the every-150-entries `improve`, the per-prompt recall, the pre-compact anchor and its `improve`, and code-graph indexing are
+  off) and instead:
+  - **sends each request once, at its end.** A new `Stop` hook (`send-unit.py`) reads the
+    transcript and queues every tool call not sent yet, failed calls, reads and `ls` included,
+    then one QA entry with the request, the final message and
+    `{"cwd", "transcript_path", "date", "start_commit", "end_commit", "branch"}`. Every entry
+    carries the time of its event (`time`, and `prompt_time` on the QA entry), which the server
+    uses to pair calls to requests. Sent calls are remembered by id, so a second `Stop` in the
+    same request sends only what is new, as a continuation. Codex commands are sent as `Bash` calls (failed when the exit code is not 0) and file changes as `Edit`, so the server's tool tables apply; Codex subagent threads are not read yet. The `Stop` hook only hands the payload to a detached process, since Codex runs hooks synchronously. Entries go through the
+    existing queue (the replay buffer), so a server
+    outage loses nothing. `SessionEnd` queues anything the last `Stop` missed before the final
+    sync's `improve`.
+  - **sends what the coding distillation can use:** a failed command's error starts with the
+    line that names it plus `(exit code N)`, then output cut at a line boundary, so unrelated
+    failures are not merged into one pitfall. That line is a Python traceback's last exception
+    (never its `Traceback (most recent call last):` header), else the first anchored error line
+    (a pytest `E` line, `error:`/`fatal:`, an exception name, a located compiler or linter
+    diagnostic such as ruff's `a.py:3:1: F401`, npm's `npm error …`, a `program: message`
+    error), else the first line with an error word that is not a run summary (`Found 1 error.`),
+    so a tool's generic closing line (npm's log path) never keys the pitfall. A warning is never
+    the error line outside a traceback. Codex file edits go as one
+    `Write`/`Edit` per file with `file_path`, so the capture deny list drops edits to and renames
+    into secret files (`.env`, `*.pem`, ...). A request interrupted with Esc (on Codex, any
+    aborted turn) is sent once, closed at the interrupt, as
+    `[Interrupted by the user before finishing.]` plus any partial text and `interrupted: true`. A forked session (`--fork-session`, `/branch`, a Codex legacy-history
+    fork) sends only its own records, not its parent's copied history. The QA `cwd` is the
+    repository root (the session's directory goes as `session_cwd`), and git tags are computed
+    from the root, so sessions started in a subdirectory keep them.
+  - **runs `improve` at session end and once a day** (`COGNEE_IMPROVE_COOLDOWN`) in long sessions.
+  - **the memory block reaches the model:** the prompt hook returned it to its `__main__`
+    instead of printing it as well; with two JSON objects on stdout Codex kept the last,
+    empty one, and the lessons were never injected.
+  - **gives one short memory block at the first request of a session**, and again after a
+    compaction: the newest `test-baseline`, the two newest pitfalls and the lessons recalled for
+    the request (1,500 characters of whole lessons not counting their git tags, at most 1,800 with them), each tagged with its session date and commit
+    and the files it names that changed or were deleted since, plus the last three commits. Lessons
+    are read from the dataset listing's metadata (`lesson_type`, `state_key`, `git_commit`,
+    `files`, `project_node_sets`) and their bodies cached under `coding/lessons/`, filled in the
+    background at session start. Only this repository's lessons are used. `SessionStart` now also matches `compact`; with the setting unset it returns at once, as before.
+  - **tags its writes per repository:** `COGNEE_PROJECT_NODE_SET=auto` (the repository root),
+    when not set. It is a plugin setting, applied in every hook, on any server.
+  - **sets up the server it starts:** `DISTILLATION_MODE=coding` and `AUTO_FEEDBACK=false`, each
+    only when not set, and records the mode in the server pidfile (`coding_memory`). A local
+    server that is already running keeps the mode it started with; when it differs from the
+    session's, session start says so with the server's pid and how to restart it (it never
+    restarts a shared server).
+  - **grants its own agent `delete` on the dataset it writes to** (shared memory), so the coding
+    distillation can replace older lessons; without it, no lesson was stored. The shared role
+    keeps read and write only.
+  - **says when the server's mode is unknown:** for a local server with no pidfile record, a
+    remote URL or a `COGNEE_MANAGED_ENDPOINT`, session start tells a coding session to shut the
+    server down and restart the plugin, which then starts its own server in coding mode, and to
+    remove the URL or managed-endpoint setting first. Cognee Cloud gives no note.
+- **Memory is off on a server that is too old.** Without the event-time fields of cognee PR
+  #6568, coding mode neither captures nor injects, and session start says why.
+- **Doctor shows coding memory** while it is on: server support, whether the running local
+  server is in coding mode, and whether the key holds `delete` on the dataset (the coding distillation deletes replaced lessons).
+- New `coding.*` log events (see `EVENTS.md`).
 
 ### Changed
 - **The plugin's store listing matches the Cognee ChatGPT app.** The plugin now shows the
@@ -27,6 +89,149 @@ project adheres to [Semantic Versioning](https://semver.org/).
   until installed. It now uses a `local` path inside the cloned marketplace, so the store
   reads `plugin.json` directly. Updates still arrive per commit on `main` through
   `codex plugin marketplace upgrade cognee`.
+
+### Fixed
+- **Project tags: an unanswered check is retried.** When the session-start check of project-tag
+  support gets no answer (timeout, connection error, a reply that is not JSON, HTTP 408, 429 or
+  5xx), capture stays queued and the check runs again from the next hook that writes, drains or
+  recalls, after 30 s, 2 min, then every 10 min, instead of blocking writes for the rest of the
+  session. A server without `node_set`, or one that refuses the check (any other HTTP status),
+  still keeps capture queued. The check never runs from a hook before session setup has run it,
+  so a session is not bound to a key that isn't minted yet; a setup that ends without running
+  it lets the next hook run it, however it ends (the server never came up, registration failed,
+  a managed endpoint was down, the bootstrap worker could not start, an error), unless a worker
+  took the session over. A companion-dataset failure
+  still falls back to the primary dataset at once, as before. Session start says once that the
+  session's memory is queued.
+
+## [1.7.9]
+
+### Added
+- **Recall is auto by default (SDK-1393).** Unless recall is pinned, the graph recall on
+  each prompt, and a `cognee-search` that names no dataset, send no dataset: a cognee 1.6.6 server
+  picks the readable dataset(s) most likely to hold the answer, or searches every readable one
+  when it cannot narrow (dataset routing, SDK-1317; best effort). Routing needs a cognee 1.6.6 server;
+  an older one searches every readable dataset. Pin a dataset to keep recall on one.
+  Saves still go to the active dataset. Session history and guidance, the code
+  lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
+  memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
+- **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
+  (stored as `recall_pinned` in the launch record); the new `switch-dataset.py pin` restricts
+  recall to the active dataset without a new session, and so does naming the active dataset (by
+  name or id, also when another principal owns it); `switch-dataset.py auto` lifts the
+  restriction and leaves saves where they are. `--list` reports the mode in effect (`recall:
+  auto|pinned`, and when pinned why: `dataset_picked`, `configured_pin` or `read_dataset_ids`). A
+  session switched before this release stays restricted. `auto` is a reserved name: no dataset can
+  be switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
+- **One message per result.** `switch-dataset.py --json` adds `message`, one or two plain
+  sentences for the user, to the `--list` output (which recall is on and why) and to every switch,
+  `pin` and `auto` result; the text output prints the same sentences, and the skills relay them.
+- **`COGNEE_PLUGIN_RECALL_MODE` sets the recall mode a session starts in.** `auto` (the default)
+  or `pinned` (recall restricted to the session's dataset, reason `configured_pin`), exported or
+  in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
+  a switch) wins over it for that session. **Behaviour change:** a configured non-default
+  `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it. Session start says so once per machine
+  and dataset, in the message the user sees, when a non-default dataset is configured,
+  `COGNEE_PLUGIN_RECALL_MODE` was never set and the session has not pinned recall itself.
+- **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
+  `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
+
+### Changed
+- **Reopening a chat names the dataset it was saved to, without the brain icon.** The
+  notice now reads "This conversation was sent to the agent_sessions dataset in Cognee's
+  long-term memory when you left at 14:13." A failed save names its dataset, and the earlier
+  save it mentions names its own when that differs. The save record keeps the dataset of the
+  last successful save (`improved_dataset`) beside the one a later failed attempt targeted.
+- **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+
+### Removed
+- **The status line no longer shows the last operation's cost** (`last turn ~$0.06`). It was
+  an approximate, often stale reading; the credit balance and the top-up hint stay. The
+  credits marker still records `last_op`. Claude Code dropped it the same way.
+- **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
+  search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
+  `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`
+  cache are gone. A one-off search of one dataset (`cognee-search.sh --dataset-id`,
+  `list-datasets.py`) is unchanged.
+
+### Fixed
+- **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
+  shared agent memory the parent account owns the datasets, so the switch addressed the target
+  by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to
+  an empty dataset named after the id (creating one when none existed) while reporting the right
+  id. A dataset picked by id now resolves as that dataset, the record keeps its name with its
+  canonical id, and a dataset the shared role cannot hold is addressed by its id instead of
+  forking a copy. Picked by id among datasets that share a name, it also stays the write target,
+  including across the periodic refresh, rather than giving way to the parent's same-named copy.
+  Present since shared memory became the default. Delete any leftover empty dataset whose name
+  is a UUID.
+- **The memory credit names its dataset and opens with Cognee's logo (SDK-1393).**
+  As on Claude Code, every recalled graph item is marked `[dataset <name>]` instead of
+  `[mN · origin]` (an item from a server that names no dataset, and every other item, keeps its
+  origin mark), and the credit names the dataset with no tag and no 🧠. Codex shows the answer
+  as written, so the agent writes the braille logotype Claude Code draws in a terminal, one row
+  on each of the credit's two lines, each row as inline code so it stands apart from the quote's
+  colour: ``> `⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what>,`` / ``> `⠉⠁⠉⠁⠉⠁⠁⠈⠈⠁⠉`  from the <dataset> dataset``.
+  The per-session tags (`tags.json`) are gone: "Cognee found N memories" counts the marked items
+  in the context, the recall hook records the turn it injected memory on (`injected_turn` in
+  `credit.json`), and the Stop hook counts a credit when the answer on that turn ends with it.
+  The `memory_credit` event now carries `{injected, credited}` (plus `logo_exact`), and
+  `memory_tags_write_failed` is now `memory_credit_write_failed`.
+- **The status line says when recall is auto.** While recall is not pinned it reads
+  `cognee: auto (<dataset>) · local`, as Claude Code's row does, instead of naming the dataset
+  saves go to as if recall read only that one; `cognee-statusline.sh` reads the mode from the
+  launch record and the environment the same way.
+- **In the ChatGPT app the credit opens with the Cognee icon.** A session started there
+  (`originator: Codex Desktop` in its transcript) is asked for the waveform icon drawn in
+  KaTeX, five strokes in brand Lavender (`#BC9BFF`), then two em spaces and
+  `<what>, from the <dataset> dataset`, one line the app wraps as it needs. The Stop hook's `memory_credit` event reports `logo_exact`. The terminal
+  keeps the braille rows.
+- **Memory credits are on by default.** Tried live in Codex, the credit and the resume notice
+  are now on unless `COGNEE_PLUGIN_CITE_MEMORY=off`.
+- **The turn's status reads under the answer (SDK-1393).** The status line and memory header
+  the recall hook printed above the answer are now printed by the Stop hook, after the answer
+  and its credit, so the answer comes first. A skipped recall (server down) still says so above
+  the answer; an interrupted turn prints nothing for it.
+- **No empty agent-owned copy of the shared dataset (SDK-1393).** Under shared memory the sync's
+  pre-improve dataset ensure posted the launch's dataset by name with the agent key, and the server,
+  which matches a name only among the caller's own datasets, created an empty agent-owned
+  `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
+  has a canonical id, and the dataset listing marks only the canonical row as current, not every
+  dataset of that name.
+- **Searching another dataset while recall is restricted takes the person's pick (SDK-1393).**
+  The skills already said to list the other datasets and ask before a one-off search of one, but
+  `cognee-search.sh --dataset-id` searched any id it was given, so an agent could leave a pinned
+  dataset on an id it found in a recalled memory. While recall is pinned or limited to a read set,
+  the wrapper now refuses a dataset other than the active one (exit 2, a JSON `error` saying how to
+  ask, no request sent) unless `--user-picked` marks it as the person's choice: one they picked
+  when asked or named in their request. The skills and the README carry the flag. Auto recall, and
+  the active dataset named by hand, need no flag.
+
+## [1.7.8]
+
+### Security
+- **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
+  wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
+  log, sends it as a query, or stores it; the text around it is kept. Spans don't nest:
+  each opener ends at the next close, and text between two spans is kept; a span may
+  cross lines and carry attributes. An opener with no close is left as plain text. No setting turns this off. Codex still sees the span in the live turn.
+- **Explicit remember is sanitized like automatic capture.** `cognee-remember.sh` text,
+  and its `cognee-cli` fallback, now goes through the same `<private>` stripping and
+  secret patterns, whatever `COGNEE_CAPTURE` says. So does text passed to
+  `cognee-cli.sh remember|add|recall|search`, the source-checkout fallback; a file path
+  given there, like a `--file` upload, is still sent byte for byte.
+- **Queries are sanitized**: the per-prompt recall, `cognee-search.sh` and its CLI
+  fallback, and the timeline topic. A `--code-query` (here or through `cognee-cli.sh`)
+  is sanitized field by field, so it stays valid JSON.
+- **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
+  keeps; the `sync_payload` line in `hook.log` records field names and size instead of
+  the payload's first 200 characters.
+
+### Changed
+- `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
+  affects `<private>` spans.
+- The forget skill searches for what surrounds a secret, never the value itself.
 
 ## [1.7.7]
 

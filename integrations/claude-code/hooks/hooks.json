@@ -68,6 +68,12 @@
           },
           {
             "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/send-unit.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/send-unit.py\"",
+            "async": true,
+            "timeout": 60
+          },
+          {
+            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
             "async": true
           }

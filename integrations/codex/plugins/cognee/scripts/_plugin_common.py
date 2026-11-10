@@ -47,10 +47,10 @@ _COUNTER_FILE = _PLUGIN_DIR / "counter.json"
 _ACTIVITY_FILE = _PLUGIN_DIR / "activity.ts"
 _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
-#: Whether credit tags and the resume notice are on when
-#: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071). Off on Codex, which shows the
-#: injected instruction in the terminal, until it has been tried live.
-CITE_MEMORY_DEFAULT = False
+#: Whether credit marks and the resume notice are on when
+#: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071). On since it was tried live in
+#: Codex (SDK-1393); ``COGNEE_PLUGIN_CITE_MEMORY=off`` turns it off.
+CITE_MEMORY_DEFAULT = True
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 # One state file per session (see record_improve_success / record_improve_failure):
@@ -162,6 +162,17 @@ def apply_cognee_env() -> None:
     os.environ.setdefault("DATA_ROOT_DIRECTORY", str(_COGNEE_DATA_DIR))
     os.environ.setdefault("CACHE_ROOT_DIRECTORY", str(_COGNEE_CACHE_DIR))
     os.environ.setdefault("CACHING", "true")
+    if os.environ.get("COGNEE_CODING_MEMORY", "").strip().lower() in ("1", "true", "yes", "on"):
+        # Coding memory (SDK-1336) runs the server's coding distillation, which
+        # learns from whole requests at improve time: no per-trace feedback, one
+        # project node set per repository so state lessons stay per project.
+        # setdefault: an explicit setting still wins. DISTILLATION_MODE and
+        # AUTO_FEEDBACK are server settings, so they only reach a server this
+        # plugin starts; COGNEE_PROJECT_NODE_SET is a plugin setting, applied in
+        # every hook (it tags this plugin's own writes).
+        os.environ.setdefault("DISTILLATION_MODE", "coding")
+        os.environ.setdefault("AUTO_FEEDBACK", "false")
+        os.environ.setdefault("COGNEE_PROJECT_NODE_SET", "auto")
     os.environ.setdefault("AUTO_FEEDBACK", "true")
 
 
@@ -427,7 +438,20 @@ def resolve_active_dataset(host_key: str = "") -> str:
         ds = str(rec.get("dataset") or "").strip()
         if ds:
             return ds
-    return str(os.environ.get("COGNEE_PLUGIN_DATASET", "") or "").strip() or _DEFAULT_DATASET_NAME
+    return configured_dataset_name(os.environ.get("COGNEE_PLUGIN_DATASET", ""))
+
+
+def configured_dataset_name(value: object) -> str:
+    """A dataset name from the env or config, or the default when it is unset.
+
+    "auto" is reserved (``switch-dataset.py auto`` sets the recall mode), so a
+    configured "auto" means the default dataset. The recall mode is
+    COGNEE_PLUGIN_RECALL_MODE's business, not this name's.
+    """
+    name = str(value or "").strip()
+    if not name or name.lower() == "auto":
+        return _DEFAULT_DATASET_NAME
+    return name
 
 
 def resolve_active_dataset_ids(host_key: str = "") -> tuple[str, list[str]]:
@@ -559,6 +583,8 @@ def shell_runtime_overrides(service_url: str = "", host_key: str = "") -> dict:
         "dataset_id": write_id,
         "dataset_ids": ",".join(read_ids),
         "api_key": active_agent_key(service_url),
+        # "1" when graph recall names no dataset (auto, routed server-side).
+        "recall_auto": "1" if auto_recall_active(host_key) else "",
     }
 
 
@@ -633,6 +659,7 @@ def switch_launch_record(
     conn_uuid: str,
     dataset_id: str = "",
     dataset_ids: list[str] | None = None,
+    picked_id: str = "",
 ) -> dict:
     """Atomically point the launch at a new (session, dataset, connection).
 
@@ -660,6 +687,7 @@ def switch_launch_record(
             conn_uuid=conn_uuid,
             dataset_id=dataset_id,
             dataset_ids=dataset_ids,
+            picked_id=picked_id,
         )
 
 
@@ -671,6 +699,7 @@ def _switch_launch_record_locked(
     conn_uuid: str,
     dataset_id: str,
     dataset_ids: list[str] | None,
+    picked_id: str = "",
 ) -> dict:
     rec = _read_map_record(host_key)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -692,9 +721,15 @@ def _switch_launch_record_locked(
             # write to the new name would otherwise land in the previous dataset.
             "dataset_id": str(dataset_id or "").strip(),
             "dataset_ids": [str(x).strip() for x in (dataset_ids or []) if str(x).strip()],
+            # The dataset the person picked by id, kept as the write target by
+            # the periodic refresh (which re-resolves by name; see
+            # refresh_shared_memory). Empty when picked by name.
+            "dataset_picked_id": str(picked_id or "").strip(),
             "conn_uuid": str(conn_uuid),
             "switched_at": now,
             "touched": touched,
+            # Picking a dataset restricts recall to it (see recall_is_pinned).
+            "recall_pinned": True,
         }
     )
     merged.setdefault("created_at", now)
@@ -716,6 +751,119 @@ def _switch_launch_record_locked(
         },
     )
     return _read_map_record(host_key) or merged
+
+
+# ── Recall mode: auto (dataset routing) or pinned ─────────────────────────
+#
+# Saves always go to the launch's ONE dataset (a Cognee session never spans
+# two), but graph recall defaults to "auto": it names no dataset, so a cognee
+# 1.6.6 server routes the query to the readable dataset(s) most likely to hold
+# the answer (SDK-1317); an older server searches every readable dataset.
+# COGNEE_PLUGIN_RECALL_MODE (auto | pinned, exported or in ~/.cognee/.env)
+# sets the mode a session starts in; auto by default. The session's own choice
+# wins over it: picking or switching to a dataset (``switch-dataset.py <name>``
+# or ``pin``) pins recall to the active dataset, ``switch-dataset.py auto``
+# unpins. An explicit read set (COGNEE_PLUGIN_READ_DATASET_IDS) always scopes
+# recall. COGNEE_PLUGIN_DATASET only names the dataset saves go to; it says
+# nothing about the recall mode.
+
+# Why recall is restricted rather than auto (``recall_mode``'s reason).
+RECALL_PIN_PICKED = "dataset_picked"  # this launch pinned recall or switched dataset
+RECALL_PIN_CONFIGURED = "configured_pin"  # COGNEE_PLUGIN_RECALL_MODE=pinned
+RECALL_PIN_READ_SET = "read_dataset_ids"  # COGNEE_PLUGIN_READ_DATASET_IDS is an explicit scope
+
+RECALL_MODES = ("auto", "pinned")
+_recall_mode_invalid_logged = False
+
+
+def configured_recall_mode() -> str:
+    """COGNEE_PLUGIN_RECALL_MODE: ``"auto"`` (the default) or ``"pinned"``.
+
+    Read from the environment, which holds ~/.cognee/.env too (loaded at import).
+    Case and surrounding whitespace are ignored. An unknown value means auto,
+    logged once per process (``recall_mode_invalid``).
+    """
+    global _recall_mode_invalid_logged
+    raw = os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "")
+    value = raw.strip().lower()
+    if value in RECALL_MODES:
+        return value
+    if value and not _recall_mode_invalid_logged:
+        _recall_mode_invalid_logged = True
+        hook_log("recall_mode_invalid", {"value": raw[:100]})
+    return "auto"
+
+
+def recall_pin_reason(host_key: str = "") -> str:
+    """Why recall is pinned to the launch's dataset, or "" when it is not.
+
+    Precedence: the launch record's own ``recall_pinned`` wins either way —
+    picking or pinning a dataset writes True, ``switch-dataset.py auto`` writes
+    False (and so lifts a configured pin for that launch). A record written
+    before recall modes existed has no ``recall_pinned``; a switch on it
+    (``switched_at``) was an explicit pick, so it stays pinned. Otherwise the
+    configured mode applies (``configured_recall_mode``).
+    """
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    rec = _read_map_record(host_key) if host_key else {}
+    if "recall_pinned" in rec:
+        return RECALL_PIN_PICKED if rec.get("recall_pinned") is True else ""
+    if rec.get("switched_at"):
+        return RECALL_PIN_PICKED
+    if configured_recall_mode() == "pinned":
+        return RECALL_PIN_CONFIGURED
+    return ""
+
+
+def recall_is_pinned(host_key: str = "") -> bool:
+    """True when recall is restricted to the launch's dataset (see ``recall_pin_reason``)."""
+    return bool(recall_pin_reason(host_key))
+
+
+def set_recall_pinned(host_key: str, pinned: bool) -> dict:
+    """Pin or unpin recall to the launch's dataset; returns the record on disk."""
+    host_key = _sanitize_session_key(host_key) or get_session_key()
+    if not host_key:
+        raise ValueError("set_recall_pinned: no host session key")
+    from _file_lock import file_lock
+
+    # The switch lock: a concurrent switch rewrites the same record.
+    lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
+    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+        if not held:
+            raise RuntimeError("Another dataset switch is in progress for this launch")
+        rec = _read_map_record(host_key)
+        if not rec:
+            raise RuntimeError("set_recall_pinned: launch record not found")
+        merged = {**rec, "recall_pinned": bool(pinned)}
+        _write_map_record(host_key, merged)
+    hook_log("recall_mode_set", {"host_key": host_key, "pinned": bool(pinned)})
+    return _read_map_record(host_key) or merged
+
+
+def recall_mode(host_key: str = "") -> tuple[str, str]:
+    """The recall mode in effect: ``("auto", "")`` or ``("pinned", <reason>)``.
+
+    ``reason`` is one of the ``RECALL_PIN_*`` values. Reads only local state
+    (the launch record and the environment): auto recall needs no server probe.
+    """
+    # The user's own federated read set is an explicit scope, and the recall
+    # request sends it over any pin (recall_fields), so it is checked first.
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return "pinned", RECALL_PIN_READ_SET
+    reason = recall_pin_reason(host_key)
+    if reason:
+        return "pinned", reason
+    return "auto", ""
+
+
+def auto_recall_active(host_key: str = "") -> bool:
+    """True when graph recall should name no dataset and let the server route it.
+
+    Also the recall mode every surface reports: when this is False, recall
+    reads one dataset (or the user's read set), so it is shown as restricted.
+    """
+    return recall_mode(host_key)[0] == "auto"
 
 
 def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
@@ -966,108 +1114,14 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     }
 
 
-# ── readable-datasets cache (cross-dataset search hint) ─────────────────────
-# The prompt hook offers the other readable datasets when the active one's
-# graph returns nothing. It runs on the keystroke->answer path, so the listing
-# comes from this per-plugin cache and is refreshed over the network only when
-# stale, inside what is left of the recall budget.
-
-_READABLE_DATASETS_CACHE = _PLUGIN_DIR / "readable-datasets.json"
-_READABLE_DATASETS_TTL_DEFAULT = 300.0
-# After a refresh fails (timeout, unreachable), no retry before this many
-# seconds (COGNEE_DATASETS_CACHE_RETRY). Without it a stale cache on a slow
-# server was re-fetched on every eligible prompt, each paying the full
-# listing timeout for a hint that is decoration.
-_READABLE_DATASETS_RETRY_DEFAULT = 120.0
-
-
 def cross_dataset_search_command() -> str:
-    """The one-off graph search on another dataset, as the hint and the lister
-    spell it for the model: ``cognee-search.sh "<query>" 10 --graph --dataset-id <id>``."""
+    """The one-off graph search on another dataset, as the lister spells it
+    for the model: ``cognee-search.sh "<query>" 10 --graph --dataset-id <id>``."""
     script = Path(__file__).resolve().parent / "cognee-search.sh"
     # Quoted: the plugin root follows the host's config home, and the managed
     # defaults contain a space (topoteretes/cognee#5154), so a bare path would
     # hand the model a command that word-splits.
     return f'"{script}" "<query>" 10 --graph --dataset-id <id>'
-
-
-def _readable_datasets_cache_key(service_url: str, api_key: str) -> str:
-    """Server URL + key fingerprint: a listing fetched for another server or
-    identity is never served (the read set is per principal)."""
-    base = _normalize_service_url(service_url) or str(service_url or "").rstrip("/")
-    return hashlib.sha256((base + "\n" + str(api_key or "")).encode("utf-8")).hexdigest()
-
-
-def cached_readable_datasets(
-    *,
-    service_url: str = "",
-    max_age: float | None = None,
-    refresh: bool = True,
-    timeout: float = 2.0,
-) -> list[dict]:
-    """The readable-datasets rows from the cache, refreshed when stale.
-
-    A listing younger than ``max_age`` seconds (``COGNEE_DATASETS_CACHE_TTL``,
-    default 300) is served as-is. Otherwise, when ``refresh`` is allowed, one
-    bounded ``list_readable_datasets`` call rewrites the cache; a refresh that
-    fails falls back to the stale rows rather than to nothing, and records the
-    failure so the next ``COGNEE_DATASETS_CACHE_RETRY`` seconds (default 120)
-    serve the stale rows without another attempt — on a loaded server every
-    eligible prompt used to re-pay the listing timeout. Never raises: the hint
-    is decoration on the recall path.
-    """
-    service_url = service_url or _local_api_url()
-    key = _readable_datasets_cache_key(service_url, _api_key())
-    if max_age is None:
-        max_age = _float_env("COGNEE_DATASETS_CACHE_TTL", _READABLE_DATASETS_TTL_DEFAULT)
-    cached = _load_json_file(_READABLE_DATASETS_CACHE)
-    rows = cached.get("datasets") if isinstance(cached, dict) else None
-    same_identity = isinstance(cached, dict) and str(cached.get("key") or "") == key
-    if not (same_identity and isinstance(rows, list)):
-        rows = None
-    if rows is not None:
-        try:
-            age = time.time() - float(cached.get("fetched_at") or 0)
-        except (TypeError, ValueError):
-            age = float("inf")
-        if 0 <= age <= max_age:
-            return rows
-    if not refresh:
-        return rows or []
-    # Backoff: a recent failed refresh for this same server/identity means the
-    # stale rows (or nothing) are the answer for now, not another timeout.
-    if same_identity:
-        retry_after = _float_env("COGNEE_DATASETS_CACHE_RETRY", _READABLE_DATASETS_RETRY_DEFAULT)
-        try:
-            since_failure = time.time() - float(cached.get("failed_at") or 0)
-        except (TypeError, ValueError):
-            since_failure = float("inf")
-        if 0 <= since_failure < retry_after:
-            hook_log(
-                "readable_datasets_refresh_deferred",
-                {"retry_in": round(retry_after - since_failure, 1)},
-            )
-            return rows or []
-    try:
-        fresh = list_readable_datasets(timeout=timeout)
-    except Exception as exc:
-        hook_log("readable_datasets_refresh_failed", {"error": str(exc)[:200]})
-        fetched_at = cached.get("fetched_at") if same_identity else 0
-        _write_json_file(
-            _READABLE_DATASETS_CACHE,
-            {
-                "key": key,
-                "fetched_at": fetched_at or 0,
-                "datasets": rows or [],
-                "failed_at": time.time(),
-            },
-        )
-        return rows or []
-    _write_json_file(
-        _READABLE_DATASETS_CACHE,
-        {"key": key, "fetched_at": time.time(), "datasets": fresh},
-    )
-    return fresh
 
 
 def other_readable_datasets(rows: list, active_dataset: str = "", active_ids=()) -> list[dict]:
@@ -2024,6 +2078,9 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
             {
                 "session_id": session_id,
                 "dataset": dataset,
+                # The dataset the conversation was saved to: a later failed
+                # attempt overwrites ``dataset`` but keeps this (sync_notice).
+                "improved_dataset": dataset,
                 "last_improved_at": time.time(),
                 "turn_count_at_improve": read_turn_count(session_id),
                 "trigger": trigger,
@@ -2549,9 +2606,25 @@ def _grant_role_on_datasets(
     fail the batch). Outcomes are memoised in ``marker["granted"]``:
     ``"ok"`` never retried, a denial retried hourly and logged when it is
     new. Returns the ids the role holds read+write on."""
-    granted = marker.setdefault("granted", {})
+    return _grant_permissions(
+        principal_key, role_id, dataset_ids, marker, "granted", ("read", "write")
+    )
+
+
+def _grant_permissions(
+    principal_key: str,
+    principal_id: str,
+    dataset_ids: list[str],
+    marker: dict,
+    memo_key: str,
+    permissions: tuple,
+) -> set[str]:
+    """Grant ``permissions`` to ``principal_id`` on each dataset, memoised in
+    ``marker[memo_key]`` (see ``_grant_role_on_datasets``). Returns the ids it
+    holds all of them on."""
+    granted = marker.setdefault(memo_key, {})
     if not isinstance(granted, dict):
-        granted = marker["granted"] = {}
+        granted = marker[memo_key] = {}
     now = time.time()
     for dataset_id in dataset_ids:
         prior = granted.get(dataset_id)
@@ -2562,9 +2635,9 @@ def _grant_role_on_datasets(
         ):
             continue
         outcome = "ok"
-        for permission in ("read", "write"):
+        for permission in permissions:
             status, _ = _control_plane_request(
-                f"/api/v1/permissions/datasets/{role_id}?permission_name={permission}",
+                f"/api/v1/permissions/datasets/{principal_id}?permission_name={permission}",
                 [dataset_id],
                 api_key=principal_key,
             )
@@ -2587,6 +2660,28 @@ def _grant_role_on_datasets(
             continue
         granted[dataset_id] = outcome
     return {dataset_id for dataset_id, outcome in granted.items() if outcome == "ok"}
+
+
+def _grant_agent_delete(principal_key: str, agent_id: str, dataset_id: str, marker: dict) -> None:
+    """Give the coding plugin's own agent ``delete`` on the dataset it writes to.
+
+    Coding memory only (``COGNEE_CODING_MEMORY``): the coding distillation
+    replaces a lesson by deleting the older one with its state key, and refuses
+    to run without delete next to write. The grant goes to this agent, not the
+    shared role, so sibling agents gain nothing, and only on the launch's write
+    target. Memoised in ``marker["delete_granted"]`` like the role's grants: "ok"
+    is never retried, a denial is retried hourly. Turning coding mode off does
+    not revoke it.
+    """
+    if not (agent_id and dataset_id):
+        return
+    try:
+        from config import coding_memory_enabled  # type: ignore
+    except Exception:
+        return
+    if not coding_memory_enabled():
+        return
+    _grant_permissions(principal_key, agent_id, [dataset_id], marker, "delete_granted", ("delete",))
 
 
 def _pick_canonical(rows: list[dict], parent_id: str) -> dict:
@@ -2739,6 +2834,20 @@ def ensure_shared_memory(
     # write target nor part of the recall set (one unreadable id would fail the
     # whole recall). With no eligible copy the parent creates its own.
     write_id, read_ids = "", []
+    picked_id = ""
+    by_id = next((row for row in datasets if row["id"] == dataset), None) if dataset else None
+    if by_id is not None:
+        # A dataset picked by its id (the switch addresses another principal's
+        # dataset that way) resolves as that row, never as a name: matched by
+        # name, the id would create — or land in — a dataset NAMED after it.
+        # It also stays the write target: re-picked among its same-named
+        # datasets, the parent's own copy would win and the saves would land
+        # there instead of in the dataset the person chose. A row the shared
+        # role cannot hold keeps no canonical id, so the caller addresses it by
+        # that id.
+        eligible_row = by_id["owner_id"] == parent_id or by_id["id"] in role_holds
+        dataset = by_id["name"] if eligible_row else ""
+        picked_id = by_id["id"] if eligible_row else ""
     if dataset:
         same_name = [row for row in datasets if row["name"] == dataset]
         eligible = [
@@ -2764,16 +2873,20 @@ def ensure_shared_memory(
             role_holds |= _grant_role_on_datasets(principal_key, role_id, [created["id"]], marker)
             eligible = [created]
         if eligible:
-            write_id = _pick_canonical(eligible, parent_id)["id"]
+            # The canonical map records what the NAME resolves to: a dataset
+            # picked by id is written to without becoming the name's copy.
+            name_id = _pick_canonical(eligible, parent_id)["id"]
+            write_id = picked_id or name_id
             canonical = marker.setdefault("canonical", {})
             if isinstance(canonical, dict):
-                canonical[dataset] = write_id
+                canonical[dataset] = name_id
             read_ids = [write_id] + [
                 row["id"]
                 for row in same_name
                 if row["id"] != write_id
                 and (row["id"] in role_holds or row["owner_id"] == agent_id)
             ]
+    _grant_agent_delete(principal_key, agent_id, write_id, marker)
     _save_shared_memory_marker(marker)
     return {
         "mode": "shared",
@@ -2834,11 +2947,17 @@ def refresh_shared_memory(host_key: str = "") -> bool:
     shared = resolve_shared_dataset(dataset)
     if shared["mode"] != "shared" or not shared["dataset_id"]:
         return False
+    write_id, read_ids = shared["dataset_id"], list(shared["dataset_ids"])
+    # A dataset the person picked by id stays the write target while it is
+    # still one of the name's readable datasets: resolved by name alone, a
+    # same-named dataset the parent owns would take the saves over.
+    picked = str(_read_map_record(host_key).get("dataset_picked_id") or "").strip()
+    if picked and picked != write_id and picked in read_ids:
+        write_id = picked
+        read_ids = [picked] + [x for x in read_ids if x != picked]
     # ``dataset=`` pins the ids to the dataset they were resolved for: a switch
     # that completed during the resolution above leaves the record untouched.
-    return set_launch_dataset_ids(
-        host_key, shared["dataset_id"], shared["dataset_ids"], dataset=dataset
-    )
+    return set_launch_dataset_ids(host_key, write_id, read_ids, dataset=dataset)
 
 
 def plugin_identity_mode(config: dict | None = None) -> str:
@@ -3083,20 +3202,131 @@ def _server_pidfile(port: int) -> Path:
     return _SHARED_PLUGIN_ROOT / f"server-{int(port)}.pid"
 
 
-def write_server_pidfile(port: int, pid: int, version: str = "") -> None:
-    """Record the uvicorn server spawned on ``port`` (presence evidence)."""
+def write_server_pidfile(
+    port: int, pid: int, version: str = "", coding_memory: Optional[bool] = None
+) -> None:
+    """Record the uvicorn server spawned on ``port`` (presence evidence).
+
+    ``coding_memory`` records whether the server was spawned with coding
+    distillation (DISTILLATION_MODE=coding): a server keeps the mode it booted
+    with, so a later session joining it must learn which one that was.
+    """
+    record = {
+        "pid": int(pid),
+        "port": int(port),
+        "version": version,
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
+    if coding_memory is not None:
+        record["coding_memory"] = bool(coding_memory)
     try:
-        _write_json_file(
-            _server_pidfile(port),
-            {
-                "pid": int(pid),
-                "port": int(port),
-                "version": version,
-                "created_at": datetime.now(timezone.utc).timestamp(),
-            },
-        )
+        _write_json_file(_server_pidfile(port), record)
     except Exception as exc:
         hook_log("server_pidfile_write_failed", {"error": str(exc)[:200]})
+
+
+def live_server_record(port: int) -> dict:
+    """The pidfile record of the live server on ``port``, or {} (none / stale)."""
+    if not _live_server_pid(port):
+        return {}
+    try:
+        record = json.loads(_server_pidfile(port).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+_CODING_RESTART_ADVICE = (
+    "To restart it, close the other Claude Code and Codex sessions using Cognee; the "
+    "server stops on its own, and the next session starts it in {mode}."
+)
+_CODING_UNOWNED_ADVICE = (
+    "Shut it down and restart the plugin (start a new session); the plugin then starts "
+    "its own server in coding mode."
+)
+
+
+def is_cognee_cloud_url(url: str) -> bool:
+    """True for a Cognee Cloud host (``*.cognee.ai``)."""
+    host = (urllib.parse.urlparse(str(url or "").strip()).hostname or "").lower()
+    return host == "cognee.ai" or host.endswith(".cognee.ai")
+
+
+def coding_server_note(port: int, coding: bool) -> str:
+    """The SessionStart note when the running local server's distillation mode
+    differs from this session's coding memory setting (SDK-1336), or ''.
+
+    The coding env (DISTILLATION_MODE=coding, AUTO_FEEDBACK=false) reaches only a
+    server this plugin spawns, and a shared server keeps the mode it booted
+    with, so a session joining one learns it from the pidfile instead. Never
+    restarts the server: other sessions are using it.
+    """
+    record = live_server_record(port)
+    stamp = record.get("coding_memory") if record else None
+    pid = int(record.get("pid", 0) or 0) if record else 0
+    if not pid:
+        # No pidfile record: the plugin did not start this server, so it never
+        # stops on its own when the sessions close.
+        return coding_unowned_server_note() if coding else ""
+    if not isinstance(stamp, bool):
+        if not coding:
+            return ""
+        return (
+            "Cognee coding memory: a Cognee server was already running and it is unknown "
+            "whether it runs coding mode (it was started by another integration or an "
+            "older plugin version), so it may not make coding lessons until it restarts. "
+            + _CODING_RESTART_ADVICE.format(mode="coding mode")
+        )
+    if stamp == coding:
+        return ""
+    kill_now = (
+        f"To restart it now, run `kill {pid}` and start a new session (an improve in "
+        "progress is cut short, and other open sessions have no memory until they restart)."
+    )
+    if coding:
+        return (
+            f"Cognee coding memory: the running Cognee server (pid {pid}) was started "
+            "without coding mode, so it won't make coding lessons until it restarts. "
+            + _CODING_RESTART_ADVICE.format(mode="coding mode")
+            + " "
+            + kill_now
+        )
+    return (
+        f"Cognee Memory: the running Cognee server (pid {pid}) was started in coding "
+        "memory mode, so it runs coding distillation without per-call feedback, and this "
+        "session's normal distillation and feedback won't apply until it restarts. "
+        + _CODING_RESTART_ADVICE.format(mode="normal mode")
+        + " "
+        + kill_now
+    )
+
+
+def coding_unowned_server_note(
+    url: str = "", *, remote: bool = False, managed: bool = False
+) -> str:
+    """The coding-mode SessionStart note for a server the plugin did not start.
+
+    Its mode is unknown: a local server with no pidfile record, a remote URL or a
+    managed endpoint (``COGNEE_MANAGED_ENDPOINT``). Cognee Cloud is not asked
+    here. A remote URL or managed endpoint also has to be unset before the
+    restart, or the plugin connects to the same server again.
+    """
+    where = f"the Cognee server at {url}" if url and (remote or managed) else "this Cognee server"
+    note = (
+        f"Cognee coding memory: {where} wasn't started by the plugin, so it's unknown "
+        "whether it runs coding mode, and it may not make coding lessons. " + _CODING_UNOWNED_ADVICE
+    )
+    settings = [
+        name
+        for name, on in (("COGNEE_BASE_URL", remote), ("COGNEE_MANAGED_ENDPOINT", managed))
+        if on
+    ]
+    if settings:
+        note += (
+            f" Remove {' and '.join(settings)} (from your environment or ~/.cognee/.env) "
+            "before restarting, or the plugin reconnects to the same server."
+        )
+    return note
 
 
 def clear_server_pidfile(port: int) -> None:
@@ -5062,6 +5292,7 @@ def recall_via_http(
     dataset_ids: list[str] | None = None,
     code_query: dict | None = None,
     timeout: float = 10.0,
+    auto_route: bool = False,
 ) -> list:
     payload = {
         "query": query,
@@ -5074,7 +5305,8 @@ def recall_via_http(
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
         payload["code_query"] = code_query
-    # Always scope to the plugin's dataset. Without it the server resolves EVERY
+    # Scope to the plugin's dataset unless auto recall routes a graph-only read
+    # (below). Without a dataset the server resolves EVERY
     # readable dataset and then reconciles against the session's binding, so the
     # graph scope depends on that binding existing: an unbound session with more
     # than one readable dataset is rejected as ambiguous rather than searched.
@@ -5099,8 +5331,24 @@ def recall_via_http(
     #      by name.
     fields, federated = recall_fields(write_dataset, scope)
     ids = [str(x).strip() for x in (dataset_ids or []) if str(x).strip()]
+    # Auto recall (``auto_route``, see auto_recall_active): a graph-only read
+    # with no session names no dataset, and the server routes it — shared
+    # memory's ids included, since the server can only route a request that
+    # names none. A federated read set, the code lane and a project-routed
+    # session keep their explicit scope.
+    routed = (
+        auto_route
+        and scope == ["graph"]
+        and not session_id
+        and not code_query
+        and not federated
+        and write_dataset == dataset
+        and not target.get("node_set")
+    )
     if federated:
         payload.update(fields)
+        payload.pop("session_id", None)
+    elif routed:
         payload.pop("session_id", None)
     elif ids and write_dataset == dataset:
         # Shared-memory ids describe the primary dataset; a companion-routed
@@ -5344,7 +5592,7 @@ def drain_warmup_entries(
     ``deduped``). If the detail read fails, everything replays as before: a
     rare duplicate beats a lost turn.
     """
-    from _capture_policy import CapturePatternError, allow_tool, capture_enabled, redact
+    from _capture_policy import CapturePatternError, allow_tool, capture_enabled, sanitize
 
     if not capture_enabled():
         return 0, 0
@@ -5428,7 +5676,7 @@ def drain_warmup_entries(
                 ):
                     deduped += 1
                     continue
-                send_entry = redact(send_entry)
+                send_entry = sanitize(send_entry)
                 remember_entry_via_http(
                     dataset,
                     session_id,
@@ -5592,6 +5840,12 @@ def ensure_dataset_via_http(dataset: str) -> None:
             raise RuntimeError("Write permission for the selected dataset could not be verified")
         return
     if not dataset:
+        return
+    # Under shared memory the name has a canonical, parent-owned dataset that
+    # SessionStart already created and granted. The POST resolves a name only
+    # among the CALLER's datasets, so the agent posting it would fork an empty
+    # agent-owned copy of the same name: skip it, the improve goes by the id.
+    if dataset_id_for(dataset):
         return
     try:
         _json_http_request("/api/v1/datasets", {"name": dataset}, timeout=15.0)

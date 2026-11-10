@@ -12,14 +12,14 @@
       "name": "cognee-memory",
       "source": "./integrations/cursor",
       "description": "Cognee knowledge graph memory for Cursor — session-aware capture through Cursor hooks, auto-routing recall on every prompt, and persistent learning across conversations. Supports local mode and Cognee Cloud.",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "author": {
         "name": "Cognee"
       },
       "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/cursor",
       "repository": "https://github.com/topoteretes/cognee-integrations",
       "license": "Apache-2.0",
-      "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session"],
+      "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session", "persistent-memory"],
       "category": "memory"
     },
     {

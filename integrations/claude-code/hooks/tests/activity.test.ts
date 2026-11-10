@@ -318,6 +318,67 @@ test('the row follows a boot the hook handed to its worker past the warm-up, unt
   expect(renders).toBe(settled)
 })
 
+test('while the connection is unconfirmed the row says connecting, then settles', async ($, on) => {
+  const state = { marker: '' }
+  let ready = false
+  const clock = wire(on, state, () => (ready ? SNAPSHOT : { ...SNAPSHOT, state: '' }))
+  state.marker = marker(clock.now(), { active: null, results: {} })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  // No verdict yet: a spinner and "connecting…", not a bare dim ○.
+  let ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /connecting…/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeUndefined()
+  await ui.unmount()
+
+  // The marker lands: the next snapshot turns the row green.
+  ready = true
+  for (let s = 0; s < 6; s += 1) await clock.advance(1000)
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /connecting/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a server that never answers stops spinning after the warm-up', async ($, on) => {
+  const state = { marker: '' }
+  const clock = wire(on, state, () => ({ ...SNAPSHOT, state: '' }))
+  state.marker = marker(clock.now(), { active: null, results: {} })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  for (let s = 0; s < 125; s += 1) await clock.advance(1000)
+  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /connecting/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('after a /clear the row says connecting while the new conversation binds', async ($, on) => {
+  const state = { marker: '' }
+  const clock = wire(on, state, () => ({ ...SNAPSHOT, state: '' }))
+  state.marker = marker(clock.now(), { active: null, results: {} })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  // Long past the session's own warm-up: the row sits on the dim ○.
+  for (let s = 0; s < 125; s += 1) await clock.advance(1000)
+  let ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  await ui.unmount()
+
+  // /clear: the engine still reports the ended id, so nothing is bound yet.
+  await $.session.end({ sessionId: SESSION, reason: 'clear' })
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /connecting…/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeUndefined()
+  await ui.unmount()
+
+  // The adopt watch gives up: the row settles instead of spinning on.
+  for (let s = 0; s < 32; s += 1) await clock.advance(1000)
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /connecting/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a result older than five minutes leaves the row', async ($, on) => {
   const state = { marker: '' }
   const clock = wire(on, state)
@@ -382,6 +443,26 @@ test('in a terminal the credit line under an answer carries the display logotype
   expect(await ui.find({ type: 'Svg' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^The July notes on \/users\/me/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Cognee memory|\[m4, m5\]|🧠/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an untagged credit line without the brain (auto recall) is drawn under the answer too', async ($, on) => {
+  const state = { marker: '' }
+  wire(on, state)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({
+    plugin: 'cognee-memory',
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    props: {
+      text: 'Maya kept EU 40.\n\n> Cognee memory: her orders, from maya-7f3a in the live_context_support_agent_demo dataset',
+      isFirstOfReply: true,
+    },
+  })
+  expect(await ui.find({ type: 'Text', text: /^⡏⠁⡏⡇/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Her orders, from maya-7f3a in the live_context_support_agent_demo dataset/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cognee memory|🧠/ })).toBeUndefined()
   await ui.unmount()
 })
 

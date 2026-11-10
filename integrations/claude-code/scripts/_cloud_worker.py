@@ -175,8 +175,10 @@ def touch_session() -> None:
     ensure_worker()
 
 
-def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
-    from _capture_policy import redact
+def enqueue(dataset: str, session_id: str, entry: dict, kind: str, *, coding: bool = False) -> Path:
+    """Spool one entry for the worker. ``coding`` marks an entry of coding memory
+    mode (SDK-1336): it is counted on delivery but requests no every-N improve."""
+    from _capture_policy import sanitize
     from _plugin_common import _sanitize_value, get_session_key
 
     key = get_session_key()
@@ -186,7 +188,7 @@ def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
         "dataset": dataset,
         "session_id": session_id,
         "host_key": key,
-        "entry": _sanitize_value(redact(entry)),
+        "entry": _sanitize_value(sanitize(entry)),
         "kind": kind,
         "target": target(),
         "created_at": created,
@@ -195,6 +197,8 @@ def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
         "ambiguous": False,
         "client_event_id": str(uuid.uuid4()),
     }
+    if coding:
+        item["coding"] = True
     path = root() / "spool" / f"{time.time_ns():020d}-{key}-{uuid.uuid4().hex}.json"
     atomic_json(path, item)
     log("capture_spooled", session=session_id, kind=kind)
@@ -292,7 +296,7 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
     A session waiting on a retry holds back only its own later events; a server-wide
     failure ends the pass; a payload the server will never accept is expired.
     """
-    from _capture_policy import allow_tool, capture_enabled, redact
+    from _capture_policy import allow_tool, capture_enabled, sanitize
 
     now = time.time() if now is None else now
     capturing = capture_enabled()
@@ -325,7 +329,7 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                 _expire(path, "capture_disabled_by_policy")
                 _mark_capture_unsaved(item, buffered=False)
                 continue
-            redacted = redact(item["entry"])
+            redacted = sanitize(item["entry"])
             if item.get("request") and redacted != item["entry"]:
                 # Never change a payload after its event ID may have committed.
                 _expire(path, "capture_policy_changed")
@@ -423,9 +427,11 @@ def _after_delivery(item: dict, verified: bool) -> None:
             session=item["session_id"],
             via="cloud_spool",
         )
-        if every_n:
+        if every_n and not item.get("coding"):
             # Same automatic trigger as local mode: every COGNEE_AUTO_IMPROVE_EVERY
             # stored entries, within the per-session cooldown (SDK-1072/1074).
+            # Coding memory items still count, but improve only at session end
+            # and on the cooldown.
             request_improve(item["dataset"], item["session_id"], f"turn_{count}")
         log(
             "cloud_capture_delivered",

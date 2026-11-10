@@ -86,6 +86,7 @@ def test_is_available(config, cognee, expected):
         ({}, False, False, "hermes cognee install-runtime"),
         ({"embedded": "true"}, False, False, "Hermes's own Python environment"),
         ({"embedded": "true"}, True, True, None),
+        ({"embedded": "true"}, True, False, "Hermes's own Python environment"),
     ],
 )
 def test_unavailable_reason_names_the_fix(config, ready, cognee, expected):
@@ -96,12 +97,54 @@ def test_unavailable_reason_names_the_fix(config, ready, cognee, expected):
         mock.patch.object(provider_mod, "load_config", return_value=config),
         mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=ready),
         mock.patch.object(provider_mod, "has_cognee", return_value=cognee),
+        mock.patch.object(provider_mod.runtime_env, "hermes_env_outdated", return_value=None),
     ):
         reason = p.unavailable_reason()
     if expected is None:
         assert reason == ""
     else:
         assert expected in reason
+
+
+def _embedded(*, cognee, version, venv_ready):
+    """Embedded mode with Hermes's environment holding cognee ``version``."""
+    from cognee_integration_hermes import runtime_env
+
+    return (
+        mock.patch.object(provider_mod, "load_config", return_value={"embedded": True}),
+        mock.patch.object(provider_mod, "has_cognee", return_value=cognee),
+        mock.patch.object(runtime_env, "has_cognee", return_value=cognee),
+        mock.patch.object(runtime_env.importlib.metadata, "version", return_value=version),
+        mock.patch.object(runtime_env, "local_ready", return_value=venv_ready),
+    )
+
+
+@pytest.mark.parametrize(
+    ("cognee", "version", "venv_ready", "available"),
+    [
+        (True, "1.6.5", False, False),  # outdated Hermes env
+        (True, "1.6.5", True, False),  # a ready venv does not help embedded mode
+        (True, LOCAL_COGNEE_REQUIREMENT.split("==")[1], False, True),  # current, no venv
+        (False, "", True, False),  # no cognee, ready venv
+    ],
+)
+def test_embedded_mode_needs_the_pinned_cognee_in_hermess_environment(
+    cognee, version, venv_ready, available
+):
+    p = provider_mod.CogneeMemoryProvider(backend=FakeBackend())
+    patches = _embedded(cognee=cognee, version=version, venv_ready=venv_ready)
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        assert p.is_available() is available
+        reason = p.unavailable_reason()
+    if available:
+        assert reason == ""
+    elif not cognee:
+        assert "embedded mode" in reason
+    else:
+        assert "cognee 1.6.5" in reason
+        assert f"{sys.executable} -m pip install {LOCAL_COGNEE_REQUIREMENT}" in reason
+        assert "COGNEE_EMBEDDED" in reason
+        assert "install-runtime" not in reason
 
 
 def test_a_running_server_is_used_without_cognee():
@@ -220,3 +263,19 @@ def test_setup_defaults_to_remote(tmp_path, saved_config, runtime_ready, expecte
 def test_a_local_install_is_told_its_current_mode(tmp_path, capsys):
     _default_mode(tmp_path, {"service_url": ""}, True)
     assert "Current mode: local" in capsys.readouterr().out
+
+
+def test_unavailable_reason_names_an_outdated_runtime():
+    # After a plugin update that moves the pin, local mode stays off until the
+    # user installs the new runtime; the hint says so rather than "not installed".
+    p = provider_mod.CogneeMemoryProvider(backend=FakeBackend())
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value={}),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=False),
+        mock.patch.object(
+            provider_mod.runtime_env, "outdated_requirement", return_value="cognee==0.0.1"
+        ),
+    ):
+        reason = p.unavailable_reason()
+    assert "cognee==0.0.1" in reason
+    assert "hermes cognee install-runtime" in reason

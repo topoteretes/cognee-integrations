@@ -150,7 +150,7 @@ describe("memory_search through the plugin", () => {
     mockRecall.mockImplementation(async () => [
       { id: "m1", text: "User prefers dark mode", score: 0.9, metadata: { source: "MEMORY.md" } },
     ]);
-    const { tools } = createPluginApi(plugin);
+    const { tools } = createPluginApi(plugin, { recallMode: "pinned" });
     const [searchTool, getTool] = tools({ agentId: "will", sessionId: "s1" });
 
     const res = await searchTool.execute("c1", { query: "theme?", corpus: "memory" });

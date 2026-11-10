@@ -37,6 +37,11 @@ describe("configSchema matches what config.ts reads", () => {
     expect(schema.properties.noisePatterns).toMatchObject({ type: "array", items: { type: "string" } });
     expect(schema.properties.chunkSize).toMatchObject({ type: "integer", minimum: 1 });
   });
+
+  it("declares recallMode as auto | pinned (SDK-1393)", () => {
+    expect(schema.properties.recallMode).toMatchObject({ type: "string", enum: ["auto", "pinned"] });
+    expect(manifest.uiHints.recallMode).toBeDefined();
+  });
 });
 
 describe("chunkSize (#428)", () => {

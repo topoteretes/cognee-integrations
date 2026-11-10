@@ -455,10 +455,11 @@ class TestRecallPayload(unittest.TestCase):
         self.assertEqual(kwargs["top_k"], 7)
         self.assertIs(kwargs["auto_route"], False)
 
-    def test_recall_targets_the_graph_with_the_dataset_and_no_session(self):
+    def test_recall_targets_the_graph_with_no_dataset_and_no_session(self):
         kwargs = self._recall_kwargs({"query": "q"}, session_cognee_id="hermes_abc")
         self.assertEqual(kwargs["scope"], ["graph"])
-        self.assertEqual(kwargs["datasets"], ["hermes"])
+        # Auto recall (SDK-1393): unpinned, it names no dataset and the server picks.
+        self.assertIsNone(kwargs["datasets"])
         # As openclaw's memory_search: the conversation is already Hermes'.
         self.assertIsNone(kwargs["session_id"])
 
@@ -469,7 +470,7 @@ class TestRecallPayload(unittest.TestCase):
             with self.subTest(scope=legacy):
                 kwargs = self._recall_kwargs({"query": "q", "scope": legacy})
                 self.assertEqual(kwargs["scope"], ["graph"])
-                self.assertEqual(kwargs["datasets"], ["hermes"])
+                self.assertIsNone(kwargs["datasets"])
                 self.assertIsNone(kwargs["session_id"])
 
     def test_search_type_is_applied(self):

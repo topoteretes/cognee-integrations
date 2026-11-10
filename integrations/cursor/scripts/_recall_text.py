@@ -376,23 +376,22 @@ def format_code_facts(facts: list) -> str:
 # Crediting memory in the answer (SDK-1071)
 # ---------------------------------------------------------------------------
 #
-# Every recalled item the hook injects gets a short tag (``m1``, ``m2``…) and a
-# label saying where it came from. An instruction above the memory asks the
-# agent to end an answer that used memory with one line led by the Cognee logo,
-# and no tag or "Cognee memory" text: in Cursor the logo alone names Cognee. Tags
-# are numbered across the session and a memory recalled again keeps its tag, so
-# the agent can tell which items it was given. The Stop hook logs whether the
-# answer carries the credit line and how many items the turn injected; with no
-# tags in the line, it cannot catch an invented one.
+# Every recalled item the hook injects is marked with where it came from: a
+# graph item with the dataset the server says it came from, ``[dataset
+# <name>]`` (SDK-1393), any other item (or a graph item from a server that
+# names no dataset) with its origin, ``[agent trace, …]``. An instruction above
+# the memory asks the agent to end an answer that used memory with one line led
+# by the Cognee logo, and no "Cognee memory" text: in Cursor the logo alone
+# names Cognee. The recall hook records the turn it injected memory on; the
+# Stop hook logs whether the answer on that turn carries the credit line.
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
 #: Directory (under the suite's state dir) with one folder per session, shared
-#: with the rest of the plugin's per-session state: its tags (``tags.json``),
-#: credit state (``credit.json``) and running stored-item count
-#: (``stored.log``). The state sweep removes folders idle for a week.
+#: with the rest of the plugin's per-session state: its credit state
+#: (``credit.json``) and running stored-item count (``stored.log``). The state
+#: sweep removes folders idle for a week.
 SESSION_STATE_DIRNAME = "sessions"
-TAGS_FILE = "tags.json"
 CREDIT_FILE = "credit.json"
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
@@ -419,9 +418,9 @@ LOGOTYPE = "[\u200b](https://www.cognee.ai)"
 
 CREDIT_INSTRUCTION = (
     "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
-    "as [mN · where it came from]. A memory recalled again in this session keeps its "
-    "tag. If your answer uses information from a tagged item, end the answer with one "
-    "line:\n"
+    "with the dataset it came from, as [dataset <name>] (an item with no dataset is "
+    "tagged with where it came from). If your answer uses information from a tagged "
+    "item, end the answer with one line:\n"
     f"> {LOGOTYPE} <what you remembered>, based on {{source}}.\n"
     "Start it exactly as shown: the link text is a single zero-width space (U+200B), "
     "so only the Cognee logo shows. The logo names Cognee: do not write the tags or "
@@ -563,7 +562,7 @@ def strip_credit(text: str) -> str:
 
 
 def credit_enabled(default: bool = True) -> bool:
-    """Whether credit tags and the resume notice are on.
+    """Whether credit marks and the resume notice are on.
 
     ``COGNEE_PLUGIN_CITE_MEMORY`` decides when set; otherwise ``default``, which
     each host passes (Codex and Cursor start with it off).
@@ -580,7 +579,7 @@ def _agent_name(session_id: str) -> str:
 
 
 def passage_origin(passage: str) -> str:
-    """Where a recalled passage came from, in a few words for its tag."""
+    """Where a recalled passage came from, in a few words for its mark."""
     session_id = passage_session_id(passage)
     if not session_id:
         return "document"
@@ -624,127 +623,95 @@ def _write_json(path, data: dict) -> None:
         pass
 
 
-def _memory_id(kind: str, text: str, ident: str = "") -> str:
-    """What makes two recalled items the same memory: the server's id, else the text."""
-    if ident:
-        return f"id:{ident}"
-    import hashlib
-
-    normal = " ".join(str(text or "").split())
-    return f"{kind}:{hashlib.sha1(normal.encode('utf-8')).hexdigest()[:16]}"
+def item_mark(origin: str, dataset: str = "") -> str:
+    """``[dataset <name>]`` for a graph item whose dataset the server named,
+    ``[<origin>]`` for anything else (SDK-1393)."""
+    if dataset:
+        return f"[dataset {dataset}]"
+    return f"[{origin}]" if origin else ""
 
 
-class MemoryTags:
-    """Hands out ``m1``, ``m2``… across a session and remembers what each one tagged.
+def mark_graph(context: str, dataset: str = "", keys: list | None = None) -> str:
+    """Mark a graph-memory context: each passage, the entities and the facts.
 
-    Load the session's tags with :meth:`load`, label this turn's items, then
-    :meth:`save`. A memory seen earlier in the session gets its old tag back;
-    a new one gets the next number. When the context is trimmed after tagging,
-    :meth:`assign` the tags first and :meth:`show` only the ones that made it.
+    ``dataset`` is the one the server says the result came from. An
+    unsectioned context (an older server, another retriever) is marked as one
+    item. ``keys`` collects the exact text each marked item opens with, so the
+    caller can count the ones that reach the context.
     """
 
-    SNIPPET_CHARS = 200
+    def remember(key: str) -> None:
+        if keys is not None and key not in keys:
+            keys.append(key)
 
-    def __init__(self, state: dict | None = None) -> None:
-        state = state or {}
-        self.turn = int(state.get("turn", 0) or 0)
-        records = state.get("tags")
-        self.records: list[dict] = [r for r in records or [] if isinstance(r, dict)]
-        self._by_id = {str(r.get("id")): r for r in self.records if r.get("id")}
-        self.found: list[str] = []  # this turn's tags, in the order first injected
+    def marked(origin: str, text: str) -> str:
+        out = f"{item_mark(origin, dataset)}\n{text}"
+        remember(out)
+        return out
 
-    @classmethod
-    def load(cls, state_dir, session_key: str) -> MemoryTags:
-        folder = session_state_dir(state_dir, session_key)
-        return cls(_read_json(folder / TAGS_FILE) if folder else None)
+    sections = split_sections(context)
+    if sections["passages"] is None and sections["entities"] is None and sections["facts"] is None:
+        if not (context or "").strip():
+            return context
+        return marked("Cognee memory", context)
+    blocks: list[str] = []
+    preamble = (sections["preamble"] or "").strip()
+    if preamble:
+        blocks.append(marked("Cognee memory", preamble))
+    if sections["passages"] is not None:
+        tagged = [marked(passage_origin(p), p) for p in split_passages(sections["passages"])]
+        if tagged:
+            blocks.append(PASSAGES_HEADING + "\n" + PASSAGE_SEPARATOR.join(tagged))
+    for key, heading, origin in (
+        ("entities", ENTITIES_HEADING, "knowledge graph entities"),
+        ("facts", FACTS_HEADING, "knowledge graph facts"),
+    ):
+        body = (sections[key] or "").strip("\n")
+        if body.strip():
+            opening = f"{heading} {item_mark(origin, dataset)}"
+            remember(f"{opening}\n{body.split(chr(10), 1)[0]}")
+            blocks.append(f"{opening}\n{body}")
+    return "\n\n".join(blocks).strip()
 
-    def save(self, state_dir, session_key: str) -> None:
-        folder = session_state_dir(state_dir, session_key)
-        if folder:
-            _write_json(folder / TAGS_FILE, {"turn": self.turn, "tags": self.records})
 
-    def assign(self, kind: str, origin: str, text: str, ident: str = "") -> str:
-        """The item's tag, without counting it as injected on this turn."""
-        key = _memory_id(kind, text, ident)
-        record = self._by_id.get(key)
-        if record is None:
-            record = {
-                "tag": f"m{len(self.records) + 1}",
-                "id": key,
-                "kind": kind,
-                "origin": origin,
-                "snippet": " ".join(str(text or "").split())[: self.SNIPPET_CHARS],
-            }
-            self.records.append(record)
-            self._by_id[key] = record
-        return record["tag"]
+def _update_credit_state(state_dir, session_key: str, change) -> None:
+    folder = session_state_dir(state_dir, session_key)
+    if folder:
+        path = folder / CREDIT_FILE
+        state = _read_json(path)
+        change(state)
+        _write_json(path, state)
 
-    def show(self, tag: str) -> None:
-        """Count ``tag`` as injected on this turn."""
-        for record in self.records:
-            if record.get("tag") == tag:
-                record["turn"] = self.turn
-                if tag not in self.found:
-                    self.found.append(tag)
-                return
 
-    def add(self, kind: str, origin: str, text: str, ident: str = "") -> str:
-        tag = self.assign(kind, origin, text, ident)
-        self.show(tag)
-        return tag
-
-    def label(self, kind: str, origin: str, text: str, ident: str = "") -> str:
-        """``[mN · origin]`` for an item, registering it."""
-        tag = self.add(kind, origin, text, ident)
-        return f"[{tag} · {origin}]" if origin else f"[{tag}]"
-
-    def tag_graph(self, context: str) -> str:
-        """Tag a graph-memory context: each passage, the entities and the facts.
-
-        An unsectioned context (an older server, another retriever) is tagged
-        as one item.
-        """
-        sections = split_sections(context)
-        if (
-            sections["passages"] is None
-            and sections["entities"] is None
-            and sections["facts"] is None
-        ):
-            if not (context or "").strip():
-                return context
-            return f"{self.label('memory', 'Cognee memory', context)}\n{context}"
-        blocks: list[str] = []
-        preamble = (sections["preamble"] or "").strip()
-        if preamble:
-            blocks.append(f"{self.label('memory', 'Cognee memory', preamble)}\n{preamble}")
-        if sections["passages"] is not None:
-            tagged = []
-            for passage in split_passages(sections["passages"]):
-                tagged.append(
-                    f"{self.label('passage', passage_origin(passage), passage)}\n{passage}"
-                )
-            if tagged:
-                blocks.append(PASSAGES_HEADING + "\n" + PASSAGE_SEPARATOR.join(tagged))
-        for key, heading, kind, origin in (
-            ("entities", ENTITIES_HEADING, "entities", "knowledge graph entities"),
-            ("facts", FACTS_HEADING, "facts", "knowledge graph facts"),
-        ):
-            body = (sections[key] or "").strip("\n")
-            if body.strip():
-                blocks.append(f"{heading} {self.label(kind, origin, body)}\n{body}")
-        return "\n\n".join(blocks).strip()
+def _turn(state: dict) -> int:
+    try:
+        return int(state.get("turn", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def begin_turn(state_dir, session_key: str) -> None:
-    """Start a new turn before anything can fail: no tag counts as this turn's yet.
+    """Start a new turn before anything can fail: nothing is injected on it yet.
 
     The recall hook calls this first, so a prompt whose recall returned early
-    (server down, no session, a timeout) has no tags of its own, and the Stop
-    hook cannot mistake the previous turn's for them.
+    (server down, no session, a timeout) is not an injected turn, and the Stop
+    hook cannot take the previous turn's memory for this one's.
     """
-    tags = MemoryTags.load(state_dir, session_key)
-    tags.turn += 1
-    tags.save(state_dir, session_key)
+    _update_credit_state(state_dir, session_key, lambda s: s.update(turn=_turn(s) + 1))
+
+
+def mark_injected(state_dir, session_key: str) -> None:
+    """Record that this turn injected memory with the credit instruction."""
+    _update_credit_state(state_dir, session_key, lambda s: s.update(injected_turn=_turn(s)))
+
+
+def injected_this_turn(state_dir, session_key: str) -> bool:
+    """Whether the current turn injected memory (``mark_injected``)."""
+    folder = session_state_dir(state_dir, session_key)
+    if not folder:
+        return False
+    state = _read_json(folder / CREDIT_FILE)
+    return "injected_turn" in state and state.get("injected_turn") == _turn(state)
 
 
 def credit_instruction(first_in_session: bool, found: int = 0, dataset: str = "") -> str:
@@ -761,26 +728,23 @@ def has_credited(state_dir, session_key: str) -> bool:
     return bool(folder and _read_json(folder / CREDIT_FILE).get("credited_turns"))
 
 
-def check_credits(answer: str, tags: MemoryTags) -> dict:
-    """Whether an answer carries the credit line, against what the session was given.
+def check_credits(answer: str, injected: bool) -> dict:
+    """Whether an answer carries the credit line.
 
-    Returns ``{"credited", "available", "known"}``: ``credited`` is whether the
-    answer has the logo-led credit line, ``available`` how many items this turn
-    injected and ``known`` how many the session has handed out. A credit with
-    ``known`` at 0 credits memory the session was never given.
+    Returns ``{"injected", "credited"}``: ``injected`` is whether this turn
+    injected memory, ``credited`` whether the answer has the logo-led credit
+    line. A credit on a turn that injected nothing is reported but not counted.
     """
-    this_turn = [r for r in tags.records if r.get("turn") == tags.turn]
     return {
+        "injected": bool(injected),
         "credited": bool(_CREDIT_LINE_RE.search(answer or "")),
-        "available": len(this_turn),
-        "known": len(tags.records),
     }
 
 
 def record_credit(state_dir, session_key: str, result: dict, ts: str = "") -> None:
-    """Count a turn that credited memory the session had been given."""
+    """Count a turn whose answer credited the memory it was given."""
     folder = session_state_dir(state_dir, session_key)
-    if not (folder and result.get("credited") and result.get("known")):
+    if not (folder and result.get("injected") and result.get("credited")):
         return
     path = folder / CREDIT_FILE
     state = _read_json(path)
@@ -838,22 +802,33 @@ def sync_notice(state: dict, now: float | None = None) -> tuple[str, float]:
             f"the save failed ({reason})" if reason else "the save failed"
         )
         left = "when you left at" if state.get("last_failure_trigger") == "final" else "at"
+        where = _notice_dataset(state.get("dataset"))
         message = (
-            f"🧠 This conversation wasn't saved to Cognee {left} {_clock(failed_at, now)}: {why}."
+            f"This conversation wasn't saved to {where or 'Cognee'} {left} "
+            f"{_clock(failed_at, now)}: {why}."
         )
         if ok_at:
-            message += f" An earlier save at {_clock(ok_at, now)} has the conversation up to then."
+            saved_to = _notice_dataset(state.get("improved_dataset"))
+            into = f" to {saved_to}" if saved_to and saved_to != where else ""
+            message += (
+                f" An earlier save{into} at {_clock(ok_at, now)} has the conversation up to then."
+            )
         return message, failed_at
     if ok_at:
         # "Sent", not "saved": the submit runs in the background, and a server
         # whose per-session lock was held skips it without saying so.
         left = "when you left at" if state.get("trigger") == "final" else "at"
-        return (
-            f"🧠 This conversation was sent to Cognee's long-term memory {left} "
-            f"{_clock(ok_at, now)}.",
-            ok_at,
-        )
+        # An older record has only ``dataset``, written by the same save.
+        where = _notice_dataset(state.get("improved_dataset") or state.get("dataset"))
+        into = f"{where} in Cognee's long-term memory" if where else "Cognee's long-term memory"
+        return f"This conversation was sent to {into} {left} {_clock(ok_at, now)}.", ok_at
     return "", 0.0
+
+
+def _notice_dataset(dataset) -> str:
+    """``the <name> dataset`` for the save notice; ``""`` when the record names none."""
+    name = str(dataset or "").strip()
+    return f"the {name} dataset" if name else ""
 
 
 def _notice_path(state_dir, session_id: str):

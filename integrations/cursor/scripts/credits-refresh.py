@@ -9,7 +9,8 @@ concurrently, so the QA store on the same event does not wait on it.
 
 The spend delta since the previous reading (normally the unlabeled
 prompt-time refresh in store-user-prompt) is attributed to the turn and
-rendered as ``last turn ~$X.XX``. ``refresh_credits`` never raises and no-ops
+recorded in the credits marker as ``last_op`` (no longer shown on the status
+line). ``refresh_credits`` never raises and no-ops
 entirely on a local server, so this hook is safe to fire unconditionally.
 """
 

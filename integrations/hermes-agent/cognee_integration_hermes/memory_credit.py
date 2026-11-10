@@ -29,6 +29,7 @@ import hashlib
 import os
 import re
 import threading
+from collections.abc import Sequence
 
 from .recall_text import (
     ENTITIES_HEADING,
@@ -128,37 +129,58 @@ FIRST_CREDIT_ADDENDUM = (
 )
 
 
-def _credit_rule(source: str, platform: str = "") -> str:
+def _credit_rule(source: str, platform: str = "", datasets: Sequence[str] = ()) -> str:
     # The dataset is named as "dataset <name>": a bare name such as "agent_sessions"
     # reads as a person or a document ("agent_sessions says…").
-    where = f"dataset {source}" if source else "Cognee memory"
+    if datasets:
+        # Auto recall: the server picked the datasets, and each item's tag names
+        # its own, so the line names the ones the answer used.
+        where = f"dataset {datasets[0]}"
+        said = (
+            "that it is based on the dataset named in the tag of each item you used, "
+            'written as "dataset <name>" (two datasets: "dataset a and dataset b"; an '
+            'item whose tag names no dataset: "Cognee memory")'
+        )
+    else:
+        where = f"dataset {source}" if source else "Cognee memory"
+        said = f'that it is based on {where}. Write "{where}" exactly so'
     if signs_with_logo(platform):
         return (
             'end the answer with one line that starts with "> " and says, in your own '
-            f'words, what you remembered and that it is based on {where}. Write "{where}" '
-            f"exactly so. For example:\n"
+            f"words, what you remembered and {said}. For example:\n"
             f"> you prefer the server over the CLI, based on {where}.\n"
             "Do not copy the example, and do not write the tags or the word Cognee in that "
             "line: the Cognee logo is added under it."
         )
     return (
         'end the answer with one line that starts with "> Cognee:" and says, in your own '
-        f'words, what you remembered and that it is based on {where}. Write "{where}" '
-        f"exactly so. For example:\n"
+        f"words, what you remembered and {said}. For example:\n"
         f"> Cognee: you prefer the server over the CLI, based on {where}.\n"
         "Do not copy the example, and do not write the tags in that line."
     )
 
 
+def with_dataset(origin: str, dataset: str) -> str:
+    """A tag's origin with the dataset the item came from, when the server named it."""
+    dataset = str(dataset or "").strip()
+    if not dataset:
+        return origin
+    return f"{origin} · dataset {dataset}" if origin else f"dataset {dataset}"
+
+
 def credit_instruction(
-    first_in_session: bool, found: int, source: str = "", platform: str = ""
+    first_in_session: bool,
+    found: int,
+    source: str = "",
+    platform: str = "",
+    datasets: Sequence[str] = (),
 ) -> str:
     noun = "1 memory" if found == 1 else f"{found} memories"
     text = (
         f"Crediting Cognee memory: Cognee found {noun} for this prompt, each tagged below "
         "as [mN · where it came from]. A memory recalled again in this session keeps its "
         "tag. If your answer uses information from a tagged item, "
-        f"{_credit_rule(source, platform)} Credit only items Cognee tagged, and "
+        f"{_credit_rule(source, platform, datasets)} Credit only items Cognee tagged, and "
         "only items your answer actually used. Never credit Cognee for what you know from "
         "project instruction files, your own memory files, the code, or this conversation. "
         "If no tagged item was used, do not mention memory."
@@ -166,11 +188,13 @@ def credit_instruction(
     return f"{text} {FIRST_CREDIT_ADDENDUM}" if first_in_session else text
 
 
-def tool_credit_instruction(source: str = "", platform: str = "") -> str:
+def tool_credit_instruction(
+    source: str = "", platform: str = "", datasets: Sequence[str] = ()
+) -> str:
     """The same instruction for results of the agent's own ``cognee_recall`` call."""
     return (
         "Each result is tagged [mN · where it came from]. If your answer uses one, "
-        f"{_credit_rule(source, platform)} Credit only results your answer "
+        f"{_credit_rule(source, platform, datasets)} Credit only results your answer "
         "actually used."
     )
 
@@ -185,7 +209,7 @@ _PLAIN_CREDIT_LINE_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(\S[^\n]*)$", 
 #: rest freely ("based on", "stored in", "come from"), so only the name is required.
 #: The logo rows may already follow it (an answer the hook drew, when it is stored).
 _NAMES_SOURCE = r"\b(?:dataset \S+|Cognee memory)"
-_ANSWER_END = rf"(?:\s*(?:{LOGOTYPE[0]}|{LOGOTYPE[1]})[ \t]*)*\s*\Z"
+_ANSWER_END = rf"(?:\s*(?:{LOGOTYPE[0]}[^\n]*|{LOGOTYPE[1]})[ \t]*)*\s*\Z"
 _SIGNED_LINE_RE = re.compile(
     rf"^([ \t]*)>[ \t]*(\S[^\n]*{_NAMES_SOURCE}[^\n]*?)[ \t]*$(?={_ANSWER_END})", re.M
 )
@@ -233,9 +257,11 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
     if not credit_enabled() or not response_text:
         return None
     platform = (platform or "").strip().lower()
-    if platform in COLOR_PLATFORMS and _PLAIN_CREDIT_RE.search(response_text):
+    if platform in COLOR_PLATFORMS and _PLAIN_CREDIT_LINE_RE.search(response_text):
         drawn = WORDMARK[:-1] + LOGO_SPACE + "$"
-        return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{drawn} ", response_text)
+        return _PLAIN_CREDIT_LINE_RE.sub(
+            lambda m: f"{m.group(1)}{drawn} {highlight_datasets(m.group(2))}", response_text
+        )
     if platform not in BRAILLE_PLATFORMS:
         return None
     line_re = next(
@@ -245,8 +271,12 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
         return None
     if platform != CLI_PLATFORM or _cli_streams():
         # Append-only: the streamed text stays, the logo goes underneath it as a
-        # signature, after a blank line so it is not drawn inside the quote.
-        return f"{response_text.rstrip()}\n\n{LOGOTYPE[0]}\n{LOGOTYPE[1]}"
+        # signature naming the datasets the line credits. The classic CLI prints the
+        # suffix as is, under the answer's closing line, so one newline is enough; the
+        # TUI renders markdown, where a blank line keeps the logo out of the quote.
+        line = line_re.search(response_text).group(2)
+        gap = "\n" if platform == CLI_PLATFORM else "\n\n"
+        return f"{response_text.rstrip()}{gap}{LOGOTYPE[0]}{signature(line)}\n{LOGOTYPE[1]}"
     # Two trailing spaces: a markdown hard break, so a renderer that joins the lines
     # of a paragraph (the classic CLI's ``final_response_markdown: render``) keeps
     # the rows stacked; invisible where lines are shown as written.
@@ -254,6 +284,44 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
         lambda m: f"{m.group(1)}{LOGOTYPE[0]}  {m.group(2)}  \n{m.group(1)}{LOGOTYPE[1]}",
         response_text,
     )
+
+
+#: A dataset the credit names: "dataset <name>" where the name ends the line or is
+#: followed by the next one ("based on dataset a, dataset b and dataset c."), so
+#: "a dataset is a set of…" in the sentence is left alone. Trailing punctuation stays
+#: outside the code, and a name already in backticks is not wrapped again.
+#: The backtick is written as ``\x60``: Hermes' install scanner reads a literal one
+#: next to a parenthesis as shell command substitution and refuses the update.
+_DATASET_NAME_RE = re.compile(
+    r"\bdataset (?!\x60)([^\s\x60]+?)"
+    r"(?=[.,;:!?)]*[ \t]*$|,?[ \t]+(?:and[ \t]+)?dataset[ \t])",
+    re.M,
+)
+
+
+def highlight_datasets(sentence: str) -> str:
+    """The credit's sentence with each dataset it names set as inline code.
+
+    Desktop renders markdown, so ``dataset `live_context_support_agent` `` stands out
+    from the sentence around it instead of reading as plain words.
+    """
+    tick = "\x60"
+    return _DATASET_NAME_RE.sub(lambda m: f"dataset {tick}{m.group(1)}{tick}", sentence)
+
+
+#: A dataset named anywhere in a credit line, set as code or not.
+_CREDITED_DATASET_RE = re.compile(r"\bdataset \x60?([\w\-]+(?:\.[\w\-]+)*)")
+
+
+def signature(line: str) -> str:
+    """What follows the logo's first row: ``based on <name> dataset`` for the datasets
+    the credit line names, or nothing when it names none ("Cognee memory")."""
+    names = list(dict.fromkeys(_CREDITED_DATASET_RE.findall(line or "")))
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"  based on {names[0]} dataset"
+    return f"  based on {', '.join(names[:-1])} and {names[-1]} datasets"
 
 
 def signs_with_logo(platform: str) -> bool:
@@ -350,12 +418,18 @@ class MemoryTags:
         self.records: list[dict] = []
         self._by_id: dict[str, dict] = {}
         self.found: list[str] = []  # this turn's tags, in the order first given
+        # The datasets this turn's graph memories came from, in the order first
+        # given; ``undated`` when one came with no dataset (an older server).
+        self.datasets: list[str] = []
+        self.undated = False
         self.credited = False  # whether an answer in this session credited memory
 
     def begin_turn(self) -> None:
         with self._lock:
             self.turn += 1
             self.found = []
+            self.datasets = []
+            self.undated = False
 
     def label(self, kind: str, origin: str, text: str) -> str:
         """``[mN · origin]`` for an item, registering it as given on this turn."""
@@ -377,12 +451,29 @@ class MemoryTags:
                 self.found.append(tag)
         return f"[{tag} · {origin}]" if origin else f"[{tag}]"
 
-    def tag_graph(self, context: str) -> str:
+    def note_dataset(self, dataset: str) -> None:
+        """Count a graph memory's dataset (blank: the server named none) for this turn."""
+        dataset = str(dataset or "").strip()
+        with self._lock:
+            if not dataset:
+                self.undated = True
+            elif dataset not in self.datasets:
+                self.datasets.append(dataset)
+
+    def credit_datasets(self) -> list[str]:
+        """This turn's datasets when every graph memory named one, else none."""
+        with self._lock:
+            return [] if self.undated else list(self.datasets)
+
+    def tag_graph(self, context: str, dataset: str = "") -> str:
         """Tag a graph-memory context: each passage, the entities and the facts.
 
         An unsectioned context (an older server, another retriever) is tagged
-        as one item.
+        as one item. ``dataset``, the one the server says the context came
+        from, joins every tag.
         """
+        if (context or "").strip():
+            self.note_dataset(dataset)
         sections = split_sections(context)
         if (
             sections["passages"] is None
@@ -391,14 +482,16 @@ class MemoryTags:
         ):
             if not (context or "").strip():
                 return context
-            return f"{self.label('memory', 'Cognee memory', context)}\n{context}"
+            origin = with_dataset("Cognee memory", dataset)
+            return f"{self.label('memory', origin, context)}\n{context}"
         blocks: list[str] = []
         preamble = (sections["preamble"] or "").strip()
         if preamble:
-            blocks.append(f"{self.label('memory', 'Cognee memory', preamble)}\n{preamble}")
+            origin = with_dataset("Cognee memory", dataset)
+            blocks.append(f"{self.label('memory', origin, preamble)}\n{preamble}")
         if sections["passages"] is not None:
             tagged = [
-                f"{self.label('passage', passage_origin(p), p)}\n{p}"
+                f"{self.label('passage', with_dataset(passage_origin(p), dataset), p)}\n{p}"
                 for p in split_passages(sections["passages"])
             ]
             if tagged:
@@ -409,7 +502,8 @@ class MemoryTags:
         ):
             body = (sections[key] or "").strip("\n")
             if body.strip():
-                blocks.append(f"{heading} {self.label(kind, origin, body)}\n{body}")
+                tag = self.label(kind, with_dataset(origin, dataset), body)
+                blocks.append(f"{heading} {tag}\n{body}")
         return "\n\n".join(blocks).strip()
 
     def check(self, answer: str) -> dict:

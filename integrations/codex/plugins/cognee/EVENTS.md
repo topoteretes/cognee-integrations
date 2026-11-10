@@ -90,6 +90,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:context_lookup_missing_session_key` | `recall.lookup_missing_session_key` |
 | `hook:context_lookup_session_key` | `recall.lookup_session_key` |
 | `hook:context_lookup_short_prompt` | `recall.lookup_short_prompt` |
+| `hook:context_lookup_sanitize_failed` | `recall.lookup_sanitize_failed` |
 | `hook:control_plane_request_failed` | `shared_memory.control_plane_request_failed` |
 | `hook:credits_fetch_empty` | `credits.fetch_empty` |
 | `hook:credits_fetch_failed` | `credits.fetch_failed` |
@@ -105,6 +106,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:dataset_ensure_redirect_failed` | `dataset.ensure_redirect_failed` |
 | `hook:dataset_ensured` | `dataset.ensured` |
 | `hook:dataset_switched` | `dataset.switched` |
+| `hook:recall_mode_set` | `recall.mode_set` |
+| `hook:recall_mode_invalid` | `recall.mode_invalid` |
+| `hook:recall_auto_route_error` | `recall.auto_route_error` |
+| `hook:recall_mode_notice_failed` | `recall.mode_notice_failed` |
+| `hook:recall_mode_notice_shown` | `recall.mode_notice_shown` |
 | `hook:drain_backoff_write_failed` | `drain.backoff_write_failed` |
 | `hook:drain_lock_error` | `drain.lock_error` |
 | `hook:drain_lock_release_failed` | `drain.lock_release_failed` |
@@ -153,7 +159,10 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:map_create_failed` | `map.create_failed` |
 | `hook:memory_credit` | `memory.credit` |
 | `hook:memory_credit_failed` | `memory.credit_failed` |
-| `hook:memory_tags_write_failed` | `memory.tags_write_failed` |
+| `hook:memory_credit_write_failed` | `memory.credit_write_failed` |
+| `hook:turn_status_write_failed` | `memory.turn_status_write_failed` |
+| `hook:turn_status_read_failed` | `memory.turn_status_read_failed` |
+| `hook:context_lookup_client_unknown` | `recall.client_unknown` |
 | `hook:missing_payload_session_id` | `missing.payload_session_id` |
 | `hook:mode_decision` | `runtime.decision` |
 | `hook:no_session_id` | `session.session_id` |
@@ -180,6 +189,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:precompact_sync_defer_failed` | `precompact.sync_defer_failed` |
 | `hook:precompact_sync_deferred` | `precompact.sync_deferred` |
 | `hook:project_memory_prepared` | `project.memory_prepared` |
+| `hook:project_memory_retry_mark_failed` | `project.memory_retry_mark_failed` |
 | `hook:prompt_missing_session_key` | `prompt.missing_session_key` |
 | `hook:prompt_pending` | `prompt.pending` |
 | `hook:prompt_run_exception` | `prompt.run_exception` |
@@ -191,15 +201,12 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
-| `hook:recall_dataset_hint` | `recall.dataset_hint` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
 | `hook:recall_error` | `recall.error` |
 | `hook:recall_graph_not_built` | `recall.graph_not_built` |
 | `hook:recall_guidance_absent` | `recall.guidance_absent` |
 | `hook:recall_health_accounting_failed` | `recall.health_accounting_failed` |
-| `hook:readable_datasets_refresh_failed` | `datasets.readable_refresh_failed` |
-| `hook:readable_datasets_refresh_deferred` | `datasets.readable_refresh_deferred` |
 | `hook:recall_server_down` | `recall.server_down` |
 | `hook:recall_skipped_not_ready` | `recall.skipped_not_ready` |
 | `hook:run_exception` | `run.exception` |
@@ -336,5 +343,30 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:stopfile_unlink_failed` | `idle_watcher.stopfile_unlink_failed` |
 | `idle-watcher:throttle_check_failed` | `idle_watcher.throttle_check_failed` |
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
+| `hook:coding_block_delivered` | `coding.block_delivered` |
+| `hook:coding_capture_failed` | `coding.capture_failed` |
+| `hook:coding_capture_no_session_key` | `coding.capture_no_session_key` |
+| `hook:coding_capture_pattern_invalid` | `coding.capture_pattern_invalid` |
+| `hook:coding_cooldown_improve` | `coding.cooldown_improve` |
+| `hook:coding_cooldown_improve_failed` | `coding.cooldown_improve_failed` |
+| `hook:coding_delivery_failed` | `coding.delivery_failed` |
+| `hook:coding_drain_failed` | `coding.drain_failed` |
+| `hook:coding_lesson_fetch_failed` | `coding.lesson_fetch_failed` |
+| `hook:coding_lessons_warmed` | `coding.lessons_warmed` |
+| `hook:coding_memory_server_unsupported` | `coding.memory_server_unsupported` |
+| `hook:coding_memory_support_check_failed` | `coding.memory_support_check_failed` |
+| `hook:coding_payload_unreadable` | `coding.payload_unreadable` |
+| `hook:coding_permission_check_failed` | `coding.permission_check_failed` |
+| `hook:coding_recall_failed` | `coding.recall_failed` |
+| `hook:coding_session_end_flush_failed` | `coding.session_end_flush_failed` |
+| `hook:coding_server_mode_mismatch` | `coding.server_mode_mismatch` |
+| `hook:coding_server_note_failed` | `coding.server_note_failed` |
+| `hook:coding_session_start_failed` | `coding.session_start_failed` |
+| `hook:coding_spawn_failed` | `coding.spawn_failed` |
+| `hook:coding_state_locked` | `coding.state_locked` |
+| `hook:coding_unit_captured` | `coding.unit_captured` |
+| `hook:coding_unit_drained` | `coding.unit_drained` |
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+`memory.credit`: the Stop hook's credit check, `{injected, credited}`. `injected` is whether the turn injected memory with the credit instruction (`injected_turn` in the session's `credit.json` is the current turn); `credited` whether the answer ends with the credit line (`logo_exact` is added for the ChatGPT app's credit: whether its icon was copied exactly). Only a credit on an injected turn is counted. Logged when either is true.

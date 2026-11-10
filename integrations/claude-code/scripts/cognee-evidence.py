@@ -46,8 +46,10 @@ def run(args):
     dataset, ids = resolve_active_dataset_ids()
     if args.dataset:
         dataset, ids = args.dataset, []
+    from _capture_policy import sanitize
+
     result = recall_via_http(
-        args.query,
+        sanitize(args.query),
         session_id="",
         top_k=args.top_k,
         scope=["graph"],

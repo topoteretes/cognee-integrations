@@ -309,7 +309,8 @@ class TestPrefetchProtocol(unittest.TestCase):
         self.assertEqual(kwargs["top_k"], 5)
         # The graph request carries no session id (SDK-904); the guidance lane does.
         self.assertIsNone(kwargs["session_id"])
-        self.assertIsNotNone(kwargs["datasets"])
+        # Auto recall (SDK-1393): unpinned, the graph lane names no dataset.
+        self.assertIsNone(kwargs["datasets"])
         self.assertEqual(kwargs["scope"], ["graph"])
         self.assertEqual(kwargs["query_type"], "HYBRID_COMPLETION")
         self.assertIs(kwargs["only_context"], True)

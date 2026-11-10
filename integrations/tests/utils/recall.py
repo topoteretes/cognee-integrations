@@ -69,7 +69,7 @@ def load_lookup(
     module = hook_module(suite, "session-context-lookup.py")
     monkeypatch.setattr(module, "get_session_key", lambda: session_key)
     if hasattr(module, "render_status_for_host"):
-        monkeypatch.setattr(module, "render_status_for_host", lambda key: status_line)
+        monkeypatch.setattr(module, "render_status_for_host", lambda key, auto=False: status_line)
     return module
 
 
@@ -129,6 +129,17 @@ class RecallRun:
     kwargs: dict[str, dict] = field(default_factory=dict)
     #: Whatever ``_run`` returned (the injected context, or None).
     output: Any = None
+    #: The status a hook kept for its Stop hook to print under the answer
+    #: (Codex), instead of a ``systemMessage`` above it.
+    status: str = ""
+
+    def message(self) -> str:
+        """What the person sees for this recall: the hook's ``systemMessage``
+        (nested on Claude Code, top-level elsewhere), or the status kept for
+        the Stop hook."""
+        output = self.output or {}
+        nested = (output.get("hookSpecificOutput") or {}).get("systemMessage")
+        return str(nested or output.get("systemMessage") or self.status or "")
 
     def detail(self, event: str) -> dict | None:
         """The detail dict of the first ``event``, or None if it never fired."""
@@ -156,6 +167,7 @@ def drive_recall(
     mode: str = "http",
     sdk_recall: Callable[..., Any] | dict[str, list] | None = None,
     saves_last_turn: dict | None = None,
+    auto_route: bool | Callable[..., bool] = False,
 ) -> RecallRun:
     """Run ``module._run(prompt)`` with every seam captured.
 
@@ -164,6 +176,9 @@ def drive_recall(
     ``prior_state``/``ready_hint`` set what the hook believes about the server
     before the attempt; ``slow_streak``/``slow_threshold`` drive timeout
     escalation without touching real streak files.
+
+    ``auto_route`` is what ``auto_recall_active`` answers (recall not pinned),
+    or a callable standing in for it; off by default.
 
     ``saves_last_turn`` is what the hook reads back from the save counter (all
     kinds zero by default), so a header test can hand it buffered writes.
@@ -230,17 +245,19 @@ def drive_recall(
     }
     for name, impl in seams.items():
         monkeypatch.setattr(module, name, impl)
-    # The cross-dataset hint's listing (claude-code / codex): stubbed to "no
-    # other datasets" so no hook test reaches the readable-datasets cache or
-    # the network. Left alone when the test already replaced it (the hook
-    # binds the common module's function by name, so an untouched seam is
-    # still that very object) — test_cross_dataset_search.py stubs its own.
-    common = sys.modules.get("_plugin_common")
-    original = getattr(common, "cached_readable_datasets", None)
-    if hasattr(module, "cached_readable_datasets") and (
-        original is None or module.cached_readable_datasets is original
-    ):
-        monkeypatch.setattr(module, "cached_readable_datasets", lambda **kw: [])
+    if hasattr(module, "stash_turn_status"):
+        monkeypatch.setattr(
+            module, "stash_turn_status", lambda _dir, _key, text: setattr(run, "status", text)
+        )
+        monkeypatch.setattr(module, "pop_turn_status", lambda _dir, _key: "")
+    # Auto recall (SDK-1393) reads the launch record and the environment:
+    # answered here, so no hook test depends on either.
+    monkeypatch.setattr(
+        module,
+        "auto_recall_active",
+        auto_route if callable(auto_route) else (lambda *a, **k: auto_route),
+        raising=False,
+    )
 
     if local_sdk:
         _install_local_sdk(module, monkeypatch, run, sdk_recall)

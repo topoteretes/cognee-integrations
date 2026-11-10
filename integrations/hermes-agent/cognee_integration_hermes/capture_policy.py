@@ -305,7 +305,9 @@ def redact(value, env: Mapping[str, str]):
         return value
     if isinstance(value, dict):
         return {
-            key: "[redacted:credential]" if _SECRET_KEY.match(str(key)) else redact(item, env)
+            redact(key, env): "[redacted:credential]"
+            if _SECRET_KEY.match(str(key))
+            else redact(item, env)
             for key, item in value.items()
         }
     if isinstance(value, list):

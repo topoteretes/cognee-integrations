@@ -1395,12 +1395,42 @@
       "env": {
         "COGNEE_CAPTURE_REDACT_PATTERNS": "[\"[\"]"
       },
+      "input": [
+        1,
+        null
+      ],
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "note": "a secret in an object key is redacted like a value",
+      "env": {},
+      "input": {
+        "pools": {
+          "postgresql://admin:hunter2@db.internal/app": {
+            "size": 5
+          }
+        }
+      },
+      "expected": {
+        "pools": {
+          "[redacted:connection]": {
+            "size": 5
+          }
+        }
+      }
+    },
+    {
+      "note": "an invalid custom pattern is reached by a string key",
+      "env": {
+        "COGNEE_CAPTURE_REDACT_PATTERNS": "[\"[\"]"
+      },
       "input": {
         "n": 1
       },
-      "expected": {
-        "n": 1
-      }
+      "error": true
     },
     {
       "note": "AWS credentials file body",

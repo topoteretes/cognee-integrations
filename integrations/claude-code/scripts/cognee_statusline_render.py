@@ -7,6 +7,7 @@ only env vars (``~/.cognee/.env`` included) and the plugin's own state files —
 no network calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
+(``auto (<dataset-name>)`` in place of the name while recall is auto)
 """
 
 from __future__ import annotations
@@ -170,10 +171,36 @@ def _active_dataset(session_id: str = "") -> str:
         return recorded
     # 2. env var (inherited from the shell that launched Claude Code)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
-    if v:
+    if v and v.lower() != "auto":  # reserved: "auto" means the default dataset
         return v
     # 3. default
     return _DEFAULT_DATASET
+
+
+def _recall_auto(host_id: str = "") -> bool:
+    """Whether graph recall is auto for this launch, from local state only.
+
+    Mirrors ``_plugin_common.recall_mode`` (this renderer does not import it): an
+    explicit read set pins; the launch record's own ``recall_pinned`` wins either
+    way, and a switch on a record written before recall modes existed pins;
+    otherwise ``COGNEE_PLUGIN_RECALL_MODE=pinned`` pins. Anything else is auto.
+    """
+    if os.environ.get("COGNEE_PLUGIN_READ_DATASET_IDS", "").strip():
+        return False
+    rec = _launch_record(str(host_id or ""))
+    if "recall_pinned" in rec:
+        return rec.get("recall_pinned") is not True
+    if rec.get("switched_at"):
+        return False
+    return os.environ.get("COGNEE_PLUGIN_RECALL_MODE", "").strip().lower() != "pinned"
+
+
+def _dataset_label(host_id: str = "", recall_auto: bool = False) -> str:
+    """The dataset as the status shows it: ``auto (<dataset>)`` while recall is
+    auto (the server picks the readable datasets each recall searches, and saves
+    go to ``<dataset>``), else the name, as Claude Code's row does."""
+    dataset = _active_dataset(str(host_id or ""))
+    return f"auto ({dataset})" if recall_auto else dataset
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
@@ -922,7 +949,7 @@ def _recall_diagnostic_segment(marker: dict, hits: dict) -> str:
 
 
 def _credits_segment() -> str:
-    """Cloud credits balance + approximate cost of the last memory operation.
+    """Cloud credits balance.
 
     Pure-local like everything here: reads only ``credits.json``, which the
     hooks write around each billable operation (see
@@ -932,9 +959,9 @@ def _credits_segment() -> str:
     talks to, and not opted out. A reading older than
     ``_CREDITS_AGE_HINT_SECONDS`` renders with a faint age hint. Balance is green —
     red once negative, which is exactly the state the user most needs to see
-    (a negative balance is real unfunded spend). The last-op cost renders at
-    normal weight and carries a ``~``: spend aggregates asynchronously
-    server-side, so the delta is an attribution, not an invoice.
+    (a negative balance is real unfunded spend). The marker's ``last_op``
+    (the approximate cost of the last memory operation) is not shown: in cloud
+    mode it was mostly a stale, sub-cent remember reading ("~$0.00").
     """
     choice = os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower()
     if choice in ("0", "false", "no", "off"):
@@ -992,15 +1019,6 @@ def _credits_segment() -> str:
     seg = f" · {color}credits: {sign}${abs(remaining):,.2f}\033[0m"
     if refused_op and not exhausted:
         seg += f" \033[31m(not enough for {refused_op})\033[0m"
-    last_op = entry.get("last_op")
-    if isinstance(last_op, dict):
-        label = str(last_op.get("label") or "").strip()
-        cost = last_op.get("cost_usd")
-        if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            # Normal weight (like the `cognee: <dataset>` text), NOT faint like
-            # the recall/saved counters: what the last operation cost is a
-            # first-class signal, not diagnostics.
-            seg += f" · last {label} ~${cost:,.2f}"
     hint = _credits_age_hint(age)
     if hint:
         seg += f" \033[2m({hint})\033[0m"
@@ -1081,7 +1099,7 @@ def _classic_line(session_id: str) -> str:
     )
     return (
         f"{_status_prefix(session_id)}{items}{_icon()}"
-        f"cognee: {_active_dataset(session_id)} · {_mode_label()}"
+        f"cognee: {_dataset_label(session_id, _recall_auto(session_id))} · {_mode_label()}"
         f"{_credits_segment()}{_recall_segment(session_id)}{_activity_segment(session_id)}"
         f"{_update_segment()}"
     )
@@ -1186,7 +1204,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         lead, health = health.rstrip() + " ", ""
     else:
         lead = f"{_DIM}○{_RESET} "
-    dataset = _clean_label(_active_dataset(session_id))
+    dataset = _clean_label(_dataset_label(session_id, _recall_auto(session_id)))
     badge = f"{lead}{purple}\033[1mcognee{_RESET}"
     brand = f"{badge} {dataset} · {purple}\033[1m{_active_mode()}{_RESET}"
     core = health + brand
@@ -1275,6 +1293,9 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         "state": state,
         "reason": reason,
         "dataset": dataset,
+        # Local state only, like the rest: the band labels the dataset
+        # "auto (<dataset>)" from its first draw, before the server's listing.
+        "recall": "auto" if _recall_auto(session_id) else "pinned",
         "mode": mode,
         "credits": credits,
         "credits_exhausted": credits_exhausted,

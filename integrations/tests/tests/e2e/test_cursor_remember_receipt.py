@@ -39,7 +39,7 @@ def _remember(suite, home, mock_server, extra=None):
         [
             BASH,
             str(suite.scripts_dir / "cognee-remember.sh"),
-            "Yuna likes Yukki",
+            "Yuno likes Yukki",
             "--dataset",
             "notes",
         ],

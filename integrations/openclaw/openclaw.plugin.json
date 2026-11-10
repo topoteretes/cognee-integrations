@@ -69,7 +69,12 @@
       },
       "datasetName": {
         "type": "string",
-        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. Ignored when multi-scope is enabled."
+        "description": "Cognee dataset name for single-scope mode (default: agent_sessions). Also settable via COGNEE_PLUGIN_DATASET env var. \"auto\" means the default dataset. With no recallMode set, a non-default name keeps recall pinned to it (recallMode \"auto\" routes instead). Ignored when multi-scope is enabled."
+      },
+      "recallMode": {
+        "type": "string",
+        "enum": ["auto", "pinned"],
+        "description": "Graph recall mode when a conversation has not chosen one (default: auto for the default dataset, pinned for a non-default datasetName). auto: recall names no dataset and a cognee >= 1.6.6 server routes each query. pinned: recall reads only the dataset the conversation saves to. A conversation's memory_switch_dataset action=pin / auto / switch wins over this. Also settable via COGNEE_PLUGIN_RECALL_MODE. Multi-scope mode always recalls from its configured scopes."
       },
       "companyDataset": {
         "type": "string",
@@ -280,7 +285,7 @@
       },
       "datasetSwitchTool": {
         "type": "boolean",
-        "description": "Also register the memory_switch_dataset agent tool: move one conversation to another dataset (list / current / switch / reset). Syncs the current session first; later capture, recall and session-end improve for that conversation target the new dataset (default: true)"
+        "description": "Also register the memory_switch_dataset agent tool: move one conversation to another dataset or set its recall mode (list / current / switch / pin / auto / reset). A switch syncs the current session first; later capture and session-end improve for that conversation target the new dataset, and recall follows the recall mode (default: true)"
       },
       "improveOnSessionEnd": {
         "type": "boolean",
@@ -311,6 +316,13 @@
           "type": "string"
         },
         "description": "Regexes matched against the prompt (leading whitespace stripped) to catch harness templates; matching prompts are excluded from auto-recall and capture. Replaces the defaults when set; [] disables this layer"
+      },
+      "memoryFileExclude": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Workspace-relative globs (*, **, ?) for memory files the sync skips, e.g. \"memory/drafts/**\". Replaces the defaults when set; [] disables it (default: [\"memory/dreaming/**\", \"memory/.dreams/**\"], OpenClaw dreaming reports)"
       },
       "autoIndex": {
         "type": "boolean",
@@ -381,6 +393,10 @@
     "datasetName": {
       "label": "Dataset Name (single-scope)",
       "placeholder": "agent_sessions"
+    },
+    "recallMode": {
+      "label": "Recall Mode",
+      "placeholder": "auto"
     },
     "companyDataset": {
       "label": "Company Dataset",
@@ -519,6 +535,9 @@
     },
     "noisePatterns": {
       "label": "Noise Patterns"
+    },
+    "memoryFileExclude": {
+      "label": "Memory File Exclude Globs"
     },
     "autoIndex": {
       "label": "Auto-Index on Startup"

@@ -152,8 +152,8 @@ async def _store_tool_call(payload: dict) -> None:
         allow_tool,
         is_plugin_invocation,
         low_signal_bash,
-        redact,
         safe_first_token,
+        sanitize,
     )
 
     try:
@@ -171,9 +171,9 @@ async def _store_tool_call(payload: dict) -> None:
     # Credit lines and the plugin's credit headers stay out of stored traces:
     # an agent that prints a search's output stores the instruction with it,
     # and later recalls hand it back as a rule (SDK-1071).
-    tool_input = strip_credit_deep(redact(tool_input))
-    tool_output = strip_credit_deep(redact(tool_output))
-    payload = redact(payload)
+    tool_input = strip_credit_deep(sanitize(tool_input))
+    tool_output = strip_credit_deep(sanitize(tool_output))
+    payload = sanitize(payload)
 
     command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
     status, error_message = _infer_status(payload)
@@ -298,17 +298,17 @@ async def _store_tool_call(payload: dict) -> None:
 
 
 def _check_memory_credit(payload: dict) -> None:
-    """Check whether the answer credits Cognee memory (SDK-1071).
+    """Check whether the answer credits the memory this turn injected (SDK-1071).
 
-    The recall hook tags each injected item ``m1``, ``m2``… and asks for a
-    logo-led credit line without the tags, so this logs whether the line is
-    there and how many items the turn injected, which measures how reliably
-    agents credit memory. The first credit of memory the session was given
-    switches off the longer first-credit wording for the rest of the session.
-    Local only: nothing is sent anywhere.
+    The recall hook records the turn it injected memory on with the credit
+    instruction; an answer on that turn that ends with the credit line is a
+    credit. The result goes to the log, which measures how reliably agents
+    credit memory (a credit on a turn that injected nothing is logged too, and
+    not counted), and the first credit switches off the longer first-credit
+    wording for the rest of the session. Local only: nothing is sent anywhere.
     """
     import _plugin_common
-    from _recall_text import MemoryTags, check_credits, credit_enabled, record_credit
+    from _recall_text import check_credits, credit_enabled, injected_this_turn, record_credit
 
     if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         return
@@ -316,21 +316,21 @@ def _check_memory_credit(payload: dict) -> None:
     if not msg or msg == "null":
         return
     key = get_session_key()
-    result = check_credits(msg, MemoryTags.load(_plugin_common._PLUGIN_DIR, key))
-    if not result["credited"] and not result["available"]:
-        return  # nothing injected, nothing cited: not a turn that could credit
+    result = check_credits(msg, injected_this_turn(_plugin_common._PLUGIN_DIR, key))
+    if not result["credited"] and not result["injected"]:
+        return  # nothing injected, nothing credited: not a turn that could credit
     record_credit(_plugin_common._PLUGIN_DIR, key, result, ts=str(int(time.time())))
     hook_log("memory_credit", result)
 
 
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
-    from _capture_policy import capture_enabled, redact
+    from _capture_policy import capture_enabled, sanitize
     from _recall_text import strip_credit
 
     if not capture_enabled():
         return
-    payload = redact(payload)
+    payload = sanitize(payload)
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
     if not msg or msg == "null":
         return
@@ -352,9 +352,9 @@ async def _store_assistant_stop(payload: dict) -> None:
     # separate question-only and answer-only QA entries for the same turn.
     entry = {
         "type": "qa",
-        "question": strip_credit(redact(pending.get("prompt", ""))),
+        "question": strip_credit(sanitize(pending.get("prompt", ""))),
         "answer": msg,
-        "context": redact(pending.get("context", "")),
+        "context": sanitize(pending.get("context", "")),
     }
 
     if not server_usable(runtime.get("base_url", "")):

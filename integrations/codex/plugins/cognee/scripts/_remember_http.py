@@ -222,6 +222,10 @@ def do_remember(
     ``.txt`` rename would silently ingest code as prose through the LLM
     pipeline. Reading the file here (not in the shell) also avoids ARG_MAX
     limits on large sources.
+
+    Inline text is sanitized first (``<private>`` spans, then the secret
+    patterns), whatever ``COGNEE_CAPTURE`` says: that switch is for automatic
+    capture. File bytes are uploaded unchanged.
     """
     url = service_url.rstrip("/") + "/api/v1/remember"
     if file_path:
@@ -230,6 +234,10 @@ def do_remember(
                 content = fh.read()
         except OSError as e:
             return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
+    elif isinstance(content, str):
+        from _capture_policy import sanitize
+
+        content = sanitize(content)
     if isinstance(content, str):
         content = content.encode("utf-8")
     # Hash only when the name needs it: a --file upload keeps its basename.
@@ -285,18 +293,20 @@ def do_remember(
         return UNREACHABLE
 
     # The server responded with 2xx. A body we can't parse is fine —
-    # the important thing is the server accepted the request.
+    # the important thing is the server accepted the request. The result names
+    # where the write went, so a caller reports that rather than its own guess.
+    accepted = {"ok": True, "dataset": dataset} if dataset else {"ok": True}
     try:
         data = json.loads(raw or "{}")
     except (json.JSONDecodeError, ValueError):
-        return {"ok": True}
+        return accepted
 
     if isinstance(data, dict) and data.get("error"):
         msg = str(data.get("error"))[:200]
         sys.stderr.write("[cognee-remember] server returned error: %s\n" % msg)
         return _error(200, msg)
 
-    result = {"ok": True}
+    result = dict(accepted)
     if isinstance(data, dict):
         if data.get("dataset_id"):
             result["dataset_id"] = str(data["dataset_id"])
@@ -334,6 +344,10 @@ def main(argv):
     # are uploaded under their real basename so code files route as code.
     # dataset_id (arg 7) addresses the dataset by UUID instead of the name.
     a = list(argv) + [""] * 7
+    # COGNEE_CAPTURE_REDACT(_PATTERNS) may live in ~/.cognee/.env, as for the hooks.
+    from _env_file import load_env_file
+
+    load_env_file()
     result = do_remember(
         a[0],
         a[1],
@@ -344,6 +358,11 @@ def main(argv):
         dataset_id=a[6],
         timeout=_remember_timeout(),
     )
+    report(result)
+
+
+def report(result) -> None:
+    """Print a remember's result, and note a server answer on the status line."""
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
     if result != UNREACHABLE:
         # Refresh the status-line credits marker, attributing the spend delta
