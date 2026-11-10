@@ -136,6 +136,17 @@ integrations:
     migration_status: done
     notes: "Dify tool plugin for Cognee Cloud and self-hosted Cognee – remember, recall, forget, improve plus add/cognify/search/update/delete over the cognee /api/v1 HTTP API (tested with cognee 1.6.1)"
 
+  - slug: band
+    name: "Cognee Memory Adapter for Band"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-band"
+    cognee_dependency: http-api
+    current_version: "0.1.0"
+    migration_status: done
+    notes: "Band (band.ai) SDK adapter wrapper – auto-recall/QA capture on room messages, session-to-graph improve, cognee_search/cognee_remember tools"
+
   - slug: google-adk
     name: "Cognee Integration for Google ADK"
     owner: cognee
