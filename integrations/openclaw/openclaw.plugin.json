@@ -317,6 +317,13 @@
         },
         "description": "Regexes matched against the prompt (leading whitespace stripped) to catch harness templates; matching prompts are excluded from auto-recall and capture. Replaces the defaults when set; [] disables this layer"
       },
+      "memoryFileExclude": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Workspace-relative globs (*, **, ?) for memory files the sync skips, e.g. \"memory/drafts/**\". Replaces the defaults when set; [] disables it (default: [\"memory/dreaming/**\", \"memory/.dreams/**\"], OpenClaw dreaming reports)"
+      },
       "autoIndex": {
         "type": "boolean",
         "description": "Auto-sync memory files to Cognee on plugin startup (default: true)"
@@ -528,6 +535,9 @@
     },
     "noisePatterns": {
       "label": "Noise Patterns"
+    },
+    "memoryFileExclude": {
+      "label": "Memory File Exclude Globs"
     },
     "autoIndex": {
       "label": "Auto-Index on Startup"
