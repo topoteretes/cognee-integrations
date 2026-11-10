@@ -8,7 +8,7 @@
 """Band agent with shared Cognee memory.
 
 Wraps a stock AnthropicAdapter with CogneeMemoryAdapter: every room message
-gets relevant context recalled from the shared `agent_sessions` dataset, every
+gets relevant context recalled from the shared `band_sessions` dataset, every
 turn is captured as a QA pair, and sessions are bridged into the graph when a
 room closes or the agent stops. The `cognee_search` / `cognee_remember` tools
 let the model make explicit memory calls too.

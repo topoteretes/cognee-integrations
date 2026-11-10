@@ -18,7 +18,7 @@ _COGNEE_HOME = Path.home() / ".cognee"
 _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 
 DEFAULT_BASE_URL = "http://localhost:8011"
-DEFAULT_DATASET = "agent_sessions"
+DEFAULT_DATASET = "band_sessions"
 # Upper bound for COGNEE_RECALL_TOP_K: every result goes into the prompt.
 MAX_TOP_K = 10
 
@@ -121,7 +121,9 @@ class CogneeSettings:
         settings = cls(
             base_url=os.environ.get("COGNEE_BASE_URL", "").strip() or DEFAULT_BASE_URL,
             api_key=os.environ.get("COGNEE_API_KEY", "").strip(),
-            dataset=os.environ.get("COGNEE_PLUGIN_DATASET", "").strip() or DEFAULT_DATASET,
+            # Band-only on purpose: COGNEE_PLUGIN_DATASET belongs to the IDE
+            # plugins, and honouring it here would silently share their memory.
+            dataset=os.environ.get("COGNEE_BAND_DATASET", "").strip() or DEFAULT_DATASET,
         )
         top_k = os.environ.get("COGNEE_RECALL_TOP_K", "").strip()
         if top_k.isdigit() and int(top_k) > 0:

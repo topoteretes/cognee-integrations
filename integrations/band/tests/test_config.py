@@ -26,7 +26,7 @@ def test_resolve_from_env(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "_loaded", True)  # skip file load
     monkeypatch.setenv("COGNEE_BASE_URL", "https://srv.test")
     monkeypatch.setenv("COGNEE_API_KEY", "ck_abc")
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "my-ds")
+    monkeypatch.setenv("COGNEE_BAND_DATASET", "my-ds")
     monkeypatch.setenv("COGNEE_RECALL_TOP_K", "7")
     s = CogneeSettings.resolve()
     assert s.base_url == "https://srv.test"
@@ -40,14 +40,22 @@ def test_resolve_defaults(monkeypatch):
     for var in (
         "COGNEE_BASE_URL",
         "COGNEE_API_KEY",
-        "COGNEE_PLUGIN_DATASET",
+        "COGNEE_BAND_DATASET",
         "COGNEE_RECALL_TOP_K",
     ):
         monkeypatch.delenv(var, raising=False)
     s = CogneeSettings.resolve()
     assert s.base_url == "http://localhost:8011"
-    assert s.dataset == "agent_sessions"
+    assert s.dataset == "band_sessions"
     assert s.top_k == 5
+
+
+def test_plugin_dataset_var_is_ignored(monkeypatch):
+    # The IDE plugins' dataset must not leak into a Band agent by default.
+    monkeypatch.setattr(config, "_loaded", True)
+    monkeypatch.delenv("COGNEE_BAND_DATASET", raising=False)
+    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "agent_sessions")
+    assert CogneeSettings.resolve().dataset == "band_sessions"
 
 
 def test_top_k_is_capped(monkeypatch):
@@ -58,7 +66,7 @@ def test_top_k_is_capped(monkeypatch):
 
 def test_overrides_beat_env(monkeypatch):
     monkeypatch.setattr(config, "_loaded", True)
-    monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "env-ds")
+    monkeypatch.setenv("COGNEE_BAND_DATASET", "env-ds")
     s = CogneeSettings.resolve(dataset="override-ds")
     assert s.dataset == "override-ds"
 

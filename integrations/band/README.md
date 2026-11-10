@@ -12,9 +12,9 @@ Give any Band agent a persistent, shared knowledge graph in one line of code.
 
 [Band](https://band.ai) is where agents and humans work together: agents you run yourself connect to Band and share rooms with people and other agents. You build them with the [Band Python SDK](https://pypi.org/project/band-sdk/) by giving an `Agent` an *adapter* that holds your LLM logic (Anthropic, LangGraph, CrewAI, Pydantic AI, and others).
 
-On their own, Band agents keep nothing between rooms or restarts. `CogneeMemoryAdapter` wraps your adapter and connects it to a Cognee knowledge graph, the same graph the Cognee plugins for Claude Code and Codex write to:
+On their own, Band agents keep nothing between rooms or restarts. `CogneeMemoryAdapter` wraps your adapter and connects it to a Cognee knowledge graph, which it can share with the Cognee plugins for Claude Code and Codex:
 
-- **Auto-recall.** Relevant memory is added above each room message before your adapter sees it.
+- **Auto-recall.** Relevant memory is added below each room message before your adapter sees it.
 - **Auto-capture.** Each question and the reply your adapter sent are stored, in the background.
 - **Consolidation.** When a room closes or the agent stops, the room's session is turned into graph memory by Cognee's `improve` pipeline.
 - **Explicit tools.** Optionally, the model gets `cognee_search` and `cognee_remember`.
@@ -76,7 +76,7 @@ Precedence is `exported env vars` > `~/.cognee/.env` > `defaults`. A shell expor
 |---|---|---|
 | `COGNEE_BASE_URL` | `http://localhost:8011` | Cognee server URL |
 | `COGNEE_API_KEY` | unset | sent as the `X-Api-Key` header |
-| `COGNEE_PLUGIN_DATASET` | `agent_sessions` | dataset to read and write |
+| `COGNEE_BAND_DATASET` | `band_sessions` | dataset to read and write. The plugins' `COGNEE_PLUGIN_DATASET` is ignored |
 | `COGNEE_RECALL_TOP_K` | `5` | results per recall (at most 10) |
 | `COGNEE_ENV_FILE` | `~/.cognee/.env` | override the config file location |
 
@@ -172,7 +172,7 @@ uv run examples/memory_agent.py
 **Check startup.** With logging on you should see:
 
 ```
-cognee memory active: dataset=agent_sessions server=https://your-instance.cognee.ai
+cognee memory active: dataset=band_sessions server=https://your-instance.cognee.ai
 ```
 
 A wrong server shows up here, not three turns later.
@@ -185,7 +185,7 @@ A wrong server shows up here, not three turns later.
 
 Use a new room. Same-room recall could just be conversation history.
 
-**Check the cross-harness path.** Tell the Cognee Claude Code plugin a fact in a terminal session, let it sync, then ask your Band agent in a room. Both default to the `agent_sessions` dataset, so the answer comes back. This is the demo worth showing someone.
+**Check the cross-harness path.** Tell the Cognee Claude Code plugin a fact in a terminal session, let it sync, then ask your Band agent in a room. The plugin writes to `agent_sessions` by default, so start the agent with `COGNEE_BAND_DATASET=agent_sessions` and the answer comes back. This is the demo worth showing someone.
 
 ---
 
@@ -235,11 +235,12 @@ When recall finds nothing, nothing is injected and the model sees only the origi
 
 ## 6. Choosing your memory scope
 
-`COGNEE_PLUGIN_DATASET` is the isolation control. Recall reads exactly one dataset, so it is a hard boundary.
+`COGNEE_BAND_DATASET` is the isolation control. Recall reads exactly one dataset, so it is a hard boundary.
 
 | You want | Set |
 |---|---|
-| One shared brain across all agents and coding harnesses | leave the default `agent_sessions` |
+| One shared brain across all Band agents | leave the default `band_sessions` |
+| One shared brain with the Claude Code and Codex plugins | `agent_sessions`, the plugins' default |
 | Isolation per team or product | one dataset name per team |
 | Full isolation per agent | one dataset name per agent |
 
