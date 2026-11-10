@@ -142,7 +142,7 @@ def test_remember_with_auto_only_in_the_env_file_saves_to_the_default_dataset(
         extra={"COGNEE_REMEMBER_WAIT_SECONDS": "0"},
     )
     result = subprocess.run(
-        [BASH, str(suite.scripts_dir / "cognee-remember.sh"), "Yuna likes Yukki"],
+        [BASH, str(suite.scripts_dir / "cognee-remember.sh"), "Yuno likes Yukki"],
         env=env,
         cwd=str(temp_home),
         capture_output=True,

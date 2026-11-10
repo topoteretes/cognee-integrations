@@ -356,14 +356,14 @@ def test_cursor_save_receipt_header(suite, rt):
 def test_cursor_save_receipt_is_not_a_memory_credit(suite, rt):
     if suite.name != "cursor":
         pytest.skip("only cursor ends a save with a receipt")
-    receipt = f"Saved.\n> {rt.LOGOTYPE} Saved to the agent_sessions dataset: Yuna likes Yukki."
+    receipt = f"Saved.\n> {rt.LOGOTYPE} Saved to the agent_sessions dataset: Yuno likes Yukki."
     assert rt.check_credits(receipt, True)["credited"] is False
 
 
 def test_cursor_strip_credit_cuts_receipts_headers_and_the_off_note(suite, rt):
     if suite.name != "cursor":
         pytest.skip("only cursor strips credit text before storing")
-    receipt = f"Saved.\n\n> {rt.LOGOTYPE} Saved to the agent_sessions dataset: Yuna likes Yukki."
+    receipt = f"Saved.\n\n> {rt.LOGOTYPE} Saved to the agent_sessions dataset: Yuno likes Yukki."
     assert rt.strip_credit(receipt) == "Saved."
     for header in (
         rt.search_credit_header(True, "agent_sessions"),
