@@ -223,6 +223,13 @@ export type CogneePluginConfig = {
    */
   noisePatterns?: string[];
 
+  /**
+   * Workspace-relative globs (*, **, ?) for memory files the sync skips, e.g.
+   * "memory/drafts/**". Default: ["memory/dreaming/**", "memory/.dreams/**"]
+   * (OpenClaw dreaming reports). Replaces the defaults when set; [] disables it.
+   */
+  memoryFileExclude?: string[];
+
   // --- Automation ---
   autoRecall?: boolean;
   autoIndex?: boolean;

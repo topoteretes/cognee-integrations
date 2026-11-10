@@ -51,7 +51,8 @@ from anywhere else.
 **Captured.** The user prompts and assistant answers of each turn, the tool calls the
 agent makes (name, arguments and output, filtered by the
 [capture policy](#sessions)), and the workspace memory files (`MEMORY.md`,
-`memory/**/*.md`) when `autoIndex` is on. Credentials, private keys and database URLs
+`memory/**/*.md`, minus OpenClaw's dreaming reports under `memory/dreaming/` and
+anything else matched by `memoryFileExclude`) when `autoIndex` is on. Credentials, private keys and database URLs
 are redacted before anything is stored, and calls touching `.env`, credential and key
 files are never captured. Heartbeat and cron turns are skipped. `captureSession: false`
 turns turn capture off; `autoIndex: false` stops the file sync.
@@ -618,6 +619,14 @@ OpenClaw drives agents with synthetic prompts the user never typed: heartbeat pr
 |--------|------|---------|-------------|
 | `noiseTriggers` | string[] | `["heartbeat","cron"]` | `ctx.trigger` values treated as harness turns. `[]` disables this layer |
 | `noisePatterns` | string[] | `["^Read HEARTBEAT\\.md", "^System:\\s", "^\\[cron\\b"]` | Regexes matched against the prompt (leading whitespace stripped). Replaces the defaults when set; `[]` disables this layer |
+
+### Memory file exclusions
+
+The file sync collects `MEMORY.md` and every `.md` under `memory/`, except OpenClaw's own session transcripts (`memory/YYYY-MM-DD-HHMM.md`) and paths matched by `memoryFileExclude`. By default that list skips OpenClaw's dreaming output: the per-phase reports in `memory/dreaming/` and the working files in `memory/.dreams/`. Dreaming's deep phase already promotes the lasting entries into `MEMORY.md`, which is still synced. Excluding a file that was synced before forgets it from the graph on the next sync.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `memoryFileExclude` | string[] | `["memory/dreaming/**", "memory/.dreams/**"]` | Workspace-relative globs (`*`, `**`, `?`) for memory files the sync skips, e.g. `"memory/drafts/**"`. Replaces the defaults when set (list them again to keep them); `[]` disables it |
 
 ### Search Types
 

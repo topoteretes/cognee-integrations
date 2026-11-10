@@ -14,6 +14,9 @@
  *   * OpenClaw's own session transcripts (`memory/YYYY-MM-DD-HHMM.md`) are skipped
  *     — cognee's session cache already holds those turns, and ingesting them again
  *     would double-count every conversation on the next `/improve`;
+ *   * files matching an exclude glob are skipped; by default that is OpenClaw's
+ *     dreaming output (`memory/dreaming/**`, `memory/.dreams/**`), and a
+ *     configured list replaces the defaults (issue #572);
  *   * a missing workspace is empty, not an error (ENOENT is swallowed; anything
  *     else propagates);
  *   * `path` is workspace-relative while `absPath` is absolute, and `hash` is a
@@ -25,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { collectMemoryFiles, hashText } from "../../src/files";
+import { resolveConfig } from "../../src/config";
 
 let workspace: string;
 
@@ -139,5 +143,73 @@ describe("collectMemoryFiles", () => {
     // MEMORY.md would throw EISDIR and fail the whole sync.
     await mkdir(join(workspace, "MEMORY.md"), { recursive: true });
     await expect(collectMemoryFiles(workspace)).resolves.toEqual([]);
+  });
+});
+
+describe("collectMemoryFiles exclude globs (#572)", () => {
+  // OpenClaw's dreaming writes one report per phase per day; the deep phase already
+  // promotes the durable entries into MEMORY.md, so the reports are only noise.
+  async function putDreaming(): Promise<void> {
+    for (const phase of ["light", "rem", "deep"]) {
+      await put(`memory/dreaming/${phase}/2026-11-03.md`);
+    }
+    await put("memory/dreaming/shadow-trials/2026-11-03/abc123.md");
+    await put("memory/.dreams/session-corpus/2026-11-03.md");
+  }
+
+  async function pathsWith(exclude?: string[]): Promise<string[]> {
+    return (await collectMemoryFiles(workspace, exclude)).map((f) => f.path.replace(/\\/g, "/")).sort();
+  }
+
+  it("skips dreaming output by default and keeps ordinary notes", async () => {
+    await putDreaming();
+    await put("MEMORY.md");
+    await put("memory/2026-11-03.md");
+    await put("memory/company/handbook.md");
+
+    await expect(pathsWith()).resolves.toEqual([
+      "MEMORY.md",
+      "memory/2026-11-03.md",
+      "memory/company/handbook.md",
+    ]);
+  });
+
+  it("does not skip a note whose name only starts like the dreaming dir", async () => {
+    await put("memory/dreaming-notes.md");
+    await put("memory/dreaming.md");
+    await expect(pathsWith()).resolves.toEqual(["memory/dreaming-notes.md", "memory/dreaming.md"]);
+  });
+
+  it("replaces the defaults with a configured list", async () => {
+    await putDreaming();
+    await put("memory/drafts/wip.md");
+    await put("memory/keep.md");
+
+    const paths = await pathsWith(["memory/drafts/**"]);
+    expect(paths).not.toContain("memory/drafts/wip.md");
+    expect(paths).toContain("memory/keep.md");
+    expect(paths).toContain("memory/dreaming/light/2026-11-03.md");
+  });
+
+  it("collects everything again with an empty list", async () => {
+    await putDreaming();
+    await expect(pathsWith([])).resolves.toHaveLength(5);
+  });
+
+  it("can exclude MEMORY.md itself", async () => {
+    await put("MEMORY.md");
+    await put("memory/keep.md");
+    await expect(pathsWith(["MEMORY.md"])).resolves.toEqual(["memory/keep.md"]);
+  });
+
+  it("still skips session transcripts whatever the exclude list", async () => {
+    await put("memory/2026-08-17-1432.md");
+    await expect(pathsWith([])).resolves.toEqual([]);
+  });
+
+  it("resolveConfig defaults memoryFileExclude to the dreaming dirs and honours []", () => {
+    expect(resolveConfig({}).memoryFileExclude).toEqual(["memory/dreaming/**", "memory/.dreams/**"]);
+    expect(resolveConfig({ memoryFileExclude: [] }).memoryFileExclude).toEqual([]);
+    expect(resolveConfig({ memoryFileExclude: ["a/**", 3] }).memoryFileExclude).toEqual(["a/**"]);
   });
 });

@@ -84,6 +84,14 @@ export const DEFAULT_SCOPE_ROUTING: ScopeRoute[] = [
 /** Glob patterns for memory files, relative to workspace root. */
 export const MEMORY_FILE_PATTERNS = ["MEMORY.md", "memory"];
 
+/**
+ * Workspace-relative globs that `collectMemoryFiles` skips. OpenClaw's dreaming
+ * writes per-phase reports to memory/dreaming/<phase>/<day>.md (and its working
+ * state to memory/.dreams/); the deep phase already promotes the durable entries
+ * into MEMORY.md, so ingesting the reports only adds noise (issue #572).
+ */
+export const DEFAULT_MEMORY_FILE_EXCLUDE: string[] = ["memory/dreaming/**", "memory/.dreams/**"];
+
 // ---------------------------------------------------------------------------
 // Env var resolution
 // ---------------------------------------------------------------------------
@@ -245,6 +253,11 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const noiseTriggers = Array.isArray(raw.noiseTriggers) ? raw.noiseTriggers : DEFAULT_NOISE_TRIGGERS;
   const noisePatterns = Array.isArray(raw.noisePatterns) ? raw.noisePatterns : DEFAULT_NOISE_PATTERNS;
 
+  // Memory file sync
+  const memoryFileExclude = Array.isArray(raw.memoryFileExclude)
+    ? raw.memoryFileExclude.filter((v): v is string => typeof v === "string")
+    : DEFAULT_MEMORY_FILE_EXCLUDE;
+
   // Session
   const enableSessions = typeof raw.enableSessions === "boolean" ? raw.enableSessions : true;
   const persistSessionsAfterEnd = typeof raw.persistSessionsAfterEnd === "boolean" ? raw.persistSessionsAfterEnd : true;
@@ -264,7 +277,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     mode, baseUrl, apiKey, username, password, datasetName, recallMode,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
     recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
-    recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, recapTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
+    recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, recapTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns, memoryFileExclude,
     enableSessions, persistSessionsAfterEnd, captureSession,
     captureTools, captureDenyTools, captureDenyPaths, captureRedact, captureRedactPatterns,
     searchType, searchPrompt, deleteMode,

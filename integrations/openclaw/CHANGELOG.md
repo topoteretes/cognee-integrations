@@ -51,6 +51,12 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   `datasetName: "auto"` still means the default dataset.
 
 ### Fixed
+- **OpenClaw dreaming reports are no longer synced as memory (#572).** The file sync now
+  skips `memory/dreaming/**` and `memory/.dreams/**` by default; dreaming's deep phase
+  already promotes the lasting entries into `MEMORY.md`. A new `memoryFileExclude` option
+  takes your own workspace-relative globs (it replaces the defaults; `[]` turns it off).
+  Dreaming reports synced by an earlier version are forgotten from the graph on the first
+  sync after upgrading.
 - **Dataset overrides keep their recall mode across gateway restarts**, and a conversation's
   `key:` and `sid:` entries are always written together, so they cannot disagree after a
   reload. `memory_switch_dataset` waits for the saved overrides to load before it answers.
