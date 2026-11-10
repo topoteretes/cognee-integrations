@@ -2606,9 +2606,25 @@ def _grant_role_on_datasets(
     fail the batch). Outcomes are memoised in ``marker["granted"]``:
     ``"ok"`` never retried, a denial retried hourly and logged when it is
     new. Returns the ids the role holds read+write on."""
-    granted = marker.setdefault("granted", {})
+    return _grant_permissions(
+        principal_key, role_id, dataset_ids, marker, "granted", ("read", "write")
+    )
+
+
+def _grant_permissions(
+    principal_key: str,
+    principal_id: str,
+    dataset_ids: list[str],
+    marker: dict,
+    memo_key: str,
+    permissions: tuple,
+) -> set[str]:
+    """Grant ``permissions`` to ``principal_id`` on each dataset, memoised in
+    ``marker[memo_key]`` (see ``_grant_role_on_datasets``). Returns the ids it
+    holds all of them on."""
+    granted = marker.setdefault(memo_key, {})
     if not isinstance(granted, dict):
-        granted = marker["granted"] = {}
+        granted = marker[memo_key] = {}
     now = time.time()
     for dataset_id in dataset_ids:
         prior = granted.get(dataset_id)
@@ -2619,9 +2635,9 @@ def _grant_role_on_datasets(
         ):
             continue
         outcome = "ok"
-        for permission in ("read", "write"):
+        for permission in permissions:
             status, _ = _control_plane_request(
-                f"/api/v1/permissions/datasets/{role_id}?permission_name={permission}",
+                f"/api/v1/permissions/datasets/{principal_id}?permission_name={permission}",
                 [dataset_id],
                 api_key=principal_key,
             )
@@ -2644,6 +2660,28 @@ def _grant_role_on_datasets(
             continue
         granted[dataset_id] = outcome
     return {dataset_id for dataset_id, outcome in granted.items() if outcome == "ok"}
+
+
+def _grant_agent_delete(principal_key: str, agent_id: str, dataset_id: str, marker: dict) -> None:
+    """Give the coding plugin's own agent ``delete`` on the dataset it writes to.
+
+    Coding memory only (``COGNEE_CODING_MEMORY``): the coding distillation
+    replaces a lesson by deleting the older one with its state key, and refuses
+    to run without delete next to write. The grant goes to this agent, not the
+    shared role, so sibling agents gain nothing, and only on the launch's write
+    target. Memoised in ``marker["delete_granted"]`` like the role's grants: "ok"
+    is never retried, a denial is retried hourly. Turning coding mode off does
+    not revoke it.
+    """
+    if not (agent_id and dataset_id):
+        return
+    try:
+        from config import coding_memory_enabled  # type: ignore
+    except Exception:
+        return
+    if not coding_memory_enabled():
+        return
+    _grant_permissions(principal_key, agent_id, [dataset_id], marker, "delete_granted", ("delete",))
 
 
 def _pick_canonical(rows: list[dict], parent_id: str) -> dict:
@@ -2848,6 +2886,7 @@ def ensure_shared_memory(
                 if row["id"] != write_id
                 and (row["id"] in role_holds or row["owner_id"] == agent_id)
             ]
+    _grant_agent_delete(principal_key, agent_id, write_id, marker)
     _save_shared_memory_marker(marker)
     return {
         "mode": "shared",
