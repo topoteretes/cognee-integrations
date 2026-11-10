@@ -37,7 +37,7 @@ from _plugin_common import (
     server_usable,
     set_session_key,
 )
-from config import get_dataset, get_session_id, load_config
+from config import coding_memory_enabled, get_dataset, get_session_id, load_config
 
 _SESSION_TOP_K = 5
 _TRACE_TOP_K = 8
@@ -215,6 +215,10 @@ async def _run():
 
 
 def main():
+    if coding_memory_enabled():
+        # Coding memory (SDK-1336): no anchor and no improve here; the memory block is
+        # given again after the compaction (session-start.py, source compact).
+        return
     # Read the PreCompact payload to recover the host session id, which lets the
     # session resolver map back to this launch's Cognee session id (the body is
     # otherwise unused — PreCompact is just a trigger).

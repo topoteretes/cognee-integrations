@@ -910,3 +910,91 @@ def test_launch_ids_write_yields_to_an_in_progress_switch(pc, monkeypatch):
     assert pc.resolve_active_dataset_ids("host-ids-lock") == ("", [])
     assert pc.set_launch_dataset_ids("host-ids-lock", "ds-a", ["ds-a"]) is True
     assert pc.resolve_active_dataset_ids("host-ids-lock") == ("ds-a", ["ds-a"])
+
+
+# -- Coding memory: the coding agent itself gets delete on its write target (SDK-1336) ----
+
+
+def _coding_only(suite):
+    if suite.name not in ("claude-code", "codex"):
+        pytest.skip("coding memory ships for Claude Code and Codex only")
+
+
+def _recording_control(pc, monkeypatch, deny=()):
+    calls = []
+
+    def control(path, body, *, api_key=None, **kwargs):
+        principal, permission = path.split("/datasets/", 1)[1].split("?permission_name=")
+        calls.append((principal, permission, tuple(body)))
+        return (403, {}) if permission in deny else (200, {})
+
+    monkeypatch.setattr(pc, "_control_plane_request", control)
+    return calls
+
+
+def test_the_shared_role_never_gets_delete(pc, suite, monkeypatch):
+    """Read+write only for the role every sibling agent is in, coding mode or not."""
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    calls = _recording_control(pc, monkeypatch)
+    holds = pc._grant_role_on_datasets(PRINCIPAL_KEY, "role-1", ["ds-1", "ds-2"], {})
+    assert holds == {"ds-1", "ds-2"}
+    assert {permission for _, permission, _ in calls} == {"read", "write"}
+
+
+@pytest.mark.parametrize("coding", [False, True])
+def test_the_coding_agent_gets_delete_on_its_write_target_only(pc, suite, monkeypatch, coding):
+    _coding_only(suite)
+    if coding:
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    else:
+        monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+    calls = _recording_control(pc, monkeypatch)
+    marker = {}
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert calls == ([("agent-1", "delete", ("ds-write",))] if coding else [])
+
+    # Memoised: a later session start asks nothing again.
+    calls.clear()
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert calls == []
+
+
+def test_an_existing_install_gets_delete_on_upgrade(pc, suite, monkeypatch):
+    """A marker from before this change (read+write granted, no delete memo)."""
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    calls = _recording_control(pc, monkeypatch)
+    marker = {"granted": {"ds-write": "ok"}}
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert calls == [("agent-1", "delete", ("ds-write",))]
+    assert marker["delete_granted"] == {"ds-write": "ok"}
+
+
+def test_a_delete_denial_is_memoised_and_keeps_read_write(pc, suite, monkeypatch):
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    _recording_control(pc, monkeypatch, deny=("delete",))
+    marker = {"granted": {"ds-write": "ok"}}
+    pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
+    assert marker["granted"] == {"ds-write": "ok"}
+    assert isinstance(marker["delete_granted"]["ds-write"], dict)  # denied, retried hourly
+
+
+def test_shared_memory_grants_delete_to_the_agent_on_the_write_target(
+    pc, bootstrap, mock_server, monkeypatch, suite
+):
+    """End to end against the fake server: after wiring with coding mode on, the
+    agent holds delete on the launch's dataset, the shared role holds none."""
+    _coding_only(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    ident = mock_server.identity
+    _module, run = bootstrap
+    _uid, _agent_key, _n, ok = run({})
+    assert ok
+    write_id, _read_ids = pc.resolve_active_dataset_ids("host-shared-1")
+    marker = pc.load_shared_memory_marker(mock_server.url)
+    assert write_id
+    assert "delete" in ident.acl[write_id].get(marker["agent_id"], set())
+    for dataset_id, principals in ident.acl.items():
+        assert "delete" not in principals.get(marker["role_id"], set()), dataset_id

@@ -16,7 +16,7 @@ import sys
 from pathlib import PurePosixPath
 
 _FALSE = {"0", "false", "no", "off"}
-_PATH_KEYS = {"file_path", "filepath", "path", "paths", "notebook_path", "filename"}
+_PATH_KEYS = {"file_path", "filepath", "path", "paths", "notebook_path", "filename", "move_path"}
 _DENY_PATHS = (
     ".env",
     ".env.*",

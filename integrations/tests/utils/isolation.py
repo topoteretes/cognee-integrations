@@ -56,6 +56,7 @@ ISOLATED_MODULES = (
     "_context_cache",
     "_remember_http",
     "_code_graph",
+    "_coding_memory",
     "_observer",
     "cognee_plugin",
     "cognee_statusline_render",

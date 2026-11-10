@@ -51,7 +51,7 @@ from _plugin_common import (
     touch_activity,
     write_outcome_ambiguous,
 )
-from config import get_dataset, get_session_id, load_config
+from config import coding_memory_enabled, get_dataset, get_session_id, load_config
 
 # Hard cap per field to avoid ballooning the cache with massive tool outputs.
 _MAX_PARAMS_BYTES = 4000
@@ -574,6 +574,10 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
 
 def main():
     if is_observer_child():
+        return
+    if coding_memory_enabled():
+        # Coding memory (SDK-1336): nothing is sent while the agent works; send-unit.py
+        # sends the whole request at Stop.
         return
     payload_raw = sys.stdin.read()
     if not payload_raw.strip():

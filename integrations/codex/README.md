@@ -421,14 +421,89 @@ digest stops paging at the first page older than the window. An unreachable serv
 HTTP status (401/403: check `COGNEE_API_KEY` / the plugin identity) or a refused
 identity is one stderr line and exit 1, pointing at `scripts/doctor.py --json`.
 
+## Coding memory (opt-in)
+
+`COGNEE_CODING_MEMORY=true` (in the environment or `~/.cognee/.env`) switches the plugin to a
+mode built for the server's coding distillation (`DISTILLATION_MODE=coding`, cognee PR #6568).
+With the setting unset, nothing below applies.
+
+**Nothing happens while the agent works.** No trace per tool call, no recall per prompt,
+no pre-compact anchor, no
+code-graph indexing and no `improve` every 150 entries.
+
+**Each request is sent once, at its end.** The `Stop` hook (`send-unit.py`) reads the
+transcript and queues:
+
+- every tool call not sent yet, as a `trace` entry: failed calls, reads and `ls` included,
+  with the same byte caps as per-call capture. Only `COGNEE_CAPTURE_TOOLS` and the plugin's own
+  commands are filtered out, and everything is redacted. Commands are sent as `Bash` (an exit code other than 0 is a failed call) and file changes as `Edit`. Subagent threads are not read yet. Codex runs hooks synchronously, so the hook hands the work to a detached process and returns at once.
+- one `qa` entry: the request, the final message (at most 8,000 bytes) and the context
+  `{"cwd", "transcript_path", "date", "start_commit", "end_commit", "branch"}`.
+
+Each entry carries the time of its event (`time`; `prompt_time` on the QA entry), and the server
+pairs calls to requests by time. Calls are remembered by id, so when the agent stops twice for
+one request (a background task finished, a stop hook made it continue) the second `Stop` sends
+only the new calls, with a QA entry marked as a continuation. Entries go through the existing
+queue (the replay buffer), so nothing is lost while the server is
+down. `improve` runs at session end (after the queue is drained) and once a day in long sessions
+(`COGNEE_IMPROVE_COOLDOWN`).
+
+**One memory block per session.** The first prompt of a session, and the first one after a
+compaction, gets a block of about 2,000 characters:
+
+```
+Project memory (Cognee), learned from 4 earlier sessions in the agent_sessions dataset. Check it before exploring: …
+Lessons:
+- All 212 unit tests pass; run them with `uv run pytest -q`. (session 2026-11-03, commit 1a2b3c4)
+- Edit on an unchanged string fails with "No changes to make" → use: rewrite the file with a script. (seen in 2 sessions) (session 2026-11-02, commit 9f8e7d6; app.py changed since)
+Recent commits (newest first):
+- 5d6e7f8 (2026-11-04): src/app.py, tests/test_app.py (+40/−12 lines)
+```
+
+It holds the newest `test-baseline`, the two newest pitfalls, then the lessons recalled for the
+request: 1,500 characters of whole lessons not counting their git tags (at most 1,800 with them), newest per state key,
+without duplicates. Each lesson
+is tagged with its session's date and commit and the files it names that changed or no longer
+exist since (read-only git; no tag for an unknown commit or outside git). Lessons are read from the
+dataset listing's metadata, so only this repository's lessons are used (`project_node_sets`), and
+their bodies are cached in `~/.cognee-plugin/codex/coding/lessons/`, filled in the background at
+session start. A session without lessons gets no block.
+
+**Server.** Coding mode needs a cognee server with PR #6568. On an older one (no event-time
+fields in `/openapi.json`), memory is off: nothing is captured or injected, and session start
+says so. Coding mode sets `COGNEE_PROJECT_NODE_SET=auto` (the repository root) when it is not
+already set: a plugin setting, applied in every hook, that tags the plugin's own writes on any
+server. When the plugin starts the local server it also sets `DISTILLATION_MODE=coding` and
+`AUTO_FEEDBACK=false`, each only when not already set; a local server shared with other plugins
+then runs the coding distillation for them too. These two are server settings, so they reach only
+a server the plugin starts: a local server that is already running keeps the mode it started with.
+When that mode differs from the session's (a coding session on a server started without coding
+mode, or the reverse), session start says so, with the server's pid and how to restart it; the
+plugin never restarts a shared server itself. The mode of a server the plugin did not start (a
+local one with no pidfile record, a remote URL or a `COGNEE_MANAGED_ENDPOINT`) is unknown, so a
+coding session is told to shut it down and restart the plugin, which then starts its own server in
+coding mode; for a remote URL or managed endpoint, remove that setting first, or the plugin
+reconnects to the same server. Cognee Cloud gives no such note. To keep a remote server, set
+`DISTILLATION_MODE=coding` there. The coding distillation deletes
+the lessons a newer one replaces, so the key needs `delete` on the dataset next to `write`. With
+plugin agents (shared memory), the plugin grants that `delete` to its own agent, only on the
+dataset it writes to; the shared role keeps read and write, so other agents get no delete. The
+grant stays when coding mode is turned off.
+`doctor` shows the server support, whether the running local server is in coding mode, and the
+permission while coding mode is on.
+
+**Failures.** Every step fails open: a slow, unreachable or keyless server costs the block or
+delays the send, never the session. Events are logged as `coding.*` (see `EVENTS.md`); state is in
+`~/.cognee-plugin/codex/coding/`.
+
 ## Hooks
 
 | Hook | Behavior |
 |---|---|
-| `SessionStart` | mode select, identity setup, dataset readiness, watcher bootstrap |
+| `SessionStart` | mode select, identity setup, dataset readiness, watcher bootstrap; also matches `compact`, which only [coding memory](#coding-memory-opt-in) uses (otherwise a no-op) |
 | `UserPromptSubmit` | context lookup + async prompt staging |
 | `PostToolUse` | async trace write |
-| `Stop` | assistant answer write |
+| `Stop` | assistant answer write; in [coding memory](#coding-memory-opt-in), `send-unit.py` sends the request instead |
 | `PreCompact` | memory anchor build before compaction |
 | `SessionEnd` | trigger detached final sync worker |
 
@@ -446,6 +521,7 @@ A **failed** attempt arms the same window as a **backoff**: if the submit timed 
 |---|---|---|
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
 | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session; persisted per session |
+| `COGNEE_CODING_MEMORY` | unset (off) | `true` switches to [coding memory](#coding-memory-opt-in): capture once per request, one lesson block per session |
 | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST (agent-context extraction and distillation run inside the request) |
 
@@ -897,7 +973,15 @@ name plus a hash of the canonical path; a fixed value provides an explicit tag.
 The setting is pinned for the session, including buffered writes and detached
 improve workers. The backend must expose `node_set` on typed QA/trace entries and
 preserve it through improve. Older backends leave capture queued with an explicit
-`project_memory_prepared` error instead of silently losing the tags.
+`project_memory_prepared` error instead of silently losing the tags. When the check
+gets no answer (a timeout, a connection error, a reply that is not JSON, HTTP 408,
+429 or 5xx), capture stays queued and the next hook that writes, drains or
+recalls checks again after 30 s, 2 min, then every 10 min; nothing is sent
+untagged, and session start says once that the session's memory is queued. Any
+other HTTP status on the check (a server that hides `/openapi.json`, say) is an
+answer: capture stays queued with an explicit `project_memory_prepared` error.
+The check only ever runs after session setup has: a hook never runs it first,
+so a session is never bound to a key or dataset that is not final yet.
 
 When a session names a project, **graph recall is scoped to it**: every prompt's
 graph lookup sends `node_name=[<project>, <shared sets>]` (OR-joined), so other
