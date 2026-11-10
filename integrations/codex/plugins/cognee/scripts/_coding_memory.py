@@ -357,7 +357,10 @@ def _git(cwd: str, *args: str, timeout: float = 3.0) -> str:
 
 
 def git_root(cwd: str) -> str:
-    return _git(cwd, "rev-parse", "--show-toplevel").strip()
+    # git prints the root with forward slashes on Windows (C:/Users/...): made
+    # native, so it matches the transcript path and session_cwd beside it.
+    root = _git(cwd, "rev-parse", "--show-toplevel").strip()
+    return os.path.normpath(root) if root else ""
 
 
 def git_head(cwd: str) -> str:
