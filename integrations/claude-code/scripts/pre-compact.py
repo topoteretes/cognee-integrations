@@ -183,10 +183,16 @@ async def _run():
     runtime = resolve_runtime_mode()
     service_url = runtime.get("base_url", "")
     if cloud_enabled(runtime):
+        # The improve goes to the background worker, but the anchor cannot: it
+        # has to be printed now, before the transcript is dropped. Returning
+        # after the request (as this did) left cloud users with no anchor at
+        # all (SDK-1492), so the anchor below is built in both modes.
         from _cloud_worker import request_improve
 
-        request_improve(dataset, session_id, "precompact")
-        return
+        try:
+            request_improve(dataset, session_id, "precompact")
+        except OSError as exc:
+            hook_log("precompact_improve_request_failed", {"error": str(exc)[:200]})
     if not server_usable(service_url):
         hook_log("precompact_server_unusable", {"base_url": service_url})
         return

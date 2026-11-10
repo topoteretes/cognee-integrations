@@ -89,6 +89,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   moved to `_credits.py`; `_plugin_common` re-exports every name, so no importer changes. The
   size test now measures files as git stores them (LF), so a Windows checkout's CRLF no longer
   fails a file that ships under the limit.
+- **A compaction in cloud mode keeps a memory anchor again (SDK-1492).** Since 1.6.12 the
+  cloud `PreCompact` hook queued an `improve` and returned, so it printed no anchor and the
+  compaction dropped the transcript with nothing carrying the session. It still queues the
+  `improve` and now also builds the anchor (recent turns, or recalled memory), behind the
+  same server-ready check as local mode. A busy improve request is logged
+  (`precompact.improve_request_failed`) and no longer costs the anchor.
 
 ## [1.7.8]
 
