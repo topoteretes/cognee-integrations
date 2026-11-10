@@ -19,7 +19,7 @@
       "homepage": "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/cursor",
       "repository": "https://github.com/topoteretes/cognee-integrations",
       "license": "Apache-2.0",
-      "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session"],
+      "keywords": ["memory", "knowledge-graph", "cognee", "reasoning", "session", "persistent-memory"],
       "category": "memory"
     },
     {

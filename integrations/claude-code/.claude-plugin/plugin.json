@@ -18,9 +18,9 @@
     "memory",
     "knowledge-graph",
     "cognee",
-    "persistent-memory",
-    "recall",
-    "context"
+    "reasoning",
+    "session",
+    "persistent-memory"
   ],
   "userConfig": {
     "icon": {
