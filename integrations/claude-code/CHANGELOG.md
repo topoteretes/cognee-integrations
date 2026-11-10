@@ -84,6 +84,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   took the session over. A companion-dataset failure
   still falls back to the primary dataset at once, as before. Session start says once that the
   session's memory is queued.
+- **`_plugin_common.py` is back under the plugin directory's 256 KiB per-file limit**
+  (262 KB → 245 KB; it had 55 bytes left). The credits marker and the cloud billing reading
+  moved to `_credits.py`; `_plugin_common` re-exports every name, so no importer changes. The
+  size test now measures files as git stores them (LF), so a Windows checkout's CRLF no longer
+  fails a file that ships under the limit.
 
 ## [1.7.8]
 
