@@ -17,7 +17,7 @@
       "author": {
         "name": "Cognee"
       },
-      "homepage": "https://docs.cognee.ai",
+      "homepage": "https://docs.cognee.ai/integrations/claude-code-integration",
       "keywords": ["memory", "knowledge-graph", "cognee", "persistent-memory", "recall", "context"],
       "category": "memory"
     }
