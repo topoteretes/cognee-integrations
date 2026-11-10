@@ -7,7 +7,7 @@
     "name": "Cognee",
     "url": "https://www.cognee.ai"
   },
-  "homepage": "https://docs.cognee.ai/integrations/claude-code-integration",
+  "homepage": "https://docs.cognee.ai",
   "repository": "https://github.com/topoteretes/cognee-integrations",
   "license": "Apache-2.0",
   "privacyPolicyUrl": "https://www.cognee.ai/privacy-notice",
