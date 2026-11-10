@@ -260,6 +260,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the interpreter order (`python3`, `python`, `py`), the two tools it answers and that its
   catch-all `tool.call` hook hands every other call on to the real tool.
 
+### Fixed
+- **The plugin directory's validator can follow the hooks module again.** The first 1.7.6 builds failed the
+  directory's validation ("code or text that the directory couldn't follow"). The module
+  still starts only the plugin's own Python scripts, each named in full at its call site,
+  never a shell; what changed back is how two values are written: the interpreter list
+  (`python3`, `python`, `py`) is a literal inside `runPython` again rather than a
+  module-level `as const` tuple read through a spread and `.filter`, and the state folder
+  path is written out in `stateDir` rather than built from a module constant.
+
 ## [1.7.5]
 
 ### Changed

@@ -3,7 +3,7 @@
 All notable changes to the **cognee** Codex CLI plugin are documented here.
 
 The version here matches the `version` field in `.codex-plugin/plugin.json`. Note
-the `cognee` marketplace is `git-subdir`-pinned to `main`, so updates are actually
+the `cognee` marketplace tracks `main` (the plugin is a local path inside it), so updates are actually
 delivered per-commit via `codex plugin marketplace upgrade cognee` — this `version`
 is the cache key and semver record, bumped on each release, not the update trigger.
 
@@ -73,6 +73,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Doctor shows coding memory** while it is on: server support, whether the running local
   server is in coding mode, and whether the key holds `delete` on the dataset (the coding distillation deletes replaced lessons).
 - New `coding.*` log events (see `EVENTS.md`).
+
+### Changed
+- **The plugin's store listing matches the Cognee ChatGPT app.** The plugin now shows the
+  Cognee waveform icon (`assets/logo.svg`, the off-white-on-black icon from
+  cognee.ai/brand-resources) as its logo and composer icon, and its listing text follows
+  the hosted Cognee app's: "Long-term memory for Codex", a long description of capture,
+  recall, the codebase graph and recaps, developer Cognee, category Productivity, privacy
+  policy and terms links, and brand colour `#101010`. Listing metadata only; hooks,
+  scripts and skills are unchanged.
+- **The `cognee` Git marketplace shows the plugin's own logo and description before
+  install.** The repo-root `.agents/plugins/marketplace.json` pointed at the plugin with a
+  `git-subdir` source back into this same repo, which Codex and the ChatGPT app treat as a
+  cross-repo plugin: a placeholder icon and "Install it to view more detailed information"
+  until installed. It now uses a `local` path inside the cloned marketplace, so the store
+  reads `plugin.json` directly. Updates still arrive per commit on `main` through
+  `codex plugin marketplace upgrade cognee`.
 
 ### Fixed
 - **Project tags: an unanswered check is retried.** When the session-start check of project-tag

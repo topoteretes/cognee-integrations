@@ -606,11 +606,9 @@ function datasetRows(value: unknown): DatasetRow[] {
 // ── helpers that reach the engine ───────────────────────────────────────────
 // The plugin's state folder, ~/.cognee-plugin/claude-code: the module reads
 // phase/<session>.json there and writes band/<session>.json (see markBand).
-const STATE_SUBDIR = '.cognee-plugin/claude-code'
-
 async function stateDir($: any): Promise<string> {
   const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
-  return `${home}/${STATE_SUBDIR}`
+  return `${home}/.cognee-plugin/claude-code`
 }
 
 async function bindSession($: any): Promise<void> {
@@ -795,12 +793,9 @@ async function startPoll($: any, windowMs: number): Promise<void> {
 
 type Ran = { exitCode: number; stdout: string; stderr: string }
 
-// The interpreters a script is started under, in this order: python3 on macOS
-// and Linux, python or py on Windows. The same list the settings hooks use.
-const PYTHONS = ['python3', 'python', 'py'] as const
-
 // One of the plugin's Python scripts, under whichever interpreter answers
-// first (see PYTHONS). Null when none could start it.
+// first (python3 on macOS and Linux, python or py on Windows; the same order
+// the settings hooks use). Null when none could start it.
 // 'timeout' when the script ran and was killed at its time: the next
 // interpreter is NOT tried then, since the script did run (a switch killed
 // mid-sync must not be started over; an append must not land twice). Only a
@@ -808,7 +803,8 @@ const PYTHONS = ['python3', 'python', 'py'] as const
 async function runPython($: any, args: string[], init: { stdin?: string; timeoutMs: number }): Promise<Ran | 'timeout' | null> {
   // The interpreter that answered last goes first; the others stay as the
   // fallback for when it can no longer be spawned (a venv gone, a PATH change).
-  const candidates = rendererPython ? [rendererPython, ...PYTHONS.filter(c => c !== rendererPython)] : [...PYTHONS]
+  const defaults = ['python3', 'python', 'py']
+  const candidates = rendererPython ? [rendererPython, ...defaults.filter(c => c !== rendererPython)] : defaults
   for (const python of candidates) {
     try {
       const ran = (await $.process.run([python, ...args], init)) as Ran

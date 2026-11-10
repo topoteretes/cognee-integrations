@@ -1,13 +1,13 @@
 {
   "name": "cognee",
   "version": "1.8.0",
-  "description": "Cognee memory for Codex: automatic capture and recall over the Cognee server's HTTP API, with knowledge-graph and codebase skills.",
+  "description": "Long-term memory for Codex: Cognee captures your sessions into a knowledge graph and recalls relevant context on every prompt, with knowledge-graph and codebase skills.",
   "author": {
-    "name": "Topoteretes",
-    "url": "https://github.com/topoteretes"
+    "name": "Cognee",
+    "url": "https://www.cognee.ai"
   },
-  "homepage": "https://docs.cognee.ai",
-  "repository": "https://github.com/topoteretes/cognee",
+  "homepage": "https://www.cognee.ai",
+  "repository": "https://github.com/topoteretes/cognee-integrations",
   "license": "Apache-2.0",
   "keywords": [
     "memory",
@@ -20,21 +20,25 @@
   "hooks": "./hooks.json",
   "interface": {
     "displayName": "Cognee",
-    "shortDescription": "Use Cognee from Codex with automatic memory capture and recall.",
-    "longDescription": "Reusable Codex skills that talk to a local or cloud Cognee server over its HTTP API, plus hooks that automatically capture Codex session starts, user prompts, tool results, and assistant stops into Cognee session memory, then recall relevant context on each prompt. The cognee CLI is only a fallback for an unreachable server. This plugin intentionally does not configure MCP.",
-    "developerName": "Topoteretes",
-    "category": "Engineering",
+    "shortDescription": "Long-term memory for Codex",
+    "longDescription": "Cognee gives Codex a memory that lasts beyond one session. As you work, the plugin captures your prompts, tool results and answers, and when a session ends it syncs them into your Cognee knowledge graph: entities, relationships and lessons, not just stored text. On every new prompt, Codex recalls the context that matters from that graph, so it picks up where earlier sessions left off instead of starting from scratch.\n\nWhat it does:\n- Automatic memory: hooks capture each session and inject relevant recalled context before Codex answers. No tool calls needed.\n- remember, recall and forget on request: store a fact, preference or file, search memory with a natural-language question, or delete one item, a dataset, or everything.\n- Codebase graph: index a repository and ask exact structural questions such as callers, impact of a change, call paths and endpoints.\n- Recaps: a standup, a multi-day digest, or a timeline of one topic across your recorded sessions.\n\nMemories are organised into datasets. By default Codex writes to agent_sessions; ask Codex to switch to another dataset for a session when you want to keep memories apart.\n\nWorks with Cognee Cloud or a local Cognee server. Run the setup skill to connect: sign in to your Cognee Cloud workspace with an API key, or point the plugin at a local server (http://localhost:8011 by default). It talks to Cognee over its HTTP API and does not configure MCP.\n\nCognee is open source (github.com/topoteretes/cognee). This plugin is maintained by Cognee in github.com/topoteretes/cognee-integrations.",
+    "developerName": "Cognee",
+    "category": "Productivity",
     "capabilities": [
       "Interactive",
       "Read",
       "Write"
     ],
-    "websiteURL": "https://docs.cognee.ai",
+    "websiteURL": "https://www.cognee.ai",
+    "privacyPolicyURL": "https://www.cognee.ai/privacy-notice",
+    "termsOfServiceURL": "https://www.iubenda.com/terms-and-conditions/30110453",
+    "logo": "./assets/logo.svg",
+    "composerIcon": "./assets/logo.svg",
     "defaultPrompt": [
-      "Remember the important context in this repo with Cognee.",
+      "Remember this: my main project this quarter is the Q4 launch, and I prefer concise answers with sources.",
       "Recall what we know about this feature from Cognee memory.",
-      "Check that Codex session events are reaching Cognee."
+      "What did I work on yesterday?"
     ],
-    "brandColor": "#BC9BFF"
+    "brandColor": "#101010"
   }
 }
