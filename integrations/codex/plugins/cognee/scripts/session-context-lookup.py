@@ -1006,10 +1006,10 @@ def main():
         return
 
     if coding_memory_enabled():
-        output = _coding_prompt(payload)
-        if output:
-            print(json.dumps(output))
-        return
+        # Return, never print: ``__main__`` prints what main() returns (or an empty
+        # context), and Codex keeps the LAST JSON object on stdout, so a block printed
+        # here was overwritten by the empty fallback and never reached the model.
+        return _coding_prompt(payload)
 
     prompt = payload.get("prompt", "")
     try:

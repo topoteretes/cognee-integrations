@@ -124,20 +124,34 @@ def test_every_selected_lesson_is_rendered_and_the_lessons_fit_the_budget(cm, re
     chosen = cm.select_lessons(lessons, recalled, line_for=line_for)
     block = cm.render_block("ds", 2, chosen, str(repo), True, line_for)
     section = block.split("Lessons:\n", 1)[1].split("\nRecent commits", 1)[0]
-    assert len(chosen) == 3
+    # 4 untagged lines (4 x 293) fit 1500 and all 5 would; 4 tagged lines fit 1800, 5 do not.
+    assert len(chosen) == 4
     for item in chosen:
         assert f"- {item['body']} {tag}" in section
-    assert len(section) + 1 <= cm.LESSON_BUDGET
+    assert len(section) + 1 <= cm.LESSON_LINES_CAP
+    assert sum(len(f"- {item['body']}") + 1 for item in chosen) <= cm.LESSON_BUDGET
+
+
+def test_tags_do_not_count_against_the_lesson_budget(cm):
+    def line_for(lesson):
+        return f"- {lesson['body']} " + "T" * 60
+
+    lessons = [lesson(f"{n}" * 290) for n in range(5)]
+    recalled = [_document(f"{n}" * 290) for n in range(5)]
+    # Untagged: 5 x 293 = 1465 <= 1500. Tagged: 5 x 354 = 1770, over 1500 but within 1800.
+    chosen = cm.select_lessons(lessons, recalled, line_for=line_for)
+    assert len(chosen) == 5
 
 
 def test_a_lesson_that_fits_only_without_its_tag_is_skipped(cm):
     def line_for(lesson):
-        return f"- {lesson['body']} " + "T" * 100
+        return f"- {lesson['body']} " + "T" * 300
 
     first = lesson("A" * 1000, kind="state", key="test-baseline")
     tight = lesson("B" * 300, kind="pitfall", key="pitfall:a", date="2026-11-03")
-    shorter = lesson("C" * 200, kind="pitfall", key="pitfall:b", date="2026-11-02")
-    # 1104 + 404 > 1500 with the tag (1407 without); 1104 + 304 fits.
+    shorter = lesson("C" * 150, kind="pitfall", key="pitfall:b", date="2026-11-02")
+    # Untagged all fit 1500 (1003 + 303, or 1003 + 153). Tagged: 1304 + 604 > 1800 skips B;
+    # 1304 + 454 fits.
     chosen = cm.select_lessons([first, tight, shorter], [], line_for=line_for)
     assert [lesson["body"][0] for lesson in chosen] == ["A", "C"]
 
@@ -328,3 +342,44 @@ def test_a_block_built_in_a_subdirectory_tags_lessons_as_from_the_root(cm, repo,
     from_sub = cm.build_block("q", str(sub))
     assert "pkg/sub/a.py changed since" in from_root and "top.py no longer exists" in from_root
     assert from_sub == from_root
+
+
+# -- The prompt hook writes the block once (Codex dropped it, SDK-1336) ------------------
+
+
+def test_the_prompt_hook_writes_one_context_carrying_the_block(
+    suite, hook_module, monkeypatch, capsys, tmp_path
+):
+    """Run session-context-lookup.py as the host does (its ``__main__``) in coding mode.
+
+    Codex's ``__main__`` prints what main() returns, or an empty context; the coding
+    path also printed the block itself, so stdout held two JSON objects and Codex kept
+    the last, empty one: the lessons never reached the model.
+    """
+    if suite.name not in ("claude-code", "codex"):
+        pytest.skip("coding memory ships for Claude Code and Codex only")
+    import io
+    import json
+    import runpy
+    import sys
+    import types
+
+    module = hook_module(suite, "session-context-lookup.py")
+    # After loading: the isolated load resets the plugin's environment.
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    stub = types.SimpleNamespace(
+        begin_turn=lambda *args, **kwargs: None,
+        deliver=lambda *args, **kwargs: "Project memory (Cognee): BLOCK-7731",
+    )
+    monkeypatch.setitem(sys.modules, "_coding_memory", stub)
+    payload = {"session_id": "s-1", "prompt": "Fix the parser", "cwd": str(tmp_path)}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    capsys.readouterr()
+
+    runpy.run_path(module.__file__, run_name="__main__")
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    outputs = [json.loads(line) for line in lines]
+    assert len(outputs) == 1, lines
+    context = outputs[0]["hookSpecificOutput"]["additionalContext"]
+    assert context == "Project memory (Cognee): BLOCK-7731"

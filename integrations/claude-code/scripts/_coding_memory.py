@@ -56,9 +56,12 @@ MAX_TURNS = 20
 #: How far a recorded request start may be from the transcript's prompt time.
 TURN_MATCH_SECONDS = 10.0
 
-#: Delivery budgets (characters). ``LESSON_BUDGET`` counts each lesson's whole
-#: line (``- `` + statement + git tag + newline) and is applied once, at selection.
+#: Delivery budgets (characters), both applied once, at selection.
+#: ``LESSON_BUDGET`` counts each lesson's line without its git tag (``- `` +
+#: statement + newline), as the measured runs did; ``LESSON_LINES_CAP`` bounds
+#: the lines as rendered, git tags included.
 LESSON_BUDGET = 1500
+LESSON_LINES_CAP = 1800
 FRAMING_CAP = 500
 COMMITS_CAP = 300
 #: Candidates measured (each with its git tag) per block inside git; the rest
@@ -1681,6 +1684,7 @@ def select_lessons(
     *,
     line_for=None,
     max_candidates: int | None = None,
+    lines_cap: int = LESSON_LINES_CAP,
 ) -> list:
     """The newest ``test-baseline``, the two newest pitfalls, then recalled lessons.
 
@@ -1688,9 +1692,10 @@ def select_lessons(
     relevant first. A passage recalls the lesson whose statement starts the
     same (``RECALL_MATCH_PREFIX`` characters, ignoring case and whitespace).
     Only the newest lesson of a state key counts; duplicates are skipped. Each
-    candidate is measured as the line it renders to (``line_for``, default
-    without a git tag, plus its newline) against ``budget``: one that does not
-    fit is skipped and a later, shorter one may still fit. At most
+    candidate is measured twice: its line without a git tag against ``budget``
+    (what the experiment measured), and the line it renders to (``line_for``,
+    default without a tag) against ``lines_cap``. One that does not fit either
+    is skipped and a later, shorter one may still fit. At most
     ``max_candidates`` are measured (each measure may run git).
     """
     if line_for is None:
@@ -1721,7 +1726,7 @@ def select_lessons(
         if key and key in by_key:
             ordered.append(by_key[key])
 
-    chosen, used, seen = [], 0, set()
+    chosen, used, used_lines, seen = [], 0, 0, set()
     for lesson in ordered:
         normalized = _norm(lesson["body"])
         if normalized in seen:
@@ -1729,11 +1734,15 @@ def select_lessons(
         if max_candidates is not None and len(seen) >= max_candidates:
             break
         seen.add(normalized)
-        size = len(line_for(lesson)) + 1
+        size = len(lesson_line(lesson, "", False)) + 1
         if used + size > budget:
+            continue
+        line_size = len(line_for(lesson)) + 1
+        if used_lines + line_size > lines_cap:
             continue
         chosen.append(lesson)
         used += size
+        used_lines += line_size
     return chosen
 
 
