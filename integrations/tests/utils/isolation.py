@@ -35,6 +35,7 @@ ISOLATED_MODULES = (
     "_plugin_common",
     "_update_check",
     "_state_sweep",
+    "_credits",
     "_cognee_client",
     "_env_file",
     "_logfiles",

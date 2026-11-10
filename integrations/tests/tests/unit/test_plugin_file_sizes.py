@@ -39,15 +39,24 @@ def _tracked_files(root: Path) -> list[Path]:
     return [root / name for name in out.split("\0") if name]
 
 
+def _shipped_size(path: Path) -> int:
+    """The file's size as the repository stores it, with LF line endings.
+
+    The directory reads the files from git, so that is the size it sees. A
+    Windows checkout (core.autocrlf) writes CRLF, one byte more per line, and
+    measuring the working copy there failed a file that ships under the limit.
+    """
+    return len(path.read_bytes().replace(b"\r\n", b"\n"))
+
+
 def test_no_plugin_file_is_over_the_directory_limit():
     root = CLAUDE.plugin_manifest.parent.parent
     # Untracked new files count too: they ship once committed.
     files = set(_tracked_files(root)) | {p for p in (root / "scripts").glob("*.py")}
-    over = sorted(
-        (str(p.relative_to(root)), p.stat().st_size)
+    sizes = (
+        (p, _shipped_size(p))
         for p in files
-        if p.is_file()
-        and p.suffix.lower() not in EXEMPT_SUFFIXES
-        and p.stat().st_size > LIMIT_BYTES
+        if p.is_file() and p.suffix.lower() not in EXEMPT_SUFFIXES
     )
+    over = sorted((str(p.relative_to(root)), size) for p, size in sizes if size > LIMIT_BYTES)
     assert over == [], f"files over {LIMIT_BYTES} bytes (split them): {over}"
