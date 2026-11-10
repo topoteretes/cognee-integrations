@@ -538,7 +538,7 @@ Recent commits (newest first):
 ```
 
 It holds the newest `test-baseline`, the two newest pitfalls, then the lessons recalled for the
-request: 1,500 characters of whole lessons, their git tags included, newest per state key,
+request: 1,500 characters of whole lessons not counting their git tags (at most 1,800 with them), newest per state key,
 without duplicates. Each lesson
 is tagged with its session's date and commit and the files it names that changed or no longer
 exist since (read-only git; no tag for an unknown commit or outside git). Lessons are read from the
@@ -562,7 +562,10 @@ coding session is told to shut it down and restart the plugin, which then starts
 coding mode; for a remote URL or managed endpoint, remove that setting first, or the plugin
 reconnects to the same server. Cognee Cloud gives no such note. To keep a remote server, set
 `DISTILLATION_MODE=coding` there. The coding distillation deletes
-the lessons a newer one replaces, so the key needs `delete` on the dataset next to `write`;
+the lessons a newer one replaces, so the key needs `delete` on the dataset next to `write`. With
+plugin agents (shared memory), the plugin grants that `delete` to its own agent, only on the
+dataset it writes to; the shared role keeps read and write, so other agents get no delete. The
+grant stays when coding mode is turned off.
 `doctor` shows the server support, whether the running local server is in coding mode, and the
 permission while coding mode is on.
 

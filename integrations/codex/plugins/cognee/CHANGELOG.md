@@ -44,9 +44,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
     repository root (the session's directory goes as `session_cwd`), and git tags are computed
     from the root, so sessions started in a subdirectory keep them.
   - **runs `improve` at session end and once a day** (`COGNEE_IMPROVE_COOLDOWN`) in long sessions.
+  - **the memory block reaches the model:** the prompt hook returned it to its `__main__`
+    instead of printing it as well; with two JSON objects on stdout Codex kept the last,
+    empty one, and the lessons were never injected.
   - **gives one short memory block at the first request of a session**, and again after a
     compaction: the newest `test-baseline`, the two newest pitfalls and the lessons recalled for
-    the request (1,500 characters of whole lessons, their git tags included), each tagged with its session date and commit
+    the request (1,500 characters of whole lessons not counting their git tags, at most 1,800 with them), each tagged with its session date and commit
     and the files it names that changed or were deleted since, plus the last three commits. Lessons
     are read from the dataset listing's metadata (`lesson_type`, `state_key`, `git_commit`,
     `files`, `project_node_sets`) and their bodies cached under `coding/lessons/`, filled in the
@@ -58,6 +61,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
     server that is already running keeps the mode it started with; when it differs from the
     session's, session start says so with the server's pid and how to restart it (it never
     restarts a shared server).
+  - **grants its own agent `delete` on the dataset it writes to** (shared memory), so the coding
+    distillation can replace older lessons; without it, no lesson was stored. The shared role
+    keeps read and write only.
   - **says when the server's mode is unknown:** for a local server with no pidfile record, a
     remote URL or a `COGNEE_MANAGED_ENDPOINT`, session start tells a coding session to shut the
     server down and restart the plugin, which then starts its own server in coding mode, and to
