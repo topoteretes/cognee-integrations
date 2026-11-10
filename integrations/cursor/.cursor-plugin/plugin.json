@@ -14,8 +14,9 @@
     "memory",
     "knowledge-graph",
     "cognee",
-    "cursor",
-    "agents"
+    "reasoning",
+    "session",
+    "persistent-memory"
   ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json"

@@ -28,7 +28,7 @@ integrations:
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
   - slug: claude-code
-    name: "Cognee Plugin for Claude Code"
+    name: "Cognee Memory for Claude Code"
     owner: cognee
     language: python
     registry: none
@@ -36,7 +36,7 @@ integrations:
     cognee_dependency: sdk
     current_version: "1.8.0"
     migration_status: done
-    notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
+    notes: "Claude Code plugin – captures prompts, tool calls and answers through hooks, recalls relevant memory on every prompt, syncs sessions into the knowledge graph"
 
   - slug: antigravity
     name: "Cognee Plugin for Antigravity"

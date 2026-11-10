@@ -10,7 +10,7 @@
   </p>
 </div>
 
-# Cognee Memory Plugin for Claude Code
+# Cognee Memory for Claude Code
 
 Adds persistent memory to Claude Code through Cognee.
 

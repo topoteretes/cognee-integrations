@@ -1,7 +1,7 @@
 {
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
-  "description": "Cognee knowledge graph memory for Claude Code — session-aware storage, auto-routing recall, and persistent learning across sessions. Supports local mode and Cognee Cloud.",
+  "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
   "version": "1.8.0",
   "author": {
     "name": "Cognee",
@@ -19,30 +19,31 @@
     "knowledge-graph",
     "cognee",
     "reasoning",
-    "session"
+    "session",
+    "persistent-memory"
   ],
   "userConfig": {
     "icon": {
       "type": "string",
-      "title": "Cognee mark",
-      "description": "The cognee mark: the waveform icon on the status row and the credit line in the Desktop app (the official SVG), and the display logotype on the credit line in a terminal. none turns both off.",
+      "title": "Cognee logo",
+      "description": "Show the Cognee logo on the status row and on the credit line under answers. Set to none to hide it.",
       "default": "wave"
     },
     "band": {
       "type": "boolean",
       "title": "Status row above the prompt",
-      "description": "Draw the Cognee status row above the prompt, in the Desktop app and in a terminal: the badge, the dataset name as a picker, the counters and what memory is doing. Off, no row is drawn (add the plugin's statusLine entry to your settings yourself for a line below the prompt).",
+      "description": "Show Cognee's status row above the prompt: dataset picker, counters and current memory activity.",
       "default": true
     },
     "spinner": {
       "type": "boolean",
-      "title": "Spinner activity",
+      "title": "Show memory activity in the spinner",
       "description": "Add what Cognee is doing (recalling, saving, consolidating) after the spinner while Claude works.",
       "default": true
     },
     "tools": {
       "type": "boolean",
-      "title": "Memory tools for Claude",
+      "title": "Give Claude direct memory tools",
       "description": "Register search and remember as tools Claude can call directly (mcp__cognee-memory__search / remember) instead of going through a skill and a shell command.",
       "default": true
     },
