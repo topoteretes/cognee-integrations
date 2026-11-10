@@ -202,6 +202,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:plugin_provision_skipped` | `plugin.provision_skipped` |
 | `hook:precompact_anchor` | `precompact.anchor` |
 | `hook:precompact_empty` | `precompact.empty` |
+| `hook:precompact_improve_request_failed` | `precompact.improve_request_failed` |
 | `hook:precompact_missing_session_key` | `precompact.missing_session_key` |
 | `hook:precompact_recall_error` | `precompact.recall_error` |
 | `hook:precompact_run_exception` | `precompact.run_exception` |
