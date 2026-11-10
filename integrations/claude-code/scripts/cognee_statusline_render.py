@@ -1293,6 +1293,9 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         "state": state,
         "reason": reason,
         "dataset": dataset,
+        # Local state only, like the rest: the band labels the dataset
+        # "auto (<dataset>)" from its first draw, before the server's listing.
+        "recall": "auto" if _recall_auto(session_id) else "pinned",
         "mode": mode,
         "credits": credits,
         "credits_exhausted": credits_exhausted,

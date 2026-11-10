@@ -1379,15 +1379,22 @@ test('the listing starts once the SessionStart hook has run, which writes the re
   expect(listCalls(calls).length).toBe(1)
 })
 
-test('the band falls back to the name as text until the datasets are listed', async ($, on) => {
+test('the picker is there before the datasets are listed, offering only a loading entry', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, { 'switch-dataset.py': () => ok(JSON.stringify({ error: 'no launch record found', code: 2 })) })
   await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^agent_sessions$/ })).toBeDefined()
+  const picker = (await ui.find({ type: 'Select', key: 'dataset' })) as any
+  expect(picker).toBeDefined()
+  expect(picker.props.value).toBe('agent_sessions')
+  expect(picker.props.options.map((o: { label: string }) => o.label)).toEqual(['agent_sessions', 'loading datasets…'])
+  // Picking either entry switches nothing.
+  const before = calls.filter(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py'))).length
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'loading datasets…' })
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'agent_sessions' })
+  expect(calls.filter(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py'))).length).toBe(before)
   await ui.unmount()
 })
 
@@ -1404,14 +1411,17 @@ test('a listing that finds no launch record yet is tried again, and the picker a
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   expect(listCalls(calls).length).toBe(1)
 
+  const labels = async (ui: any) =>
+    ((await ui.find({ type: 'Select', key: 'dataset' })) as any)?.props.options.map((o: { label: string }) => o.label) ?? []
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
+  expect(await labels(ui)).toContain('loading datasets…')
   await ui.unmount()
   // The first retry comes five seconds after the failure, on the poll.
   for (let i = 0; i < 7; i += 1) await clock.advance(1000)
   expect(listCalls(calls).length).toBe(2)
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
+  expect(await labels(ui)).not.toContain('loading datasets…')
+  expect((await labels(ui)).length).toBeGreaterThan(2)
   await ui.unmount()
   // Listed: no more tries.
   for (let i = 0; i < 30; i += 1) await clock.advance(1000)

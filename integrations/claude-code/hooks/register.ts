@@ -54,6 +54,8 @@ type Snapshot = {
   state: string
   reason: string
   dataset: string
+  // 'auto' | 'pinned', from local state; absent from an older renderer.
+  recall?: string
   mode: string
   credits: string
   credits_exhausted?: boolean
@@ -195,6 +197,9 @@ let result: Activity | null = null
 let activeSince = 0
 let markerActive = false
 let frame = 0
+// Whether a terminal has drawn the band, the only surface whose spinner
+// frames are worth a redraw (see startSpin).
+let terminalBand = false
 let spin: { cancel: () => void } | null = null
 let poll: { cancel: () => void } | null = null
 let pollUntil = 0
@@ -227,6 +232,9 @@ const NEW_DATASET = '+ new dataset…'
 // routing, a cognee 1.6.6 server) instead of only the one saves go to. Spaces keep it
 // apart from any dataset name, like NEW_DATASET.
 const AUTO_RECALL = 'auto (best-matching dataset)'
+// The placeholder entry while the datasets are being listed; a pick of it
+// does nothing. Spaces keep it apart from any dataset name.
+const LOADING_DATASETS = 'loading datasets…'
 // Recall mode in effect from the last listing: 'auto' (routed) or 'pinned' to
 // the active dataset; '' until listed. Anything but 'auto' reads as restricted.
 let recallMode: '' | 'auto' | 'pinned' = ''
@@ -687,7 +695,10 @@ function startSpin($: any): void {
       spin.cancel()
       spin = null
     }
-    $.ui.invalidate('ui.render')
+    // Only a terminal band animates. The desktop draws a still mark: a redraw
+    // eight times a second would re-send its dataset picker, which closes it
+    // and snaps it back to the active dataset while it is being used.
+    if (terminalBand) $.ui.invalidate('ui.render')
   })
 }
 
@@ -704,6 +715,12 @@ function clearActive($: any): void {
     spin = null
   }
   redraw($)
+}
+
+function resultKey(r: Activity | null): string {
+  if (!r) return ''
+  const ms = r.age * 1000
+  return JSON.stringify([r.kind, r.phase, r.text, r.ok, r.count ?? null, ms >= DIM_AFTER_MS, ms >= HIDE_AFTER_MS])
 }
 
 async function readPhase($: any): Promise<void> {
@@ -730,9 +747,14 @@ async function readPhase($: any): Promise<void> {
     }
     return
   }
+  // The poll reads the marker every second; a redraw re-sends the dataset
+  // picker, which on the desktop closes it and snaps it back to the active
+  // dataset. Redraw only when what the row shows changes: the result, and its
+  // age only where it crosses the dim and hide thresholds.
+  const before = resultKey(result)
   result = shown
   if (active && !own) clearActive($)
-  else redraw($)
+  else if (resultKey(shown) !== before) redraw($)
 }
 
 // Poll the marker once a second while something runs, and for a short window
@@ -837,6 +859,7 @@ async function refreshSnapshot($: any): Promise<void> {
     if (ran && ran !== 'timeout' && ran.exitCode === 0 && ran.stdout.trim()) {
       try {
         const before = snapshot?.dataset ?? ''
+        const previous = snapshot === null ? null : JSON.stringify(snapshot)
         snapshot = JSON.parse(ran.stdout) as Snapshot
         rendererFailures = 0
         // The session moved to another dataset without the picker (the
@@ -845,7 +868,9 @@ async function refreshSnapshot($: any): Promise<void> {
         // one. A picker switch relists on its own when it ends.
         const after = snapshot?.dataset ?? ''
         if (before && after && before !== after && !switching) void relistDatasets($)
-        redraw($)
+        // The warm-up retakes the snapshot every few seconds: an unchanged one
+        // must not redraw (and so reset) an open picker.
+        if (JSON.stringify(snapshot) !== previous) redraw($)
         return
       } catch {
         // fall through
@@ -1325,6 +1350,20 @@ export const register: Register = (on, options) => {
     }
   }).catch(($, e, next) => next(e))
 
+  // The Desktop app joins the session after session.start has run: every
+  // redraw asked for while the session came up had no surface to draw on, and
+  // without another one the band stays empty until the first prompt. Draw it
+  // as the client attaches, with a fresh snapshot (the SessionStart hook may
+  // have confirmed the connection since).
+  on('session.attach', async ($, e, next) => {
+    const ran = await next(e)
+    if (!bandOn || (e.surface !== 'desktop' && e.surface !== 'terminal')) return ran
+    if (!sessionId) void adoptSession($)
+    else await refreshSnapshot($)
+    redraw($)
+    return ran
+  }).catch(($, e, next) => next(e))
+
   // /clear and /resume end the conversation and start another under a new id,
   // with no session.start: forget what was shown, and let the next prompt rebind.
   on('session.end', async ($, e, next) => {
@@ -1479,7 +1518,9 @@ export const register: Register = (on, options) => {
     for (const r of listed) if (!byName.has(r.name) || (r.current && !byName.get(r.name)!.current)) byName.set(r.name, r)
     const options = listed.filter(r => byName.get(r.name) === r)
     // Auto recall reads "auto (<dataset saves go to>)"; a pinned one, the name.
-    const auto = recallMode === 'auto'
+    // The listing's answer once it is in (a switch updates it); before that,
+    // the snapshot's, read from local state at the first draw.
+    const auto = (recallMode || snap?.recall) === 'auto'
     const pickerLabel = auto ? `auto (${current})` : current
     const picker = () =>
       Select({
@@ -1575,9 +1616,11 @@ export const register: Register = (on, options) => {
     const badge: RenderElement[] = []
     let badgeWidth = 2
     const connecting = awaitingConnection(await $.clock.now())
+    if (e.surface === 'terminal') terminalBand = true
     if (connecting) startSpin($)
     if (active || connecting) {
-      badge.push(Text({ color: 'yellow', children: [`${FRAMES[frame % FRAMES.length] ?? '⠋'} `] }))
+      const glyph = e.surface === 'desktop' ? '◌' : (FRAMES[frame % FRAMES.length] ?? '⠋')
+      badge.push(Text({ color: 'yellow', children: [`${glyph} `] }))
     } else if (snap?.state === 'ok') {
       badge.push(Text({ color: 'green', bold: true, children: ['● '] }))
     } else if (snap?.state === 'fail') {
@@ -1609,8 +1652,26 @@ export const register: Register = (on, options) => {
       const drawn = namingDataset ? namer() : e.surface === 'terminal' ? hoverable(picker()) : picker()
       segment(namingDataset ? 26 : pickerLabel.length + 2, 0, drawn)
     } else {
-      const name = snap?.dataset ?? 'memory'
-      segment(name.length, 0, Text({ children: [name] }))
+      const dataset = snap?.dataset ?? 'memory'
+      const name = snap && (recallMode || snap.recall) === 'auto' ? `auto (${dataset})` : dataset
+      if (snap && !datasetsListed && datasetsAttempts < LIST_MAX_ATTEMPTS) {
+        // The listing needs the server, which a new session's first recall
+        // keeps busy for a while: the picker is there from the first draw,
+        // offering nothing to pick until the datasets are listed. A pick
+        // changes nothing (an option cannot be disabled).
+        const loading = Select({
+          key: 'dataset',
+          options: [
+            { value: name, label: name },
+            { value: LOADING_DATASETS, label: 'loading datasets…' },
+          ],
+          value: name,
+          onSelect: () => redraw($),
+        })
+        segment(name.length + 2, 0, e.surface === 'terminal' ? hoverable(loading) : loading)
+      } else {
+        segment(name.length, 0, Text({ children: [name] }))
+      }
     }
     const mode = snap?.mode ?? '…'
     segment(3 + mode.length, 0, Text({ children: [' · '] }), Text({ bold: true, color: purple, children: [mode] }))
