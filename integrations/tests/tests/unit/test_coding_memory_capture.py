@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -730,7 +731,8 @@ def test_a_qa_from_a_subdirectory_carries_the_repository_root(cm, sent, tmp_path
     records = [user("ua", "Go", A_PROMPT), said("aa", "Done.", "2026-11-05T10:01:00Z")]
     cm.capture(_payload(write_records(tmp_path / "s.jsonl", records), sub, "Done."))
     context = _ctx(_qa(sent)[0])
-    assert context["cwd"] == git(repo, "rev-parse", "--show-toplevel")
+    # Native separators: git prints C:/... on Windows, and git_root normalises it.
+    assert context["cwd"] == os.path.normpath(git(repo, "rev-parse", "--show-toplevel"))
     assert context["session_cwd"] == str(sub)
 
 
