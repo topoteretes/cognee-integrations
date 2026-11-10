@@ -90,7 +90,7 @@ from _recall_text import (
     split_sections,
     trim_recall_text,
 )
-from config import get_dataset, get_session_id, load_config
+from config import coding_memory_enabled, get_dataset, get_session_id, load_config
 
 #: Per-field caps for recall-audit.log lines (characters).
 _AUDIT_PROMPT_CHARS = 2000
@@ -1208,6 +1208,35 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     return _recall_output(full_context, notice), total
 
 
+def _coding_prompt(payload: dict) -> dict | None:
+    """Coding memory (SDK-1336): record the request's start, then give the lessons
+    block once per session instead of a recall per prompt. Fails open."""
+    import _coding_memory
+
+    prompt = payload.get("prompt", "")
+    prompt = prompt if isinstance(prompt, str) else ""
+    cwd = str(payload.get("cwd") or "") or os.getcwd()
+    key = get_session_key()
+    block = ""
+    try:
+        with quiet_hook_output("session-context-lookup"):
+            _coding_memory.begin_turn(key, prompt, cwd)
+            from _capture_policy import sanitize
+
+            block = _coding_memory.deliver(key, str(sanitize(prompt)), cwd)
+    except Exception as exc:
+        hook_log("coding_delivery_failed", {"error": str(exc)[:200]})
+        return None
+    if not block:
+        return None
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": block,
+        }
+    }
+
+
 def _recall_min_prompt_chars() -> int:
     """Prompts shorter than this skip recall (capture keeps its own 5-char floor).
 
@@ -1242,6 +1271,12 @@ def main():
     )
     if not get_session_key():
         hook_log("context_lookup_missing_session_key")
+        return
+
+    if coding_memory_enabled():
+        output = _coding_prompt(payload)
+        if output:
+            print(json.dumps(output))
         return
 
     prompt = payload.get("prompt", "")

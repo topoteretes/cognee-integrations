@@ -614,6 +614,16 @@ def test_shared_policy_modules_are_identical_across_hosts():
             assert (other.scripts_dir / name).read_bytes() == reference, f"{other.name}/{name}"
 
 
+def test_coding_memory_modules_are_identical_in_claude_code_and_codex():
+    # Coding memory ships for these two hosts only; one copy drifting from the
+    # other would otherwise go unnoticed by tests that exercise one host.
+    from utils.suites import CLAUDE, CODEX
+
+    for name in ("_coding_memory.py", "_project_memory.py", "send-unit.py"):
+        reference = (CLAUDE.scripts_dir / name).read_bytes()
+        assert (CODEX.scripts_dir / name).read_bytes() == reference, name
+
+
 def test_sync_payload_log_names_fields_but_never_their_values(suite, run_hook, temp_home):
     result = run_hook(
         suite,

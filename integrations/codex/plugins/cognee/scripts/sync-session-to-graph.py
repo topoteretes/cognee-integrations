@@ -421,6 +421,24 @@ def _payload_keys(payload_raw: str) -> list:
     return sorted(str(key) for key in payload)[:20] if isinstance(payload, dict) else []
 
 
+def _coding_flush(payload_raw: str) -> None:
+    """Coding memory (SDK-1336): queue what the last Stop did not send.
+
+    Only queues (file I/O): the final sync below drains the queue before its
+    improve, so the session's last request is in the improve that ends it.
+    """
+    try:
+        import _coding_memory
+
+        if not _coding_memory.enabled():
+            return
+        payload = json.loads(payload_raw)
+        if isinstance(payload, dict):
+            _coding_memory.capture(payload, final=True)
+    except Exception as exc:
+        hook_log("coding_session_end_flush_failed", {"error": str(exc)[:200]})
+
+
 def main():
     detached_final = _DETACHED_ARG in sys.argv
     forced_session_end = _SESSION_END_ARG in sys.argv
@@ -446,6 +464,8 @@ def main():
             "payload_bytes": len(payload_raw.encode("utf-8", "replace")),
         },
     )
+    if is_session_end and not detached_final and payload_raw.strip():
+        _coding_flush(payload_raw)
 
     if detached_final:
         delay_raw = os.environ.get("COGNEE_SYNC_START_DELAY", "")

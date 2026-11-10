@@ -93,7 +93,9 @@ def test_old_server_never_silently_drops_project_tags(
     monkeypatch.setenv("COGNEE_PROJECT_NODE_SET", "auto")
     pm.begin("primary", "s", str(tmp_path))
     monkeypatch.setattr(common, "_json_http_request", lambda *args, **kwargs: {})
-    pm.prepare("primary", "s")
+    # A permanent error, not a retry.
+    state = pm.prepare("primary", "s")
+    assert state["pending"] is False and "retry_at" not in state
     with pytest.raises(RuntimeError, match="does not support"):
         common.remember_entry_via_http("primary", "s", {"type": "qa"})
 

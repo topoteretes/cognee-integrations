@@ -175,7 +175,9 @@ def touch_session() -> None:
     ensure_worker()
 
 
-def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
+def enqueue(dataset: str, session_id: str, entry: dict, kind: str, *, coding: bool = False) -> Path:
+    """Spool one entry for the worker. ``coding`` marks an entry of coding memory
+    mode (SDK-1336): it is counted on delivery but requests no every-N improve."""
     from _capture_policy import sanitize
     from _plugin_common import _sanitize_value, get_session_key
 
@@ -195,6 +197,8 @@ def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
         "ambiguous": False,
         "client_event_id": str(uuid.uuid4()),
     }
+    if coding:
+        item["coding"] = True
     path = root() / "spool" / f"{time.time_ns():020d}-{key}-{uuid.uuid4().hex}.json"
     atomic_json(path, item)
     log("capture_spooled", session=session_id, kind=kind)
@@ -423,9 +427,11 @@ def _after_delivery(item: dict, verified: bool) -> None:
             session=item["session_id"],
             via="cloud_spool",
         )
-        if every_n:
+        if every_n and not item.get("coding"):
             # Same automatic trigger as local mode: every COGNEE_AUTO_IMPROVE_EVERY
             # stored entries, within the per-session cooldown (SDK-1072/1074).
+            # Coding memory items still count, but improve only at session end
+            # and on the cooldown.
             request_improve(item["dataset"], item["session_id"], f"turn_{count}")
         log(
             "cloud_capture_delivered",
