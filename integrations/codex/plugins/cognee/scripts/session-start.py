@@ -1304,13 +1304,20 @@ async def _ensure_agent_credentials_and_register(
             dataset_ids=[shared["dataset_id"]] if shared.get("dataset_id") else None,
         )
 
+    def _refused(reg: dict) -> bool:
+        # A refused key (401/403) and a refused dataset (a 403 naming it) take
+        # the same path: the principal can still create the dataset and
+        # register. ``dataset_refused`` only changes what the user is told.
+        return bool(reg.get("auth_failed") or reg.get("dataset_refused"))
+
     registered, registration = await _register()
-    if not registered and registration.get("auth_failed") and agent_key:
+    if not registered and _refused(registration) and agent_key:
         # 401: the key itself is dead — revoked out-of-band (dashboard
         # disconnect or revoke) or pruned server-side. It is blocked so no
         # later hook reuses it, and replaced.
-        # 403: the key works but the server refused this registration; the key
-        # is kept — blocking it would make every launch mint another one.
+        # 403: the key works but the server refused this registration (the key
+        # or the dataset); the key is kept — blocking it would make every
+        # launch mint another one.
         key_rejected = registration.get("status_code") == 401
         replacement = ""
         if key_rejected:
@@ -1332,11 +1339,15 @@ async def _ensure_agent_credentials_and_register(
             registered, registration = await _register()
             if not registered and registration.get("status_code") == 401:
                 block_cached_agent_key(agent_key)
-        if not registered and registration.get("auth_failed"):
+        if not registered and _refused(registration):
             if plugin_identity_mode(config) == "enabled":
+                # Raised without an HTTP status, so the status line does not
+                # report an auth failure for a refused dataset.
                 raise RuntimeError(
                     "Plugin identity rejected and could not be replaced; owner fallback is disabled"
                     if key_rejected
+                    else "The server refused the dataset; owner fallback is disabled"
+                    if registration.get("dataset_refused")
                     else "Plugin identity was refused registration (403); owner fallback "
                     "is disabled"
                 )

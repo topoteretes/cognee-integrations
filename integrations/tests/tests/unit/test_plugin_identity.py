@@ -112,6 +112,31 @@ def test_dataset_refused_registration_keeps_an_explicit_identity(suite, bootstra
     assert module._status_from_error(raised.value) == 0
 
 
+def test_dataset_refused_registration_falls_back_to_the_principal_under_auto(
+    suite, pc, bootstrap, mock_server
+):
+    """A refused dataset is a refusal like a refused key: under ``auto`` the
+    launch falls back to the principal, which creates the dataset and registers.
+    Here the agent lost read on its shared dataset out-of-band (the cached
+    marker still says shared), so the server refuses the bound id."""
+    _module, run = bootstrap
+    _u, key, _n, ok = run({})
+    assert ok and key.startswith("agentkey-")
+    agents_register = mock_server.identity.agents_register
+
+    def refuse_bound_ids(payload):
+        if payload.get("dataset_ids"):
+            return 403, {"detail": f"Dataset {payload['dataset_ids'][0]} not accessible."}
+        return agents_register(payload)
+
+    mock_server.identity.agents_register = refuse_bound_ids
+    _u, api_key, _n, ok = run({})
+    assert ok and not api_key.startswith("agentkey-")
+    # The agent key is kept for a later launch, as for any 403.
+    record = pc._load_json_file(pc._AGENT_KEY_CACHE)
+    assert record["api_key"] == key and not record.get("blocked")
+
+
 def test_register_transport_error_is_not_auth_failure(
     suite, pc, mock_server, closed_port_url, monkeypatch
 ):
