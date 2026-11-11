@@ -72,6 +72,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - New `coding.*` log events (see `EVENTS.md`).
 
 ### Fixed
+- **The first session on a new dataset is registered (SDK-1513).** Without a shared
+  dataset id, a session registers its dataset by name, and since cognee 1.6.3 the server
+  resolves names only among the caller's existing datasets. On a new account the default
+  dataset does not exist yet, so the first session was refused with 403: it ran unregistered
+  and its status line reported an auth failure. SessionStart now creates the dataset before
+  it registers. A 403 that names a dataset is no longer read as a refused key, so an explicit
+  plugin identity no longer fails with "refused registration", and the status line no longer
+  reports an auth failure for it.
 - **Project tags: an unanswered check is retried.** When the session-start check of project-tag
   support gets no answer (timeout, connection error, a reply that is not JSON, HTTP 408, 429 or
   5xx), capture stays queued and the check runs again from the next hook that writes, drains or

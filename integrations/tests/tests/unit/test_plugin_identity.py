@@ -71,6 +71,47 @@ def test_register_surfaces_auth_rejection(suite, pc, mock_server):
     assert body.get("auth_failed") is True
 
 
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Dataset 'agent_sessions' not accessible. [PermissionDeniedError]",  # real server
+        "Dataset 'agent_sessions' not accessible.",
+    ],
+)
+def test_register_403_naming_a_dataset_is_not_an_auth_failure(suite, pc, mock_server, detail):
+    """SDK-1513. The server refuses the dataset, not the key: reading it as an
+    auth failure would revoke-or-fall-back a working identity."""
+    mock_server.force_response("POST", "/api/v1/agents/register", 403, {"detail": detail})
+    ok, body = pc.register_agent_via_http(agent_session_name="sess-a")
+    assert not ok
+    assert body.get("auth_failed") is False and body.get("dataset_refused") is True
+    assert body.get("status_code") == 403
+
+
+def test_register_403_without_a_dataset_is_still_an_auth_failure(suite, pc, mock_server):
+    mock_server.force_response("POST", "/api/v1/agents/register", 403, {"detail": "Forbidden"})
+    ok, body = pc.register_agent_via_http(agent_session_name="sess-a")
+    assert not ok
+    assert body.get("auth_failed") is True and body.get("dataset_refused") is False
+
+
+def test_dataset_refused_registration_keeps_an_explicit_identity(suite, bootstrap, mock_server):
+    """Under ``plugin_identity: true`` a refused dataset used to raise "Plugin
+    identity was refused registration (403)". It now fails as a dataset problem,
+    raised without an HTTP status so the status line does not say auth failed."""
+    module, run = bootstrap
+    _u, key, _n, ok = run({"plugin_identity": True})
+    assert ok and key.startswith("agentkey-")
+    mock_server.force_response(
+        "POST", "/api/v1/agents/register", 403, {"detail": "Dataset 'x' not accessible."}
+    )
+    with pytest.raises(RuntimeError) as raised:
+        run({"plugin_identity": True})
+    assert not isinstance(raised.value, urllib.error.HTTPError)
+    assert "refused the dataset" in str(raised.value)
+    assert module._status_from_error(raised.value) == 0
+
+
 def test_register_transport_error_is_not_auth_failure(
     suite, pc, mock_server, closed_port_url, monkeypatch
 ):
@@ -198,6 +239,12 @@ def test_limit_fallback_warns_the_user_until_this_machine_gets_a_key(
     own key."""
     ident = mock_server.identity
     ident.max_agent_keys = 1
+    # The launch on the personal key creates its dataset before registering, so
+    # the account owns one when the slot frees up. Under a tenant (as on cloud)
+    # that does not keep shared memory from wiring; a tenant-less owner with data
+    # stays separated, which test_shared_memory covers.
+    ident.seed_api_key(PRINCIPAL_KEY)
+    ident.tenants_create(PRINCIPAL_KEY, "acme")
     other_machine = ident.plugins_provision(suite.name, PRINCIPAL_KEY)[1]["apiKey"]
     module, run = bootstrap
     _u, key, _n, ok = run({})
@@ -292,6 +339,74 @@ def test_registration_refused_with_403_keeps_the_key_and_never_reprovisions(
     record = pc._load_json_file(pc._AGENT_KEY_CACHE)
     assert record["api_key"] == key and not record.get("blocked")
     assert ident.valid_keys[key]["valid"] is True
+
+
+def _register_calls(mock_server):
+    return [i for i, c in enumerate(mock_server.calls) if c["path"] == "/api/v1/agents/register"]
+
+
+def _dataset_creates(mock_server):
+    return [
+        i
+        for i, c in enumerate(mock_server.calls)
+        if c["method"] == "POST" and c["path"].rstrip("/") == "/api/v1/datasets"
+    ]
+
+
+def test_principal_registers_a_dataset_that_does_not_exist_yet(
+    suite, bootstrap, mock_server, monkeypatch
+):
+    """SDK-1513. Without a shared dataset id the session registers by NAME, and
+    the server resolves names only among the caller's existing datasets
+    (cognee >= 1.6.3): a 403 for a name that does not exist yet. The default
+    ``agent_sessions`` does not exist on a new account, so the dataset must be
+    created before the first registration, not after it."""
+    mock_server.identity.register_checks_datasets = True
+    mock_server.identity.seed_api_key(PRINCIPAL_KEY)
+    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    module, run = bootstrap
+    _user_id, api_key, _name, ok = run({"api_key": PRINCIPAL_KEY, "plugin_identity": False})
+    assert ok and api_key == PRINCIPAL_KEY
+    creates, registers = _dataset_creates(mock_server), _register_calls(mock_server)
+    assert creates and registers and creates[0] < registers[0], mock_server.calls
+    owner = mock_server.identity.user_id_for_key(PRINCIPAL_KEY)
+    assert any(
+        row["name"] == "agent_sessions" and row["ownerId"] == owner
+        for row in mock_server.identity.dataset_rows.values()
+    )
+
+
+def test_separated_identity_registers_a_dataset_that_does_not_exist_yet(
+    suite, bootstrap, mock_server, monkeypatch
+):
+    """The same order under an explicit identity whose shared memory is off: the
+    agent addresses the dataset by name, so it needs its own copy first — and a
+    name the server cannot find yet must never read as the identity being
+    refused (no fallback, no auth failure)."""
+    mock_server.identity.register_checks_datasets = True
+    monkeypatch.setenv("COGNEE_SHARED_AGENT_MEMORY", "false")
+    module, run = bootstrap
+    _user_id, api_key, _name, ok = run({"plugin_identity": True})
+    assert ok and api_key.startswith("agentkey-")
+    creates, registers = _dataset_creates(mock_server), _register_calls(mock_server)
+    assert creates and registers and creates[0] < registers[0], mock_server.calls
+    assert all(mock_server.calls[i]["headers"].get("X-Api-Key") == api_key for i in registers)
+
+
+def test_shared_memory_registration_creates_no_dataset_by_name(suite, bootstrap, mock_server):
+    """Under shared memory the wiring already created the parent-owned dataset
+    and the registration binds it by id. Creating it by name as the agent here
+    would fork an agent-owned copy nobody else sees."""
+    mock_server.identity.register_checks_datasets = True
+    _module, run = bootstrap
+    _u, key, _n, ok = run({})
+    assert ok and key.startswith("agentkey-")
+    agent_creates = [
+        i
+        for i in _dataset_creates(mock_server)
+        if mock_server.calls[i]["headers"].get("X-Api-Key") == key
+    ]
+    assert not agent_creates, [mock_server.calls[i] for i in agent_creates]
 
 
 # ── dataset readiness under shared memory ───────────────────────────────────
