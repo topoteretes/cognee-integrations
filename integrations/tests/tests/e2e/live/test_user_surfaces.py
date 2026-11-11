@@ -79,7 +79,7 @@ def recalled_session(synced_turn, captured_session, live_suite, live_home, nonce
     return captured_session, recalled
 
 
-def test_the_status_line_renders_against_a_real_server(recalled_session, live_suite):
+def test_the_status_line_renders_against_a_real_server(recalled_session, live_suite, live_dataset):
     """Whatever shape the bar takes, it must render and name the dataset.
 
     Every registered integration has a bar; only its form differs (Claude Code
@@ -94,9 +94,12 @@ def test_the_status_line_renders_against_a_real_server(recalled_session, live_su
     assert "Traceback" not in bar.stderr, f"renderer raised:\n{bar.stderr[:800]}"
     # Codex and Antigravity print ``cognee: <dataset> · <mode>``; Claude Code's
     # default bar styles the wordmark and drops the colon (``cognee <dataset> ·
-    # <mode>``, the colon form is its classic style only).
-    assert re.search(r"\bcognee:? \S+\s+·", strip_ansi(bar.stdout)), (
-        f"unrecognisable status line: {bar.stdout!r}"
+    # <mode>``, the colon form is its classic style only). With recall on "auto"
+    # the dataset slot reads ``auto (<dataset>)``. Whatever the form, the bar
+    # must name this session's dataset after the wordmark.
+    text = strip_ansi(bar.stdout)
+    assert re.search(rf"\bcognee:? (?:auto \()?{re.escape(live_dataset)}\)?\s+·", text), (
+        f"status line does not name dataset {live_dataset!r}: {bar.stdout!r}"
     )
 
 
