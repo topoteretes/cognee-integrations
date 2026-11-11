@@ -39,6 +39,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:agent_lifecycle_error` | `agent.lifecycle_error` |
 | `hook:agent_lifecycle_unsupported` | `agent.lifecycle_unsupported` |
 | `hook:agent_register_failed` | `agent.register_failed` |
+| `hook:dataset_ensure_before_register_failed` | `agent.dataset_ensure_before_register_failed` |
 | `hook:agent_register_result` | `agent.register_result` |
 | `hook:agent_unregister_failed` | `agent.unregister_failed` |
 | `hook:agent_unregister_result` | `agent.unregister_result` |

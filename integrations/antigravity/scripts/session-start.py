@@ -1266,10 +1266,23 @@ async def _ensure_agent_credentials_and_register(
     # sub-user, which is exactly the user the data plane operates as.
     user_id = await _user_id_via_api(service_url, api_key)
 
-    def _register() -> tuple[bool, dict]:
+    async def _register() -> tuple[bool, dict]:
         # Registration is a lifecycle counter + connection registry under the
         # effective identity. The connection handle IS the Cognee session id.
         # Under shared memory the binding is the canonical dataset's UUID.
+        if not shared.get("dataset_id"):
+            # Without a canonical id the dataset goes by NAME, which the server
+            # resolves only among the caller's existing datasets (cognee >=
+            # 1.6.3): a name that does not exist yet is refused with 403, and on
+            # a new account that is the default dataset. Create it first, as
+            # the identity that registers. Best-effort: when it fails, the
+            # registration reports the real error.
+            try:
+                await ensure_dataset_ready_via_api(
+                    service_url, api_key, str(config.get("dataset", "") or "").strip()
+                )
+            except Exception as exc:
+                hook_log("dataset_ensure_before_register_failed", {"error": str(exc)[:200]})
         return register_agent_via_http(
             agent_session_name=agent_session_name,
             session_id=session_id,
@@ -1277,13 +1290,20 @@ async def _ensure_agent_credentials_and_register(
             dataset_ids=[shared["dataset_id"]] if shared.get("dataset_id") else None,
         )
 
-    registered, registration = _register()
-    if not registered and registration.get("auth_failed") and agent_key:
+    def _refused(reg: dict) -> bool:
+        # A refused key (401/403) and a refused dataset (a 403 naming it) take
+        # the same path: the principal can still create the dataset and
+        # register. ``dataset_refused`` only changes what the user is told.
+        return bool(reg.get("auth_failed") or reg.get("dataset_refused"))
+
+    registered, registration = await _register()
+    if not registered and _refused(registration) and agent_key:
         # 401: the key itself is dead — revoked out-of-band (dashboard
         # disconnect or revoke) or pruned server-side. It is blocked so no
         # later hook reuses it, and replaced.
-        # 403: the key works but the server refused this registration; the key
-        # is kept — blocking it would make every launch mint another one.
+        # 403: the key works but the server refused this registration (the key
+        # or the dataset); the key is kept — blocking it would make every
+        # launch mint another one.
         key_rejected = registration.get("status_code") == 401
         replacement = ""
         if key_rejected:
@@ -1302,14 +1322,18 @@ async def _ensure_agent_credentials_and_register(
             os.environ["COGNEE_API_KEY"] = api_key
             config["api_key"] = api_key
             user_id = await _user_id_via_api(service_url, api_key)
-            registered, registration = _register()
+            registered, registration = await _register()
             if not registered and registration.get("status_code") == 401:
                 block_cached_agent_key(agent_key)
-        if not registered and registration.get("auth_failed"):
+        if not registered and _refused(registration):
             if plugin_identity_mode(config) == "enabled":
+                # Raised without an HTTP status, so the status line does not
+                # report an auth failure for a refused dataset.
                 raise RuntimeError(
                     "Plugin identity rejected and could not be replaced; owner fallback is disabled"
                     if key_rejected
+                    else "The server refused the dataset; owner fallback is disabled"
+                    if registration.get("dataset_refused")
                     else "Plugin identity was refused registration (403); owner fallback "
                     "is disabled"
                 )
@@ -1334,7 +1358,7 @@ async def _ensure_agent_credentials_and_register(
             os.environ["COGNEE_API_KEY"] = api_key
             config["api_key"] = api_key
             user_id = await _user_id_via_api(service_url, api_key)
-            registered, registration = _register()
+            registered, registration = await _register()
     # Optional lifecycle routes (older / minimal servers, lifecycle_supported is
     # False): the session runs unregistered rather than failing. Anything else
     # is a real failure on a server that has the route — raise with the HTTP
@@ -1342,6 +1366,10 @@ async def _ensure_agent_credentials_and_register(
     if not registered and registration.get("lifecycle_supported") is not False:
         status = registration.get("status_code")
         message = f"Failed to register session '{session_id}' on {service_url}."
+        if registration.get("dataset_refused"):
+            # The key works; the server refused the dataset. Raised without an
+            # HTTP status so the status line does not report an auth failure.
+            raise RuntimeError(f"{message} The server refused the dataset.")
         if status:
             raise urllib.error.HTTPError(service_url, status, message, None, None)
         raise RuntimeError(message)

@@ -194,6 +194,25 @@ def test_restart_reuses_the_cached_identity_without_provisioning(
     second.end()
 
 
+def test_first_principal_session_on_a_new_dataset_registers(
+    live_session_factory, live_suite, live_home, live_base_url
+):
+    """SDK-1513. Without a shared dataset id the session registers its dataset
+    by name, and the server resolves names only among the caller's existing
+    datasets (cognee >= 1.6.3). The dataset is new here (as the default one is
+    on a new account), so it must be created before the registration, or the
+    first session runs unregistered and its status line reports an auth
+    failure. Needs no plugin-key support: it runs on any local server."""
+    session = live_session_factory("fresh")
+    session.env = {**session.env, "COGNEE_PLUGIN_IDENTITY": "false"}
+    _start(session, live_base_url)
+    failed = _events(live_suite, live_home, "agent_register_failed")
+    assert not failed, f"the first session on a new dataset was refused registration: {failed}"
+    results = _events(live_suite, live_home, "agent_register_result")
+    assert results and results[-1].get("registered") is True, results
+    session.end()
+
+
 def test_install_that_ran_on_the_principal_provisions_on_upgrade(
     live_session_factory, live_suite, live_home, live_base_url, nonce
 ):
