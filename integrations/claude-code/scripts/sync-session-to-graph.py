@@ -31,6 +31,7 @@ from _plugin_common import (
     load_resolved,
     phase_begin,
     phase_end,
+    resolve_host_key_outside_hook,
     resolve_session_key_from_payload,
     resolved_http_endpoint_auth,
     run_session_improve_detailed,
@@ -454,6 +455,7 @@ def main():
     detached_final = _DETACHED_ARG in sys.argv
     forced_session_end = _SESSION_END_ARG in sys.argv
     payload_raw = "" if detached_final else sys.stdin.read()
+    session_key_candidate = ""
     if not detached_final and payload_raw.strip():
         try:
             payload = json.loads(payload_raw)
@@ -463,6 +465,17 @@ def main():
         if session_key_candidate:
             set_session_key(session_key_candidate)
         hook_log("sync_session_key", {"source": session_key_source, "value": session_key_candidate})
+    if not detached_final and not session_key_candidate:
+        # A shell invocation (`cognee-forget.sh sync`, the cognee-sync skill)
+        # has no hook payload. Find the launch the way switch-dataset.py does
+        # (COGNEE_SESSION_KEY first, then the host's session export, pid, cwd),
+        # so the sync targets the live session instead of minting a fresh one;
+        # in cloud mode `request_improve` would otherwise raise in
+        # `session_dir("")`.
+        host_key, host_key_source = resolve_host_key_outside_hook()
+        if host_key:
+            set_session_key(host_key)
+            hook_log("sync_session_key", {"source": host_key_source, "value": host_key})
     is_session_end = forced_session_end or _is_session_end_payload(payload_raw)
     hook_log(
         "sync_payload",
