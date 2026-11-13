@@ -29,6 +29,7 @@ line per action, like the Claude Code plugin's
 
 ```
 > 🧠 Cognee memory (london_community): Ana runs the Thursday meetups at Expedite.
+
 > 🧠 Saved to Cognee (london_community): the next meetup moves to 29 October.
 ```
 
