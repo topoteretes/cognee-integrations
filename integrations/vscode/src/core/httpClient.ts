@@ -58,6 +58,12 @@ export class HttpCogneeClient implements CogneeClient {
     }
   }
 
+  /** Verify credentials on an authenticated, read-only route and record this client. */
+  async verifyConnection(signal?: AbortSignal): Promise<void> {
+    const response = await this.send("GET", "/api/v1/datasets", undefined, signal);
+    await this.parse(response, "Connection verification");
+  }
+
   async recall(query: string, options: RecallOptions = {}): Promise<RecallResponseItem[]> {
     const body: Record<string, unknown> = { query };
 
@@ -156,7 +162,11 @@ export class HttpCogneeClient implements CogneeClient {
   // --- internals -----------------------------------------------------------
 
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
-    const headers: Record<string, string> = { Accept: "application/json", ...extra };
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      ...extra,
+      "X-Cognee-Origin": "vscode",
+    };
     if (this.apiKey) {
       headers["X-Api-Key"] = this.apiKey;
     }
