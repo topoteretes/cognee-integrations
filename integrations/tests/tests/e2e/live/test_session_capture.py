@@ -124,10 +124,14 @@ def test_tool_trace_is_captured_and_recall_stays_graph_context(
     session = started_session("trace")
 
     session.prompt(f"Check the {nonce} service config.", turn_id="t1")
+    # Not a Read: claude-code in cloud mode drops Read/Grep/Glob traces as low
+    # signal on purpose (and every suite drops plain inspection commands), so a
+    # file read would test the filter, not capture. A network call that printed
+    # something is kept by every suite in every mode.
     session.tool(
-        "Read",
-        {"file_path": f"/srv/{nonce}/service.yaml"},
-        "listen_port: 9931\nmode: strict",
+        "Bash",
+        {"command": f"curl -s http://{nonce}.svc.internal/config"},
+        {"stdout": "listen_port: 9931\nmode: strict", "stderr": "", "interrupted": False},
         turn_id="t1",
     )
     session.answer(f"{nonce} listens on port 9931 in strict mode.", turn_id="t1")

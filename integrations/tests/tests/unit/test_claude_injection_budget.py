@@ -62,6 +62,34 @@ def test_required_header_larger_than_budget_is_explicit_error():
         budget.fit_sections([{"entries": ["header"], "required": True}], 1)
 
 
+def test_dropped_entries_name_exactly_what_did_not_fit():
+    # SDK-1098: the receipt marks these over_budget, so they must be recorded,
+    # in retrieval order, and never include required or uncounted entries.
+    low = [f"low {i} " + "x" * 300 for i in range(5)]
+    high = [f"high {i} " + "y" * 300 for i in range(3)]
+    _, stats = budget.fit_sections(
+        [
+            {"entries": ["header"], "required": True},
+            {"entries": ["instruction " + "z" * 3000], "priority": 100, "counted": False},
+            {"entries": high, "priority": 40},
+            {"entries": low, "priority": 10},
+        ],
+        1500,
+    )
+    kept = set(stats["entries"])
+    assert stats["dropped_entries"] == [e for e in high + low if e not in kept]
+    assert len(stats["dropped_entries"]) == stats["entries_dropped"] > 0
+    assert not any(e.startswith(("header", "instruction")) for e in stats["dropped_entries"])
+
+
+def test_duplicate_entries_are_dropped_by_count():
+    entry = "same " + "x" * 600
+    _, stats = budget.fit_sections(
+        [{"entries": ["header"], "required": True}, {"entries": [entry, entry, entry]}], 1400
+    )
+    assert stats["entries"].count(entry) + stats["dropped_entries"].count(entry) == 3
+
+
 @pytest.mark.parametrize(
     "value,expected", [("256", 1024), ("999999", 9000), ("5000", 5000), ("bad", 9000)]
 )

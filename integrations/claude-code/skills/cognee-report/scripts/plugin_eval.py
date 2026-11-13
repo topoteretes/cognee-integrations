@@ -2072,6 +2072,74 @@ _DELIVERY_SEGMENTS = (
 )
 
 
+#: Receipt reasons counted as delivery decisions; any other non-gap reason is a
+#: server status for evidence it could not return (unavailable, own_session, ...).
+_RECEIPT_DECISIONS = ("injected", "already_in_context", "over_budget")
+
+
+def session_receipts(plugin_dir, host, since, until):
+    """The session's per-prompt receipts recorded inside the window, oldest first."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", host or ""):
+        return []
+    try:
+        lines = (plugin_dir / "sessions" / host / "recall-receipts.jsonl").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return []
+    receipts = []
+    for line in lines.splitlines():
+        try:
+            receipt = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(receipt, dict):
+            continue
+        stamp = parse_ts(receipt.get("recorded_at"))
+        if stamp and (not since or stamp >= since) and (not until or stamp < until):
+            receipts.append(receipt)
+    return receipts
+
+
+def receipt_totals(receipts):
+    """Injected / already-in-context / over-budget / unavailable entries and
+    per-scope failures, counted from receipts only."""
+    totals = dict.fromkeys(_RECEIPT_DECISIONS + ("unavailable",), 0)
+    failures = {}
+    for receipt in receipts:
+        for item in receipt.get("items", []):
+            reason = item.get("reason") if isinstance(item, dict) else None
+            if reason in _RECEIPT_DECISIONS:
+                totals[reason] += 1
+            elif reason and reason != "unaccounted":
+                totals["unavailable"] += 1
+        for scope, info in (receipt.get("per_scope") or {}).items():
+            status = (info or {}).get("status", "ok") if isinstance(info, dict) else "ok"
+            if status != "ok":
+                failures.setdefault(scope, {}).setdefault(status, 0)
+                failures[scope][status] += 1
+    totals["recalls"] = len(receipts)
+    totals["scope_failures"] = failures
+    return totals
+
+
+def _receipt_line(totals):
+    text = "  receipts: %d injected, %d already in context, %d over budget, %d unavailable" % (
+        totals["injected"],
+        totals["already_in_context"],
+        totals["over_budget"],
+        totals["unavailable"],
+    )
+    words = {"timeout": "timed out", "error": "failed"}
+    failures = [
+        "%s %s on %d of %d recalls"
+        % (scope, words.get(status, status.replace("_", " ")), count, totals["recalls"])
+        for scope, statuses in sorted(totals["scope_failures"].items())
+        for status, count in sorted(statuses.items())
+    ]
+    return text + ("; " + "; ".join(failures) if failures else "")
+
+
 def delivery_summary(per_session, plugin_dir, since, until):
     """Body-free delivery evidence; mutually exclusive recall classifications.
 
@@ -2102,30 +2170,20 @@ def delivery_summary(per_session, plugin_dir, since, until):
                 category = "unmeasured"
             segments[category] = segments.get(category, 0) + 1
         hashes = list(dict.fromkeys(h for row in rows for h in row["hashes"]))[:3]
-        # The existing receipt is last-turn only: show it only when its timestamp
-        # lies within this report, never attribute a later receipt to older data.
-        host = host_session_id(sid)
-        if re.fullmatch(r"[A-Za-z0-9_-]+", host):
-            try:
-                receipt = json.loads(
-                    (plugin_dir / "sessions" / host / "injection-receipt.json").read_text()
-                )
-                stamp = parse_ts(receipt.get("recorded_at"))
-                if stamp and (not since or stamp >= since) and (not until or stamp < until):
-                    hashes = (
-                        list(
-                            dict.fromkeys(
-                                item["hash"]
-                                for item in receipt.get("items", [])
-                                if isinstance(item, dict)
-                                and item.get("reason") == "injected"
-                                and re.fullmatch(r"[0-9a-f]{20,64}", str(item.get("hash", "")))
-                            )
-                        )[:3]
-                        or hashes
-                    )
-            except (OSError, ValueError, TypeError, AttributeError):
-                pass
+        # Only receipts recorded inside this report count: a later receipt is
+        # never attributed to older data (SDK-1098).
+        receipts = session_receipts(plugin_dir, host_session_id(sid), since, until)
+        receipt_hashes = list(
+            dict.fromkeys(
+                item["hash"]
+                for receipt in receipts
+                for item in receipt.get("items", [])
+                if isinstance(item, dict)
+                and item.get("reason") == "injected"
+                and re.fullmatch(r"[0-9a-f]{16,64}", str(item.get("hash", "")))
+            )
+        )[:3]
+        hashes = receipt_hashes or hashes
         sessions.append(
             {
                 "session": sid,
@@ -2136,6 +2194,7 @@ def delivery_summary(per_session, plugin_dir, since, until):
                 "entries_injected": sum(row["entries_kept"] for row in rows),
                 "new_tokens_est": int(new_chars / CHARS_PER_TOKEN),
                 "evidence_hashes": hashes,
+                "receipts": receipt_totals(receipts) if receipts else None,
             }
         )
     sessions.sort(key=lambda row: (-row["hits"], -(row["novel_share"] or 0), row["session"]))
@@ -2207,6 +2266,8 @@ def render_text(card: Dict[str, Any], markdown: bool = False, *, full=False, asc
                 ", ".join(row["evidence_hashes"]) or "unmeasured",
             )
         )
+        if row.get("receipts"):
+            lines.append(_receipt_line(row["receipts"]))
     if not delivery["sessions"]:
         lines.append("No session delivery evidence in this window.")
     lines += ["", h2 + "Quality"]

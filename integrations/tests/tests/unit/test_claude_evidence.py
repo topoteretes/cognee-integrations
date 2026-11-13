@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from argparse import Namespace
 
 import pytest
@@ -60,13 +59,13 @@ def test_injection_is_whole_versioned_artifact_and_receipt_has_no_body(
     context = run.output["hookSpecificOutput"]["additionalContext"]
     assert value["text"] in context and value["citation"] in context
     assert "Legacy bundle" not in context
-    receipt_path = evidence.session_dir("evidence-session") / "injection-receipt.json"
-    receipt = json.loads(receipt_path.read_text())
+    receipt_path = evidence.receipts_path("evidence-session")
+    receipt = evidence.last_receipt("evidence-session")
     assert receipt["items"][0]["reason"] == "injected"
     assert value["text"] not in receipt_path.read_text()
     again = drive_recall(lookup, monkeypatch, recall={"graph": [result([value])]})
     assert value["citation"] not in again.output["hookSpecificOutput"]["additionalContext"]
-    assert json.loads(receipt_path.read_text())["items"][0]["reason"] == "already_in_context"
+    assert evidence.last_receipt("evidence-session")["items"][0]["reason"] == "already_in_context"
     updated = item(version="b")  # same text, changed source version is eligible
     run = drive_recall(lookup, monkeypatch, recall={"graph": [result([updated])]})
     assert updated["citation"] in run.output["hookSpecificOutput"]["additionalContext"]
@@ -82,9 +81,7 @@ def test_over_budget_and_unavailable_are_explained(evidence, suite, hook_module,
     run = drive_recall(lookup, monkeypatch, recall={"graph": [result([oversized, missing])]})
     context = run.output["hookSpecificOutput"]["additionalContext"]
     assert oversized["citation"] not in context and "Legacy bundle" not in context
-    receipt = json.loads(
-        (evidence.session_dir("evidence-budget") / "injection-receipt.json").read_text()
-    )
+    receipt = evidence.last_receipt("evidence-budget")
     assert [i["reason"] for i in receipt["items"]] == ["over_budget", "unavailable"]
 
 
@@ -99,9 +96,7 @@ def test_legacy_context_works_but_does_not_gain_fake_citations(
         lookup, monkeypatch, recall={"graph": [{"source": "graph", "text": "Legacy fact"}]}
     )
     assert "Legacy fact" in run.output["hookSpecificOutput"]["additionalContext"]
-    receipt = json.loads(
-        (evidence.session_dir("evidence-old-server") / "injection-receipt.json").read_text()
-    )
+    receipt = evidence.last_receipt("evidence-old-server")
     assert receipt["items"][0]["addressable"] is False
 
 
@@ -113,9 +108,7 @@ def test_own_session_evidence_stays_excluded(evidence, suite, hook_module, monke
     value = item(text="Session ID: sid\nQuestion: own turn\nAnswer: private")
     run = drive_recall(lookup, monkeypatch, recall={"graph": [result([value])]})
     assert "own turn" not in run.output["hookSpecificOutput"]["additionalContext"]
-    receipt = json.loads(
-        (evidence.session_dir("evidence-self") / "injection-receipt.json").read_text()
-    )
+    receipt = evidence.last_receipt("evidence-self")
     assert "own_session" in [i["reason"] for i in receipt["items"]]
 
 

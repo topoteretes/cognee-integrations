@@ -243,8 +243,9 @@ reference before citing it. `unavailable` covers deleted or unauthorized artifac
 an old citation. Bounded excerpts report `truncated`.
 
 Automatic recall attaches versioned evidence in its existing graph request and
-keeps the 45-second cloud limit. Its body-free last-turn receipt explains each
-candidate: injected, already in context, over budget, or unavailable. Selection
+keeps the 45-second cloud limit. A body-free receipt per prompt (the session's
+`recall-receipts.jsonl`; `explain` prints the newest) explains each candidate:
+injected, already in context, over budget, or unavailable. Selection
 uses retrieval rank and source priority; it is not a causal attribution of answer
 quality. Legacy servers keep normal recall and report the evidence index as
 unsupported; unversioned context is marked unaddressable in the receipt.

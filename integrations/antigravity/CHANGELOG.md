@@ -53,6 +53,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   credits marker still records `last_op`. Claude Code dropped it the same way.
 
 ### Fixed
+- **The first session on a new dataset is registered (SDK-1513).** Without a shared
+  dataset id, a session registers its dataset by name, and since cognee 1.6.3 the server
+  resolves names only among the caller's existing datasets. On a new account the default
+  dataset does not exist yet, so the first session was refused with 403: it ran unregistered
+  and its status line reported an auth failure. SessionStart now creates the dataset before
+  it registers. A 403 that names a dataset is no longer read as a refused key, so an explicit
+  plugin identity no longer fails with "refused registration", and the status line no longer
+  reports an auth failure for it.
 - **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
   shared agent memory the parent account owns the datasets, so the switch addressed the target
   by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to

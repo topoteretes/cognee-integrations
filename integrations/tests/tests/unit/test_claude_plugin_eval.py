@@ -967,20 +967,44 @@ def test_delivery_segments_partition_recalls_and_receipts_are_body_free(env):
     write_jsonl(env.plugin_dir / "recall-audit.log", *rows)
     receipt_dir = env.plugin_dir / "sessions" / SESSION_UUID
     receipt_dir.mkdir(parents=True)
-    (receipt_dir / "injection-receipt.json").write_text(
-        json.dumps(
-            {
-                "recorded_at": iso(ts(10)),
-                "items": [{"reason": "injected", "hash": "a" * 64, "text": SECRET}],
-            }
-        )
+    write_jsonl(
+        receipt_dir / "recall-receipts.jsonl",
+        {
+            "recorded_at": iso(ts(10)),
+            "per_scope": {"graph": {"status": "ok"}, "session_context": {"status": "ok"}},
+            "items": [
+                {"reason": "injected", "hash": "a" * 16, "text": SECRET},
+                {"reason": "over_budget", "hash": "b" * 16},
+                {"reason": "unavailable"},
+            ],
+        },
+        {
+            "recorded_at": iso(ts(10, 12)),
+            "per_scope": {"graph": {"status": "timeout"}, "session_context": {"status": "ok"}},
+            "items": [{"reason": "already_in_context", "hash": "a" * 16}],
+        },
+        # Recorded after the window: never counted in it.
+        {"recorded_at": iso(ts(12)), "items": [{"reason": "injected", "hash": "c" * 16}]},
     )
     card = env.card(ts(10, 0), ts(11, 0))
     assert card["delivery"]["segments"] == dict.fromkeys(pe._DELIVERY_SEGMENTS, 1)
     assert sum(card["delivery"]["segments"].values()) == card["recall"]["recalls"]
     assert card["delivery"]["label"] == "delivery quality"
-    assert card["delivery"]["sessions"][0]["evidence_hashes"] == ["a" * 64]
+    session = card["delivery"]["sessions"][0]
+    assert session["evidence_hashes"] == ["a" * 16]
+    assert session["receipts"] == {
+        "injected": 1,
+        "already_in_context": 1,
+        "over_budget": 1,
+        "unavailable": 1,
+        "recalls": 2,
+        "scope_failures": {"graph": {"timeout": 1}},
+    }
     assert SECRET not in json.dumps(card["delivery"])
+    assert (
+        "receipts: 1 injected, 1 already in context, 1 over budget, 1 unavailable; "
+        "graph timed out on 1 of 2 recalls"
+    ) in pe.render_text(card)
     # A later receipt must not be projected back onto an earlier window.
     old = env.card(ts(9, 0), ts(10, 10))
     assert old["delivery"]["sessions"] == []

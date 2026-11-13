@@ -9,8 +9,7 @@ import sys
 import urllib.error
 
 from _deadlines import bounded_call
-from _evidence import parse_citation
-from _injection_ledger import session_dir
+from _evidence import citation_for, last_receipt, parse_citation
 from _plugin_common import (
     _json_http_request,
     get_session_key,
@@ -39,10 +38,14 @@ def run(args):
     if args.command == "explain":
         if not key:
             raise ValueError("No active host session; pass --session-key")
-        path = session_dir(key) / "injection-receipt.json"
-        if not path.exists():
+        receipt = last_receipt(key)
+        if not receipt:
             return {"status": "unavailable", "message": "No injection receipt for this session yet"}
-        return json.loads(path.read_text(encoding="utf-8"))
+        # Receipts store only the reference; print the citation it stands for.
+        for item in receipt.get("items", []):
+            if isinstance(item, dict) and item.get("reference"):
+                item["citation"] = citation_for(item["reference"]) or None
+        return receipt
     dataset, ids = resolve_active_dataset_ids()
     if args.dataset:
         dataset, ids = args.dataset, []

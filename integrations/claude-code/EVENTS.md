@@ -45,6 +45,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:agent_lifecycle_error` | `agent.lifecycle_error` |
 | `hook:agent_lifecycle_unsupported` | `agent.lifecycle_unsupported` |
 | `hook:agent_register_failed` | `agent.register_failed` |
+| `hook:dataset_ensure_before_register_failed` | `agent.dataset_ensure_before_register_failed` |
 | `hook:agent_register_result` | `agent.register_result` |
 | `hook:agent_unregister_failed` | `agent.unregister_failed` |
 | `hook:agent_unregister_result` | `agent.unregister_result` |
@@ -202,6 +203,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:plugin_provision_skipped` | `plugin.provision_skipped` |
 | `hook:precompact_anchor` | `precompact.anchor` |
 | `hook:precompact_empty` | `precompact.empty` |
+| `hook:precompact_improve_request_failed` | `precompact.improve_request_failed` |
 | `hook:precompact_missing_session_key` | `precompact.missing_session_key` |
 | `hook:precompact_recall_error` | `precompact.recall_error` |
 | `hook:precompact_run_exception` | `precompact.run_exception` |
@@ -413,7 +415,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 
-`recall.injection_receipt_failed`: writing the body-free last-turn injection receipt failed; recall output remains available.
+`recall.injection_receipt_failed`: appending the body-free recall receipt to the session's `recall-receipts.jsonl` failed; recall output remains available. `context_lookup_hit` / `context_lookup_empty` carry the prompt's `receipt_id` (empty when the write failed).
 
 Bash capture decisions contain only host session identity and `captured`,
 `skipped_self` or `skipped_low_signal`. Captured means retained for the write path,

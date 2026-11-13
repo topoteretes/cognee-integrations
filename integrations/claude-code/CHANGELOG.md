@@ -70,8 +70,42 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Doctor shows coding memory** while it is on: server support, whether the running local
   server is in coding mode, and whether the key holds `delete` on the dataset (the coding distillation deletes replaced lessons).
 - New `coding.*` log events (see `EVENTS.md`).
+- **A recall receipt for every prompt (SDK-1098).** The body-free injection receipt was
+  one file, `sessions/<host id>/injection-receipt.json`, overwritten on every prompt, so
+  only the last turn could be explained. Each prompt that reaches recall now appends one
+  receipt to `sessions/<host id>/recall-receipts.jsonl` (0600, removed with the session
+  folder after a week idle; `injection-receipt.json` is no longer written):
+  - each receipt has a `receipt_id`, a hash of the prompt (never the prompt), the Cognee
+    session id, and the server's origin (no credentials or query string);
+  - `per_scope` gives each scope's `status` (`ok`, `timeout`, `error`) and how many
+    results it returned. A prompt whose recall never reached the server still gets a
+    receipt, with every scope `skipped_outage`, `skipped_breaker` or `skipped_budget`;
+  - items keep their shipped fields (`hash`, `reason`, `reference`, `source`, `rank`,
+    `priority`, `addressable`) and gain `section` and `chars`. `citation` is no longer
+    stored, since `reference` carries the same pointer; `cognee-evidence.py explain`
+    prints it rebuilt from the reference;
+  - `over_budget` is now recorded: the budget step returns the entries it dropped
+    instead of only their count, so the reason is no longer inferred from what was left
+    over. An entry in none of the kept, deduplicated or dropped lists is marked
+    `unaccounted` instead of being passed off as budget.
+  - The prompt's `recall-audit.log` line and `context_lookup_*` event carry its
+    `receipt_id`. `stats.json` counts `entries_over_budget` and `entries_unavailable`.
+  - `cognee-report` prints a `receipts:` line per session, counted from the receipts
+    recorded inside the window: injected, already in context, over budget and
+    unavailable entries, and scope failures such as `graph timed out on 1 of 3
+    recalls`. Its injected evidence hashes now come from every receipt in the window;
+    before, they came only from the last-turn file and never matched its 16-character
+    hashes.
 
 ### Fixed
+- **The first session on a new dataset is registered (SDK-1513).** Without a shared
+  dataset id, a session registers its dataset by name, and since cognee 1.6.3 the server
+  resolves names only among the caller's existing datasets. On a new account the default
+  dataset does not exist yet, so the first session was refused with 403: it ran unregistered
+  and its status line reported an auth failure. SessionStart now creates the dataset before
+  it registers. A 403 that names a dataset is no longer read as a refused key, so an explicit
+  plugin identity no longer fails with "refused registration", and the status line no longer
+  reports an auth failure for it.
 - **Project tags: an unanswered check is retried.** When the session-start check of project-tag
   support gets no answer (timeout, connection error, a reply that is not JSON, HTTP 408, 429 or
   5xx), capture stays queued and the check runs again from the next hook that writes, drains or
@@ -89,6 +123,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   moved to `_credits.py`; `_plugin_common` re-exports every name, so no importer changes. The
   size test now measures files as git stores them (LF), so a Windows checkout's CRLF no longer
   fails a file that ships under the limit.
+- **A compaction in cloud mode keeps a memory anchor again (SDK-1492).** Since 1.6.12 the
+  cloud `PreCompact` hook queued an `improve` and returned, so it printed no anchor and the
+  compaction dropped the transcript with nothing carrying the session. It still queues the
+  `improve` and now also builds the anchor (recent turns, or recalled memory), behind the
+  same server-ready check as local mode. A busy improve request is logged
+  (`precompact.improve_request_failed`) and no longer costs the anchor.
 
 ## [1.7.8]
 

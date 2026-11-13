@@ -5251,10 +5251,40 @@ def register_agent_via_http(
             # route is a capability verdict, not a failed session.
             hook_log("agent_lifecycle_unsupported", {"operation": "register", "status": status})
             return False, {"lifecycle_supported": False}
-        hook_log("agent_register_failed", {"error": str(exc)[:200], "status": status})
+        # A 403 that names a dataset refuses the DATASET (a name the server cannot
+        # find among the caller's own, or an id the caller cannot read), not the
+        # key: it must not read as a refused identity or an auth failure.
+        dataset_refused = status == 403 and _refuses_a_dataset(exc)
+        hook_log(
+            "agent_register_failed",
+            {"error": str(exc)[:200], "status": status, "dataset_refused": dataset_refused},
+        )
         # status_code lets SessionStart raise a classified HTTPError; auth_failed
         # lets it block a revoked plugin-agent key instead of failing outright.
-        return False, {"status_code": status, "auth_failed": status in (401, 403)}
+        return False, {
+            "status_code": status,
+            "auth_failed": status in (401, 403) and not dataset_refused,
+            "dataset_refused": dataset_refused,
+        }
+
+
+def _refuses_a_dataset(exc: Exception) -> bool:
+    """True when a register 403's body names a dataset the caller cannot use.
+
+    The server answers ``Dataset '<name>' not accessible.`` (cognee >= 1.6.3)
+    both for a dataset the caller may not read and for a name that does not
+    exist among the caller's own datasets yet.
+    """
+    try:
+        body = exc.read().decode("utf-8", "replace")  # type: ignore[attr-defined]
+    except Exception:
+        return False
+    try:
+        detail = json.loads(body).get("detail")
+    except Exception:
+        detail = body
+    text = str(detail or "")
+    return text.startswith("Dataset ") and "not accessible" in text
 
 
 def unregister_agent_via_http(
