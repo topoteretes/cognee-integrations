@@ -103,6 +103,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `improve` and now also builds the anchor (recent turns, or recalled memory), behind the
   same server-ready check as local mode. A busy improve request is logged
   (`precompact.improve_request_failed`) and no longer costs the anchor.
+- **The cloud worker no longer applies its own `COGNEE_CAPTURE` to spooled
+  captures.** Capture is decided per session by the hooks at enqueue time, so a
+  worker spawned from a session with capture off no longer silently starves
+  every other session (#582).
 
 ## [1.7.8]
 

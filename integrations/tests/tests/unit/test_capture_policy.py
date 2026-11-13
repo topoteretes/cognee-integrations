@@ -20,6 +20,13 @@ def test_default_sensitive_paths_are_excluded(policy, path):
     assert policy.allow_tool("Read", {"file_path": "/project/main.py"})
 
 
+def test_tool_allowed_ignores_the_capture_switch(policy, monkeypatch):
+    monkeypatch.setenv("COGNEE_CAPTURE", "false")
+    assert policy.tool_allowed("Read", {"file_path": "/project/main.py"})
+    assert not policy.allow_tool("Read", {"file_path": "/project/main.py"})
+    assert not policy.tool_allowed("Read", {"file_path": "/project/.env"})
+
+
 def test_tool_allowlist_and_extra_paths(policy, monkeypatch):
     monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", "Grep|Glob")
     assert not policy.allow_tool("Read", {"path": "main.py"})
