@@ -1,5 +1,5 @@
 import { FirstRecall, coldRecall, withinRecallBudget } from "./coldStart.js";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -726,16 +726,11 @@ const memoryCogneePlugin = {
       defaultWorkspace: string,
       logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
     ): Promise<void> {
-      const config = api.runtime?.config?.current?.();
-      const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
-      const defWs = expandHome(config?.agents?.defaults?.workspace) || defaultWorkspace;
-      const agents = Array.isArray(list) && list.length > 0
-        ? list
-        : [{ id: cfg.agentId, workspace: defWs }];
+      const agents = await configuredAgents();
       for (const a of agents) {
-        const ws = expandHome(a.workspace) || defWs;
-        if (!ws) continue;
         try {
+          const ws = await resolveAgentWorkspace(a.id, defaultWorkspace);
+          if (!ws) continue;
           const r = await syncAgentScope(ws, a.id, logger);
           logger.info?.(`cognee-openclaw: seeded agent "${normalizeAgentId(a.id, cfg)}": ${r.added} added, ${r.updated} updated, ${r.deleted} deleted, ${r.skipped} unchanged`);
         } catch (e) {
@@ -744,22 +739,37 @@ const memoryCogneePlugin = {
       }
     }
 
-    // Resolve an agent's workspace from OpenClaw config (agents.list[].workspace
-    // by agentId), with sensible fallbacks. Used by the per-agent file paths so
-    // startup seeding and the agent_end/session_end sweeps always read the SAME
-    // directory — otherwise a runtime ctx.workspaceDir that differs from the
-    // seed workspace makes the sweep see the seeded file as "missing" and forget
-    // it. Resolving from config (the single source of truth) avoids that.
-    function resolveAgentWorkspace(rawAgentId: string | undefined): string | undefined {
+    // The host SDK understands both keyed agents.entries and legacy agents.list.
+    function currentAgentConfig(): OpenClawConfig {
+      // current() is readonly; these SDK readers do not mutate it, although older
+      // SDK declarations accept the mutable config type.
+      return (api.runtime?.config?.current?.() ?? api.config) as OpenClawConfig;
+    }
+
+    function hasConfiguredAgents(config: OpenClawConfig): boolean {
+      const agents = config.agents as { entries?: Record<string, unknown>; list?: unknown[] } | undefined;
+      return Object.keys(agents?.entries ?? {}).length > 0 || (agents?.list?.length ?? 0) > 0;
+    }
+
+    async function configuredAgents() {
+      const config = currentAgentConfig();
+      if (!hasConfiguredAgents(config)) return [{ id: cfg.agentId }];
+      const { listAgentIds } = await import("openclaw/plugin-sdk/agent-runtime");
+      const agentIds = listAgentIds(config);
+      return agentIds.length > 0 ? agentIds.map((id) => ({ id })) : [{ id: cfg.agentId }];
+    }
+
+    async function resolveAgentWorkspace(
+      rawAgentId: string | undefined,
+      fallbackWorkspace = resolvedWorkspaceDir,
+    ): Promise<string | undefined> {
       const target = normalizeAgentId(rawAgentId, cfg);
-      try {
-        const config = api.runtime?.config?.current?.();
-        const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
-        const match = list?.find((a) => normalizeAgentId(a.id, cfg) === target);
-        return expandHome(match?.workspace) || expandHome(config?.agents?.defaults?.workspace) || resolvedWorkspaceDir;
-      } catch {
-        return resolvedWorkspaceDir;
+      const config = currentAgentConfig();
+      if (hasConfiguredAgents(config)) {
+        const { resolveAgentWorkspaceDir } = await import("openclaw/plugin-sdk/agent-runtime");
+        return resolveAgentWorkspaceDir(config, target);
       }
+      return expandHome(config?.agents?.defaults?.workspace) || fallbackWorkspace;
     }
 
     async function runSync(
@@ -960,11 +970,7 @@ const memoryCogneePlugin = {
         .action(async (opts: { agent?: string }) => {
           if (perAgentMemory) {
             if (opts.agent) {
-              // Resolve this agent's workspace from config; fall back to cwd.
-              const config = api.runtime?.config?.current?.();
-              const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
-              const match = list?.find((a) => normalizeAgentId(a.id, cfg) === normalizeAgentId(opts.agent, cfg));
-              const ws = expandHome(match?.workspace) || cliWorkspaceDir;
+              const ws = await resolveAgentWorkspace(opts.agent, cliWorkspaceDir);
               const r = await syncAgentScope(ws, opts.agent, ctx.logger);
               console.log(`Sync complete [agent=${normalizeAgentId(opts.agent, cfg)}]: ${r.added} added, ${r.updated} updated, ${r.deleted} deleted, ${r.skipped} unchanged, ${r.errors} errors`);
               process.exit(0);
@@ -1027,11 +1033,8 @@ const memoryCogneePlugin = {
 
             if (perAgentMemory) {
               agentIndexes = await loadAgentSyncIndexes();
-              const config = api.runtime?.config?.current?.();
-              const list = config?.agents?.list as Array<{ id: string; workspace?: string }> | undefined;
               const agentKeys = new Set<string>(Object.keys(agentIndexes));
-              for (const a of list ?? []) agentKeys.add(normalizeAgentId(a.id, cfg));
-              if (agentKeys.size === 0) agentKeys.add(normalizeAgentId(undefined, cfg));
+              for (const a of await configuredAgents()) agentKeys.add(normalizeAgentId(a.id, cfg));
               for (const agentId of agentKeys) {
                 const idx = agentIndexes[agentId] ?? { entries: {} };
                 const dsName = datasetNameForScope("agent", cfg, agentId);
@@ -2205,7 +2208,7 @@ const memoryCogneePlugin = {
             // into its own dataset + per-agent index. Resolve the workspace from
             // config (not ctx.workspaceDir) so it matches the startup seed and a
             // mismatched runtime cwd can't make the sweep "forget" the seed file.
-            const agentWs = resolveAgentWorkspace(ctx.agentId) || workspaceDir;
+            const agentWs = await resolveAgentWorkspace(ctx.agentId) || workspaceDir;
             const result = await syncAgentScope(agentWs, ctx.agentId, api.logger);
             if (result.added || result.updated || result.deleted) {
               api.logger.info?.(`cognee-openclaw: post-agent sync [agent=${normalizeAgentId(ctx.agentId, cfg)}]: ${result.added} added, ${result.updated} updated, ${result.deleted} deleted`);
@@ -2347,14 +2350,13 @@ const memoryCogneePlugin = {
 
       api.logger.info?.(`cognee-openclaw: session_end received for session=${rawSessionId} agent=${normalizeAgentId(endAgentId, cfg)}${agentSessionName ? "" : " (not registered by this instance)"}`);
 
-      // Per-agent: resolve from config (matches the startup seed). Otherwise
-      // fall back to the cached workspace for this agent.
-      const sweepWorkspace = perAgentMemory
-        ? (resolveAgentWorkspace(endAgentId) || lastWorkspaceDir || resolvedWorkspaceDir)
-        : (agentWorkspaces.get(normalizeAgentId(endAgentId, cfg)) || lastWorkspaceDir || resolvedWorkspaceDir);
-
       const runFinalChain = async () => {
         await Promise.all([stateReady, serviceReadyWithTimeout()]);
+
+        // A per-agent fallback must never use another agent's last workspace.
+        const sweepWorkspace = perAgentMemory
+          ? (await resolveAgentWorkspace(endAgentId) || agentWorkspaces.get(normalizeAgentId(endAgentId, cfg)))
+          : (agentWorkspaces.get(normalizeAgentId(endAgentId, cfg)) || lastWorkspaceDir || resolvedWorkspaceDir);
 
         // session_end can land on a plugin instance that never handled a
         // prompt (OpenClaw registers several instances), so its client may

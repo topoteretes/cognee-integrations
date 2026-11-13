@@ -286,6 +286,19 @@ With this, agent `Will` writes to dataset `myorg-agent-will`, agent `Elizabeth` 
 
 > **Both settings are required.** `perAgentMemory: true` on its own does nothing — isolation only activates when an `agentDatasetPrefix` or `agentDatasetTemplate` is also set. Per-agent memory is never enabled automatically.
 
+The plugin uses OpenClaw's host SDK to enumerate agents and resolve their workspace
+directories. This supports current `agents.entries` and legacy `agents.list`
+configurations, including workspace paths derived by OpenClaw. Startup indexing,
+post-turn/session-end syncing and `cognee index --agent <id>` use the same agent
+workspace; a session's project directory does not replace it.
+
+To retain company knowledge alongside each agent's own graph, also set
+`companyDataset: "company_memory"` and `recallScopes: ["company", "agent"]`.
+Shared `memory/company/**` files are indexed from the gateway workspace at startup
+or by running `openclaw cognee index` from that workspace. Per-agent sweeps do not
+replace the shared index with files from a secondary workspace. Dataset routing
+organizes memory; agents sharing backend credentials are not security-isolated.
+
 ### Cognee Cloud
 
 Cognee Cloud tenants (staging and production) serve the **same `/api/v1/*` API as a self-hosted server**, so connecting to the cloud is just the default configuration pointed at your tenant URL, with an API key:
