@@ -75,3 +75,36 @@ keys are needed:
 ```bash
 uv run pytest tests/ -v
 ```
+
+## Publishing to PyPI
+
+The distribution is `cognee-integration-telegram` (initial version `0.1.0`).
+`.github/workflows/telegram-publish.yml` runs the locked tests, builds the wheel
+and sdist, verifies the installed command, and publishes using Trusted Publishing
+with attestations. It uses no PyPI API token.
+
+Before the first release, register a pending publisher on
+https://pypi.org/manage/account/publishing/ with these exact values:
+
+| Field | Value |
+|---|---|
+| Project | `cognee-integration-telegram` |
+| Owner | `topoteretes` |
+| Repository | `cognee-integrations` |
+| Workflow | `telegram-publish.yml` |
+| Environment | `pypi-cognee-integration-telegram` |
+
+The GitHub environment must allow the `main` branch and `telegram-v*` tags.
+Tags must point to commits already on `main`, and their version must match
+`pyproject.toml`. Workflow dispatch from other branches is refused.
+
+After merging the release changes into `main`, run:
+
+```bash
+gh workflow run telegram-publish.yml --repo topoteretes/cognee-integrations --ref main
+```
+
+Alternatively, push `telegram-v0.1.0` pointing to the approved commit on `main`.
+Choose one trigger per release. An already published version is refused; for the
+next release, bump `pyproject.toml` and run `uv lock` before merging. Verify the
+version and file provenance at https://pypi.org/project/cognee-integration-telegram/.

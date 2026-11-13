@@ -1,0 +1,80 @@
+name: Publish Telegram integration to PyPI
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["telegram-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-cognee-integration-telegram
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi-cognee-integration-telegram
+      url: https://pypi.org/project/cognee-integration-telegram/
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: integrations/telegram
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv python install 3.12
+
+      - name: Validate release ref and version
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(uv run --no-project --python 3.12 python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          case "$RELEASE_REF" in
+            refs/heads/main) ;;
+            refs/tags/telegram-v*)
+              test "${RELEASE_REF_NAME#telegram-v}" = "$version" || {
+                echo "Tag and package version differ" >&2
+                exit 1
+              }
+              git merge-base --is-ancestor HEAD origin/main || {
+                echo "Release tags must point to a commit on main" >&2
+                exit 1
+              }
+              ;;
+            *) echo "Publish from main or a telegram-v* tag only" >&2; exit 1 ;;
+          esac
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://pypi.org/pypi/cognee-integration-telegram/${version}/json")"
+          test "$status" = 404 || {
+            echo "Expected unpublished version (404), got HTTP $status; refusing upload" >&2
+            exit 1
+          }
+
+      - name: Install locked dependencies and test
+        run: |
+          uv sync --frozen --group dev --python 3.12
+          uv run --no-sync pytest tests/ -q
+
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+
+      - name: Verify installed wheel and command
+        run: |
+          uv venv /tmp/telegram-wheel --python 3.12
+          uv pip install --python /tmp/telegram-wheel/bin/python dist/*.whl
+          /tmp/telegram-wheel/bin/python -c 'from importlib.metadata import distribution; d = distribution("cognee-integration-telegram"); ep = next(e for e in d.entry_points if e.group == "console_scripts" and e.name == "cognee-telegram"); assert callable(ep.load())'
+
+      - name: Publish to PyPI with attestations
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: integrations/telegram/dist/
