@@ -415,7 +415,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 
-`recall.injection_receipt_failed`: writing the body-free last-turn injection receipt failed; recall output remains available.
+`recall.injection_receipt_failed`: appending the body-free recall receipt to the session's `recall-receipts.jsonl` failed; recall output remains available. `context_lookup_hit` / `context_lookup_empty` carry the prompt's `receipt_id` (empty when the write failed).
 
 Bash capture decisions contain only host session identity and `captured`,
 `skipped_self` or `skipped_low_signal`. Captured means retained for the write path,

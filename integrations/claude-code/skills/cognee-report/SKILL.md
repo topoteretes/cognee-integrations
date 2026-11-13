@@ -63,14 +63,17 @@ These totals cover sessions that **started** within the window; use the evaluato
 event timestamps for exact calendar-window recall metrics.
 
 For why a specific memory was or was not injected on the last prompt, inspect
-its body-free receipt:
+its body-free receipt (every prompt's receipt is kept in the session's
+`recall-receipts.jsonl`; `explain` prints the newest):
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" explain --session-key <host-session-id>
 ```
 
 Report per-item reasons (`injected`, `already_in_context`, `over_budget`,
-`own_session`, or source availability status), retrieval rank and priority.
+`own_session`, or source availability status), retrieval rank and priority, and
+each scope's status (`ok`, `timeout`, `error`, or a `skipped_*` reason).
+The report's per-session `receipts:` line totals these across the window.
 Versioned citations can be expanded through the search skill. Unaddressable
 legacy/guidance entries have hashes only; do not present those as source citations.
 The receipt describes delivery selection, not whether an item improved the answer.
@@ -82,4 +85,4 @@ scorecard, including low-n markers. Show the generated bars rather than inventin
 for fenced bars. `--full` restores the detailed layout and all recommendation
 why/do lines. Session hashes are evidence references, never memory content;
 new-token counts from clipped historical bodies are estimates. Delivery quality
-is not outcome quality, even when a last-turn receipt exists.
+is not outcome quality, even when receipts exist.

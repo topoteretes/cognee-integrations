@@ -70,6 +70,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Doctor shows coding memory** while it is on: server support, whether the running local
   server is in coding mode, and whether the key holds `delete` on the dataset (the coding distillation deletes replaced lessons).
 - New `coding.*` log events (see `EVENTS.md`).
+- **A recall receipt for every prompt (SDK-1098).** The body-free injection receipt was
+  one file, `sessions/<host id>/injection-receipt.json`, overwritten on every prompt, so
+  only the last turn could be explained. Each prompt that reaches recall now appends one
+  receipt to `sessions/<host id>/recall-receipts.jsonl` (0600, removed with the session
+  folder after a week idle; `injection-receipt.json` is no longer written):
+  - each receipt has a `receipt_id`, a hash of the prompt (never the prompt), the Cognee
+    session id, and the server's origin (no credentials or query string);
+  - `per_scope` gives each scope's `status` (`ok`, `timeout`, `error`) and how many
+    results it returned. A prompt whose recall never reached the server still gets a
+    receipt, with every scope `skipped_outage`, `skipped_breaker` or `skipped_budget`;
+  - items keep their shipped fields (`hash`, `reason`, `reference`, `source`, `rank`,
+    `priority`, `addressable`) and gain `section` and `chars`. `citation` is no longer
+    stored, since `reference` carries the same pointer; `cognee-evidence.py explain`
+    prints it rebuilt from the reference;
+  - `over_budget` is now recorded: the budget step returns the entries it dropped
+    instead of only their count, so the reason is no longer inferred from what was left
+    over. An entry in none of the kept, deduplicated or dropped lists is marked
+    `unaccounted` instead of being passed off as budget.
+  - The prompt's `recall-audit.log` line and `context_lookup_*` event carry its
+    `receipt_id`. `stats.json` counts `entries_over_budget` and `entries_unavailable`.
+  - `cognee-report` prints a `receipts:` line per session, counted from the receipts
+    recorded inside the window: injected, already in context, over budget and
+    unavailable entries, and scope failures such as `graph timed out on 1 of 3
+    recalls`. Its injected evidence hashes now come from every receipt in the window;
+    before, they came only from the last-turn file and never matched its 16-character
+    hashes.
 
 ### Fixed
 - **The first session on a new dataset is registered (SDK-1513).** Without a shared

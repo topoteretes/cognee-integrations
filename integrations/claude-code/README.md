@@ -599,9 +599,25 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-sessio
 
 Per-session counters live at `sessions/<host-session-id>/stats.json` under the
 plugin state directory. They count recalls, turns with hits, injected and deduped
-entries, characters, accepted saves, completed improves, and delivered digest items.
+entries, entries cut to fit the budget (`entries_over_budget`), evidence the server
+returned unavailable (`entries_unavailable`), characters, accepted saves, completed
+improves, and delivered digest items.
 “Digest items used” means supplied to context, not proven use in an answer. No prompt
-or memory text is stored in this file. A session-start notice summarizes the last
+or memory text is stored in this file.
+
+Every prompt that reaches recall also appends one **recall receipt** to
+`sessions/<host-session-id>/recall-receipts.jsonl` (created 0600). A receipt holds a
+`receipt_id`, the time, a hash of the prompt (never the prompt), the Cognee session id,
+the server's origin (scheme, host, port and path; no credentials or query), each
+scope's outcome (`ok`, `timeout`, `error`, or `skipped_outage` / `skipped_breaker` /
+`skipped_budget` when recall never reached the server), and one item per candidate
+entry: its text hash, source, section, size in characters, rank, priority, evidence
+`reference` when the server returned one, and the recorded `reason` — `injected`,
+`already_in_context` (deduplicated against an earlier prompt), `over_budget`, or the
+server's status for unavailable evidence. Receipts never contain recalled text. The
+same `receipt_id` is on that prompt's `recall-audit.log` line and `context_lookup_*`
+event. The file is not size-capped; the state sweep removes the session folder after
+a week idle. `cognee-evidence.py explain` prints the newest receipt. A session-start notice summarizes the last
 completed session for the same dataset/server. The status line shows cumulative
 items injected during this session.
 
@@ -1811,8 +1827,10 @@ latency measurements remain in the scorecard.
 `report --ascii` uses #/- score bars; `--format markdown` fences the bars.
 Delivery segments classify each recall once (zero hit, fully in transcript,
 fully repeated, then new graph/session context). Missing evidence is explicitly
-unmeasured. Historical clipped text gives a lower-bound novelty estimate;
-receipt hashes refer only to the last recorded turn within the selected window.
+unmeasured. Historical clipped text gives a lower-bound novelty estimate.
+Each session also gets a `receipts:` line counted from the recall receipts recorded
+inside the window: injected, already in context, over budget and unavailable entries,
+plus scope failures such as `graph timed out on 1 of 3 recalls`.
 Delivery does not prove that memory changed an answer. Failed gates and low-n
 metrics are never hidden or converted to a positive grade.
 The internal team-skills `cognee-eval` is retained only for legacy Notion export.
