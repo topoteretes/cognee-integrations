@@ -1003,7 +1003,7 @@ def main(argv: list[str] | None = None) -> int:
             events = collect_timeline(server, args.topic, cutoff, records)
     except urllib.error.HTTPError as exc:
         # HTTPError is a URLError: name the status before "unreachable" can claim it.
-        hint = " — check COGNEE_API_KEY / the plugin identity" if exc.code in (401, 403) else ""
+        hint = " — check the plugin's Cognee Cloud API key option" if exc.code in (401, 403) else ""
         print(
             f"[cognee-recap] Cognee server at {url} answered HTTP {exc.code} "
             f"({str(exc.reason)[:60]}){hint}; no recap ({doctor}).",

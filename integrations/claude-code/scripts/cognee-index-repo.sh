@@ -59,17 +59,16 @@ service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
 if not api_key:
-    cache_path = plugin_dir.parent / "api_key.json"
-    if cache_path.exists():
-        try:
-            cache = json.loads(cache_path.read_text())
-            if isinstance(cache, dict):
-                key = str(cache.get("api_key") or "").strip()
-                cached_url = str(cache.get("base_url") or "").strip().rstrip("/")
-                if key and (not cached_url or cached_url == service_url.rstrip("/")):
-                    api_key = key
-        except Exception:
-            pass
+    # No key is stored on disk: against the plugin local server its owner
+    # key is looked up from that server. A Cloud key reaches hooks only.
+    # The opt-out keeps _plugin_common from re-execing this heredoc into the
+    # plugin venv (stdin is the script): nothing here needs it.
+    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
+    try:
+        from _plugin_common import load_cached_api_key
+        api_key = load_cached_api_key(service_url)
+    except Exception:
+        pass
 
 print(json.dumps({"service_url": service_url, "api_key": api_key}))
 PY
@@ -93,7 +92,6 @@ PY
 )"
 
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
-[ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 
 REPO="${1:-}"
 DATASET=""

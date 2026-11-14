@@ -10,6 +10,46 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0]
+
+Changes to meet Anthropic's plugin directory policy. Since 1.7.0 every version has
+been held by that policy, and since Nov 4 the listed 1.6.6 no longer meets its
+credential rule. This release removes what the held versions were flagged for.
+
+### Changed
+
+- **API keys are plugin options.** Claude Code asks for the Cognee Cloud URL, the Cognee
+  Cloud API key and the local-mode LLM API key when the plugin is enabled
+  (`userConfig`: `cognee_base_url`, `cognee_api_key`, `llm_api_key`), and keeps the two
+  keys in its secure credential store. The plugin reads `COGNEE_API_KEY` and
+  `LLM_API_KEY` only from those options: a value in the shell or in `~/.cognee/.env` is
+  ignored. `COGNEE_BASE_URL` still works from either, and the option wins when set.
+  **Existing users enter their keys once in the plugin's options.**
+- **No key is stored on disk.** `~/.cognee-plugin/api_key.json` and
+  `~/.cognee-plugin/claude-code/agent_key.json` are no longer read or written. In local
+  mode the plugin looks up its own server's owner key by logging in as the server's
+  default user, once per process.
+- **Plugin identity is off.** Every request runs as the user's own key: no per-machine
+  agent key is minted, so there is no shared agent memory role and no agent key limit.
+  `COGNEE_PLUGIN_IDENTITY` is ignored.
+
+### Removed
+
+- **The hooks module (`hooks/register.ts`)** and everything it drew: the status row above
+  the prompt with its dataset picker and `see fix` dialog, activity after the spinner, the
+  first-run tour (`/cognee-tour`), `/cognee-dataset`, and the direct tools
+  `mcp__cognee-memory__search` / `mcp__cognee-memory__remember`, with their options
+  (`icon`, `band`, `spinner`, `tools`, `tour`). The settings status line, the skills and
+  `cognee-switch-datasets` remain.
+- **The `cognee-keys` skill** and `scripts/plugin-keys.py`: there are no agent keys left
+  to list or revoke.
+
+### Known limitations
+
+- Claude Code passes plugin options only to hook processes. Skills that call the server
+  through the Bash tool (search, remember, forget, index, the doctor's auth check) cannot
+  authenticate in Cloud mode. Automatic recall and capture work in both modes.
+
 ## [1.8.1] - 2026-11-14
 
 ### Fixed

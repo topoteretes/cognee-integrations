@@ -28,8 +28,10 @@ Explain the paths relevant to the question:
   logged, stored, sent as a query or uploaded. This covers explicit remember
   (`/cognee-remember`, `/cognee-handoff`) too, and no setting turns it off. Claude
   still sees the span in the live turn; a `--file` upload is sent unchanged.
-- Cloud calls go to `COGNEE_BASE_URL` using `COGNEE_API_KEY`; local mode uses a local
-  server. Cloud credit status comes from the Cognee platform API.
+- Cloud calls go to the Cognee Cloud URL using the Cognee Cloud API key, both plugin
+  options that Claude Code asks for when the plugin is enabled (the key is kept in
+  Claude Code's secure storage and never written to disk by the plugin). Local mode
+  uses a local server. Cloud credit status comes from the Cognee platform API.
 - Recall injects selected memory into Claude's context. The injection budget drops
   whole entries and the session ledger avoids repeating cloud memory until context
   is cleared or compacted.

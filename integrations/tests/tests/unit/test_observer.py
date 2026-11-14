@@ -82,8 +82,10 @@ def test_auto_activates_when_no_key_and_claude_present(observer, fake_claude):
     assert decision["model"] == observer.DEFAULT_CLAUDE_MODEL
 
 
-def test_auto_yields_to_a_configured_key(observer, fake_claude, monkeypatch):
+def test_auto_yields_to_a_configured_key(observer, fake_claude, suite, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "sk-real")
+    if suite.keys_from_plugin_options:
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
     decision = observer.resolve_observer({})
     assert decision["active"] is False
     assert decision["reason"] == "llm_key_configured"

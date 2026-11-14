@@ -27,6 +27,16 @@ import urllib.error
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _needs_plugin_identity(request):
+    # The Claude Code plugin has no plugin identity and stores no key (SDK-1411).
+    if "suite" in request.fixturenames:
+        suite = request.getfixturevalue("suite")
+        if not suite.has_plugin_identity:
+            pytest.skip(f"{suite.name}: no plugin identity")
+
+
 #: Self-declared connection type per suite (KNOWN_AGENT_CONNECTION_TYPES).
 CONNECTION_TYPE = {
     "claude-code": "claude_code",

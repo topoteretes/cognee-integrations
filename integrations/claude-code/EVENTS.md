@@ -40,6 +40,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `exit-watcher:pidfile_write_failed` | `exit_watcher.pidfile_write_failed` |
 | `exit-watcher:started` | `exit_watcher.started` |
 | `hook:users_me_lookup_failed` | `config.users_me_lookup_failed` |
+| `hook:local_owner_key_lookup_failed` | `config.local_owner_key_lookup_failed` |
 | `hook:activity_log_write_failed` | `activity.log_write_failed` |
 | `hook:activity_touch_failed` | `activity.touch_failed` |
 | `hook:agent_lifecycle_error` | `agent.lifecycle_error` |

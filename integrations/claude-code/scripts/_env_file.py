@@ -45,6 +45,26 @@ _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 _DENYLIST_EXACT = {"PATH", "HOME", "PYTHONPATH", "PYTHONHOME", "SHELL", "USER"}
 _DENYLIST_PREFIXES = ("LD_", "DYLD_")
 
+# Secrets come only from the plugin's own options, which Claude Code keeps in
+# its secure store and hands to hook processes as CLAUDE_PLUGIN_OPTION_<KEY>
+# (``userConfig`` in .claude-plugin/plugin.json). A value for one of these in
+# ~/.cognee/.env or the shell is ignored, and none is ever written to disk.
+# COGNEE_PRINCIPAL_API_KEY is the plugin's own in-process copy of the key; an
+# inherited one is dropped so it is always derived from the option again.
+_PLUGIN_OPTION_SECRETS = {
+    "COGNEE_API_KEY": "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY",
+    "LLM_API_KEY": "CLAUDE_PLUGIN_OPTION_LLM_API_KEY",
+}
+_DERIVED_SECRETS = ("COGNEE_PRINCIPAL_API_KEY",)
+# Not a secret: the option, when set, beats the shell and the file.
+_PLUGIN_OPTION_BASE_URL = "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL"
+# Claude Code exports the options to hook processes only (and their children);
+# CLAUDE_PLUGIN_ROOT marks those. The status line and the Bash-run skills get
+# neither, so a hook records the URL option here for them. Only the URL: the
+# keys are never written anywhere.
+_HOOK_PROCESS_MARKER = "CLAUDE_PLUGIN_ROOT"
+_URL_OPTION_RECORD = Path.home() / ".cognee-plugin" / "claude-code" / "cloud_url_option.json"
+
 # Explicit per-terminal mode switch. The shared name flips every Cognee plugin
 # in the terminal; the plugin-specific name beats it when both are set. The
 # plugin var is the ONE line that differs between the Claude Code and Codex
@@ -66,15 +86,17 @@ _TEMPLATE = """\
 #   export COGNEE_BACKEND=cloud    # this terminal: cloud mode
 # (COGNEE_CLAUDE_BACKEND / COGNEE_CODEX_BACKEND target one plugin only.)
 
+## API keys: the Claude Code plugin reads COGNEE_API_KEY and LLM_API_KEY only
+## from its plugin options in Claude Code (asked when the plugin is enabled), never from this
+## file. The Codex plugin still reads them here.
+
 ## Cloud / remote mode — point the plugins at a Cognee instance:
 # COGNEE_BASE_URL="https://your-instance.cognee.ai"
-# COGNEE_API_KEY="ck_..."
 
 ## Local mode (default when COGNEE_BASE_URL is unset) — the plugin runs a
-## local Cognee API. Give it an LLM key of your own:
-# LLM_API_KEY="sk-..."
+## local Cognee API. Give it an LLM key in the plugin settings, and the model:
 # LLM_MODEL="openai/gpt-4o-mini"
-## ...or leave LLM_API_KEY unset: with the `claude` CLI on PATH the Claude Code
+## ...or leave the LLM key unset: with the `claude` CLI on PATH the Claude Code
 ## plugin runs the server's LLM calls on your Claude subscription instead (the
 ## "observer"; embeddings then run locally on fastembed). Claude Code only.
 ## It spends your Claude usage limits, and a dataset built on fastembed cannot
@@ -113,7 +135,65 @@ def _unquote(value: str) -> str:
 
 
 def _blocked(key: str) -> bool:
-    return key in _DENYLIST_EXACT or key.startswith(_DENYLIST_PREFIXES)
+    return (
+        key in _DENYLIST_EXACT
+        or key.startswith(_DENYLIST_PREFIXES)
+        or key in _PLUGIN_OPTION_SECRETS
+        or key in _DERIVED_SECRETS
+    )
+
+
+def _apply_plugin_options() -> None:
+    """Take the secrets (and the Cloud URL, when set) from the plugin options.
+
+    Runs once per process, before the env file: an exported or inherited
+    secret is replaced by the option's value, or removed when the option is
+    empty, so a key never reaches the plugin except through Claude Code.
+    """
+    for var in _DERIVED_SECRETS:
+        os.environ.pop(var, None)
+    for var, option in _PLUGIN_OPTION_SECRETS.items():
+        value = os.environ.get(option, "").strip()
+        if value:
+            os.environ[var] = value
+        else:
+            os.environ.pop(var, None)
+    if os.environ.get(_HOOK_PROCESS_MARKER, "").strip():
+        base_url = os.environ.get(_PLUGIN_OPTION_BASE_URL, "").strip()
+        _record_url_option(base_url)
+    else:
+        base_url = _recorded_url_option()
+    if base_url:
+        os.environ["COGNEE_BASE_URL"] = base_url
+
+
+def _recorded_url_option() -> str:
+    """The URL option a hook last recorded, for processes that get no options."""
+    try:
+        import json
+
+        data = json.loads(_URL_OPTION_RECORD.read_text(encoding="utf-8"))
+        return str(data.get("base_url") or "").strip() if isinstance(data, dict) else ""
+    except Exception:
+        return ""
+
+
+def _record_url_option(base_url: str) -> None:
+    """Keep the record in step with the option (removed when it is empty). Never raises."""
+    try:
+        if not base_url:
+            _URL_OPTION_RECORD.unlink(missing_ok=True)
+            return
+        if _recorded_url_option() == base_url:
+            return
+        import json
+
+        _URL_OPTION_RECORD.parent.mkdir(parents=True, exist_ok=True)
+        temporary = _URL_OPTION_RECORD.with_name(f"{_URL_OPTION_RECORD.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps({"base_url": base_url}), encoding="utf-8")
+        os.replace(temporary, _URL_OPTION_RECORD)
+    except Exception:
+        pass
 
 
 def parse_env_file(path: Path) -> dict:
@@ -172,6 +252,7 @@ def load_env_file() -> None:
         return
     _loaded = True
 
+    _apply_plugin_options()
     try:
         path = env_file_path()
         if path.is_file():

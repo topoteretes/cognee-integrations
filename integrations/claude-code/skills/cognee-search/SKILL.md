@@ -16,14 +16,6 @@ when_to_use: >-
 
 Search both session memory and the permanent knowledge graph, optionally filtered by data category.
 
-## The `search` tool, when it is listed
-
-Where Claude Code loads the plugin's hooks module, `mcp__cognee-memory__search`
-(`query`, `top_k`, `scope` graph|code, `dataset_id`, `user_picked`) runs the same wrapper as
-this skill with typed arguments and no Bash call. Prefer it when it is among your
-tools (load its schema through tool search); this skill is the path everywhere
-else, and its notes below on reading results and on other datasets apply to both.
-
 ## Visible search progress
 
 Before running a Cognee search, send one short user-visible progress sentence,
@@ -91,7 +83,7 @@ conceptual questions that name no symbol ("how does auth work here?").
 
 Categories (`user_context` / `project_docs` / `agent_actions`) filter by node set. The wrapper does not expose this — pass `node_name` to the server directly.
 
-**Resolve credentials first.** In local mode `$COGNEE_API_KEY` is empty (the key is minted into `~/.cognee-plugin/api_key.json` and never exported to your shell), so a hand-rolled `curl` with `-H "X-Api-Key: ${COGNEE_API_KEY:-}"` 401s and looks like a server fault when nothing is wrong. Use the forget helper's resolver in the **same** shell invocation — exports do not persist across separate Bash calls:
+**Resolve credentials first.** `$COGNEE_API_KEY` is empty in your shell (in local mode the key belongs to the plugin's own server and is looked up from it; a Cloud key reaches only the plugin's hooks), so a hand-rolled `curl` with `-H "X-Api-Key: ${COGNEE_API_KEY:-}"` 401s and looks like a server fault when nothing is wrong. Use the forget helper's resolver in the **same** shell invocation — exports do not persist across separate Bash calls:
 
 ```bash
 eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \

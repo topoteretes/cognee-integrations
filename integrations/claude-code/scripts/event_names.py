@@ -8,6 +8,7 @@ EVENT_NAMES = {
     "hook:auto_memory_setup_failed": "cloud.auto_memory_setup_failed",
     "hook:injection_ledger_failed": "cloud.injection_ledger_failed",
     "hook:users_me_lookup_failed": "config.users_me_lookup_failed",
+    "hook:local_owner_key_lookup_failed": "config.local_owner_key_lookup_failed",
     "hook:injection_receipt_failed": "recall.injection_receipt_failed",
     "hook:bash_capture_decision": "capture.bash_decision",
     "hook:trace_skipped_low_signal": "capture.trace_skipped_low_signal",

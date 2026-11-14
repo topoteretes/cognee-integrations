@@ -140,6 +140,29 @@ def build_env(
         env["COGNEE_API_KEY"] = api_key
     if extra:
         env.update(extra)
+    return with_plugin_options(suite, env)
+
+
+#: The Claude Code plugin reads its secrets only from its plugin options, which
+#: Claude Code exports to hook processes as CLAUDE_PLUGIN_OPTION_<KEY>.
+_CLAUDE_PLUGIN_OPTIONS = {
+    "COGNEE_API_KEY": "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY",
+    "LLM_API_KEY": "CLAUDE_PLUGIN_OPTION_LLM_API_KEY",
+}
+
+
+def with_plugin_options(suite: Suite, env: dict[str, str]) -> dict[str, str]:
+    """Hand a test's keys to the Claude Code plugin the way Claude Code does.
+
+    Tests say "the user configured this key" by setting COGNEE_API_KEY /
+    LLM_API_KEY; for the Claude Code suite that means the plugin option, since
+    the plugin ignores the plain variables. An explicit option in ``env`` wins.
+    """
+    if not suite.keys_from_plugin_options:
+        return env
+    for var, option in _CLAUDE_PLUGIN_OPTIONS.items():
+        if env.get(var) and option not in env:
+            env[option] = env[var]
     return env
 
 
