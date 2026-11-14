@@ -505,7 +505,7 @@ def do_index_repo(
         except Exception:
             pass
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
+            msg = "unauthorized (HTTP %s) — check the plugin's Cognee Cloud API key option" % e.code
         elif e.code == 400 and "unsupported content_type" in detail.lower():
             # An older server rejects the content_type value outright, and says
             # so in those words. Matching on a bare "content_type" substring

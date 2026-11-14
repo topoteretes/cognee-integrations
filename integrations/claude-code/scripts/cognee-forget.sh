@@ -2,9 +2,10 @@
 # Cognee forget helper — server access for the cognee-forget skill.
 #
 # Wraps the endpoints used to inspect and delete documents so every request
-# carries resolved credentials. Raw curl with $COGNEE_API_KEY breaks in local
-# mode: the key is auto-minted at bootstrap into ~/.cognee-plugin/api_key.json
-# and is never exported to the user's shell.
+# carries resolved credentials. In local mode the key belongs to the plugin's
+# own server and is looked up from it; nothing is stored on disk. A Cognee
+# Cloud key is a plugin option that Claude Code gives to hooks only, so in
+# Cloud mode these commands cannot authenticate from a shell.
 #
 # Usage:
 #   cognee-forget.sh sync                            Flush the live session into documents (run before listing)
@@ -20,7 +21,7 @@
 #
 # Configuration:
 #   Resolves auth like cognee-search.sh / cognee-remember.sh:
-#   shell env > ~/.cognee/.env > cached api_key.json (local auto-minted key).
+#   the local server's owner key, looked up from that server.
 #   Exits 2 when no API key resolves: the server enforces auth even on
 #   localhost, so an unauthenticated request can only ever 401.
 
@@ -54,17 +55,16 @@ service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
 if not api_key:
-    cache_path = plugin_dir.parent / "api_key.json"
-    if cache_path.exists():
-        try:
-            cache = json.loads(cache_path.read_text())
-            if isinstance(cache, dict):
-                key = str(cache.get("api_key") or "").strip()
-                cached_url = str(cache.get("base_url") or "").strip().rstrip("/")
-                if key and (not cached_url or cached_url == service_url.rstrip("/")):
-                    api_key = key
-        except Exception:
-            pass
+    # No key is stored on disk: against the plugin local server its owner
+    # key is looked up from that server. A Cloud key reaches hooks only.
+    # The opt-out keeps _plugin_common from re-execing this heredoc into the
+    # plugin venv (stdin is the script): nothing here needs it.
+    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
+    try:
+        from _plugin_common import load_cached_api_key
+        api_key = load_cached_api_key(service_url)
+    except Exception:
+        pass
 
 print(json.dumps({"service_url": service_url, "api_key": api_key}))
 PY
@@ -87,7 +87,6 @@ except Exception:
 PY
 )"
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
-[ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 SERVICE_URL="${SERVICE_URL%/}"
 
 usage() {
@@ -114,8 +113,8 @@ validate_uuid() {
 }
 
 if [ -z "$API_KEY" ]; then
-    echo "Error: no API key resolved (checked COGNEE_API_KEY, ~/.cognee/.env, ${PLUGIN_DIR%/*}/api_key.json)." >&2
-    echo "Cloud mode: set COGNEE_API_KEY in ~/.cognee/.env. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
+    echo "Error: no API key resolved." >&2
+    echo "Cloud mode: the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only, so this command cannot use it. Local mode: the key comes from the local server, which may not be running — start a new session or run cognee-doctor.sh." >&2
     exit 2
 fi
 

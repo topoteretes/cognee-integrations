@@ -68,8 +68,7 @@ prompts, tool calls and edited files — grouped by project.
 - Windows are by **last activity**: a session started days ago that was
   touched this morning is in today's standup.
 - The wrapper exits 1 with one stderr line when the server is unreachable,
-  answers with an HTTP status (401/403: check `COGNEE_API_KEY` / the plugin
-  identity) or refuses the identity. Say so and point at
+  answers with an HTTP status (401/403: check the plugin's Cognee Cloud API key option) or refuses the identity. Say so and point at
   `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`; do not answer from
   memory of this conversation as if it were the record.
 - Several Claude Code sessions in the same directory? Add

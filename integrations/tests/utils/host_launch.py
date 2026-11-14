@@ -342,6 +342,21 @@ def write_env_file(home: Path, url: str, api_key: str, *, bom: bool = False) -> 
     (home / ".cognee" / ".env").write_bytes(b"\xef\xbb\xbf" + data if bom else data)
 
 
+def plugin_options(suite: Suite, url: str, api_key: str) -> dict[str, str]:
+    """What Claude Code exports to hooks for a plugin configured for Cloud.
+
+    The Claude Code plugin reads its key (and URL) from its plugin options, not
+    from ``~/.cognee/.env``; the other hosts have no options. Pass the result as
+    ``env_extra``.
+    """
+    if not suite.keys_from_plugin_options:
+        return {}
+    return {
+        "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": url,
+        "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY": api_key,
+    }
+
+
 class HostSession:
     """One host session against a mock server, run hook by hook as the host would.
 

@@ -113,65 +113,27 @@ def _resolve_server_url() -> tuple:
 
 
 _KEY_SOURCE_LABELS = {
-    "plugin_agent_key": "Plugin identity",
-    "env_api_key": "ENV",
-    "cache_single_key": "Config",
-    "missing": "Default",
+    "env_api_key": "Plugin option",
+    "local_owner_key": "Local server",
+    "missing": "Not set",
 }
 
 
 def _resolve_api_key_source() -> str:
     """Return a human-friendly label for where the API key came from."""
-    from _env_file import env_file_path, parse_env_file
     from _plugin_common import _api_key_with_source
 
-    key, source = _api_key_with_source()
-    label = _KEY_SOURCE_LABELS.get(source, source)
-    if source == "env_api_key" and key:
-        # The env layer is fed by both real exports and ~/.cognee/.env
-        # (setdefault); tell them apart for debuggability.
-        file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
-        if file_key and file_key == key:
-            label = "Env file"
-    return label
+    _key, source = _api_key_with_source()
+    return _KEY_SOURCE_LABELS.get(source, source)
 
 
 def _resolve_memory_sharing() -> str:
     """How this plugin's memory relates to the user's other agents.
 
-    ``shared (role: cognee-agent)`` when the agent is wired into the shared
-    role; otherwise ``separated`` with the reason: the user opted out, the
-    plugin runs as the principal (no agent identity — the principal sees
-    everything anyway), or the wiring was skipped (older server, not the
-    tenant owner, tenant-less install that already owns data).
+    The Claude Code plugin runs as the user's own key (no plugin identity), so
+    it sees every dataset the user can; there is no shared agent role.
     """
-    from _plugin_common import (
-        AGENT_ROLE_NAME,
-        active_agent_key,
-        key_limit_message,
-        load_shared_memory_marker,
-        shared_memory_enabled,
-    )
-
-    if not shared_memory_enabled():
-        return "separated (opt-out)"
-    marker = load_shared_memory_marker()
-    if not active_agent_key() and key_limit_message():
-        return "principal (plugin key limit reached: free a slot with the cognee-keys skill)"
-    if not active_agent_key():
-        # An install that could not be wired (or whose identity is blocked or
-        # bound to another principal) runs as the principal; say why, so "no
-        # agent identity" is not mistaken for a broken install.
-        reason = str(marker.get("reason") or "").replace("_", " ")
-        return (
-            f"principal (shared memory unavailable: {reason})"
-            if reason
-            else ("principal (no agent identity)")
-        )
-    if marker.get("mode") == "shared":
-        return f"shared (role: {AGENT_ROLE_NAME})"
-    reason = str(marker.get("reason") or "not wired yet").replace("_", " ")
-    return f"separated ({reason})"
+    return "principal (no plugin identity)"
 
 
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:

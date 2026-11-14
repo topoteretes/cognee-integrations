@@ -124,20 +124,17 @@ def _runtime() -> dict:
 
 
 def _cached_api_key(service_url: str) -> str:
-    """The key cached at ~/.cognee-plugin/api_key.json, when it is for this server."""
-    cache_path = os.path.join(os.path.expanduser("~"), ".cognee-plugin", "api_key.json")
+    """The local server's owner key, looked up from that server ("" for Cloud).
+
+    No key is stored on disk; a Cloud key reaches only hook processes, through
+    the plugin options.
+    """
     try:
-        with open(cache_path, encoding="utf-8") as f:
-            cache = json.load(f)
-    except (OSError, ValueError):
+        import _plugin_common
+
+        return _plugin_common.load_cached_api_key(service_url)
+    except Exception:
         return ""
-    if not isinstance(cache, dict):
-        return ""
-    key = str(cache.get("api_key") or "").strip()
-    cached_url = str(cache.get("base_url") or "").strip().rstrip("/")
-    if key and (not cached_url or cached_url == service_url.rstrip("/")):
-        return key
-    return ""
 
 
 def _connection_session_id(service_url: str, api_key: str, https_context) -> str:

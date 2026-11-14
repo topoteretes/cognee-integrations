@@ -311,7 +311,7 @@ def do_recall(
             )
             return []
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
+            msg = "unauthorized (HTTP %s) — check the plugin's Cognee Cloud API key option" % e.code
         else:
             msg = "server returned HTTP %s for /api/v1/recall" % e.code
             # Name what was searched and pass the server's own reason on: the

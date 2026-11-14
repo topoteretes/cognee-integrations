@@ -125,6 +125,16 @@ class Suite:
     #: local path's ``sync_bridge_done`` / ``final_sync_once_*`` events. codex and
     #: Antigravity still talk to the tenant from the hooks.
     has_cloud_worker: bool
+    #: Capability: a plugin identity (a minted per-machine agent key, the
+    #: shared agent memory role, ``plugin-keys.py``) and the key caches it needs
+    #: (``api_key.json``, ``agent_key.json``). The Claude Code plugin has none
+    #: (directory policy, SDK-1411): it runs as the user's key from its plugin
+    #: options and stores no key on disk.
+    has_plugin_identity: bool = True
+    #: Behaviour: the plugin reads COGNEE_API_KEY / LLM_API_KEY only from its
+    #: plugin options (CLAUDE_PLUGIN_OPTION_*, which the host exports to hooks)
+    #: and ignores them in the shell and ~/.cognee/.env. Claude Code only.
+    keys_from_plugin_options: bool = False
 
 
 CLAUDE = Suite(
@@ -150,6 +160,8 @@ CLAUDE = Suite(
     cites_memory_by_default=True,
     injects_empty_recall=True,
     has_cloud_worker=True,
+    has_plugin_identity=False,
+    keys_from_plugin_options=True,
 )
 
 CODEX = Suite(

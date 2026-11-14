@@ -108,13 +108,18 @@ def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
 # ── API key source ─────────────────────────────────────────────────────────
 
 
-def test_api_key_source_env(doctor, monkeypatch):
+def test_api_key_source_env(doctor, suite, monkeypatch):
     monkeypatch.setenv("COGNEE_API_KEY", "test-key-from-env")
-    assert doctor._resolve_api_key_source() == "ENV"
+    if suite.keys_from_plugin_options:
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "test-key-from-env")
+    expected = "Plugin option" if suite.keys_from_plugin_options else "ENV"
+    assert doctor._resolve_api_key_source() == expected
 
 
-def test_api_key_source_config(doctor, pc, tmp_path, monkeypatch):
+def test_api_key_source_config(doctor, pc, suite, tmp_path, monkeypatch):
     """No env key; a cached key file resolves to "Config"."""
+    if not suite.has_plugin_identity:
+        pytest.skip(f"{suite.name}: stores no key on disk")
     cache_file = tmp_path / "api_key.json"
     cache_file.write_text(json.dumps({"api_key": "cached-key", "base_url": ""}), encoding="utf-8")
     # codex's doctor.py defines its own _API_KEY_CACHE constant.
@@ -123,8 +128,10 @@ def test_api_key_source_config(doctor, pc, tmp_path, monkeypatch):
     assert doctor._resolve_api_key_source() == "Config"
 
 
-def test_cached_api_key_remains_scoped_to_its_endpoint(pc, tmp_path, monkeypatch):
+def test_cached_api_key_remains_scoped_to_its_endpoint(pc, suite, tmp_path, monkeypatch):
     """A key cached for another server must never be sent to this one."""
+    if not suite.has_plugin_identity:
+        pytest.skip(f"{suite.name}: stores no key on disk")
     configured = "http://managed-cognee.internal:8012"
     monkeypatch.setenv("COGNEE_BASE_URL", configured)
     cache_file = tmp_path / "runtime-api-key.json"

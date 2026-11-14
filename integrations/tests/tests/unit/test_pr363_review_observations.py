@@ -4,7 +4,14 @@ import pytest
 from utils.switch import run_switch
 
 
+def _needs_plugin_identity(suite) -> None:
+    # The Claude Code plugin has no plugin identity and stores no key (SDK-1411).
+    if not suite.has_plugin_identity:
+        pytest.skip(f"{suite.name}: no plugin identity")
+
+
 def test_cached_identity_rejects_new_principal_on_same_server(suite, isolated_modules, monkeypatch):
+    _needs_plugin_identity(suite)
     pc = isolated_modules(suite, "_plugin_common")
     pc.save_cached_agent_key("https://same.test", "account-a-agent-key", "agent-a")
     monkeypatch.setenv("COGNEE_API_KEY", "account-b-principal-key")
@@ -40,6 +47,7 @@ def test_dataset_listing_includes_shared_writable_dataset(suite, isolated_module
 
 
 def test_false_identity_setting_disables_cached_identity(suite, hook_module):
+    _needs_plugin_identity(suite)
     import asyncio
 
     start = hook_module(suite, "session-start.py")
@@ -158,6 +166,7 @@ def test_failed_switch_write_keeps_previous_record(suite, isolated_modules, monk
 
 
 def test_endpoint_resolution_preserves_explicit_parent(suite, isolated_modules, monkeypatch):
+    _needs_plugin_identity(suite)
     pc = isolated_modules(suite, "_plugin_common")
     url = "https://explicit-account.test"
     monkeypatch.setenv("COGNEE_BASE_URL", url)
@@ -170,6 +179,7 @@ def test_endpoint_resolution_preserves_explicit_parent(suite, isolated_modules, 
 
 
 def test_rejected_old_key_does_not_block_new_reconnection(suite, isolated_modules):
+    _needs_plugin_identity(suite)
     pc = isolated_modules(suite, "_plugin_common")
     pc.save_cached_agent_key("https://test", "new-key", "agent", principal_key="parent")
     pc.block_cached_agent_key("old-key")
@@ -179,6 +189,7 @@ def test_rejected_old_key_does_not_block_new_reconnection(suite, isolated_module
 
 
 def test_provision_uses_explicit_server_for_every_request(suite, isolated_modules, monkeypatch):
+    _needs_plugin_identity(suite)
     pc = isolated_modules(suite, "_plugin_common")
     calls = []
 
@@ -342,6 +353,7 @@ def test_switch_takes_the_principal_from_the_lister_when_the_record_has_none(
 def test_windows_lock_contention_retries_without_writing_locked_byte(
     suite, isolated_modules, monkeypatch
 ):
+    _needs_plugin_identity(suite)
     import os
     import sys
     from types import SimpleNamespace

@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 from utils import host_launch as hl
 from utils.fixtures import DEFAULT_TEST_API_KEY
-from utils.host_launch import HostSession, make_home, write_env_file
+from utils.host_launch import HostSession, make_home, plugin_options, write_env_file
 
 MEMORY = "The project codename is BLUEFIN."
 
@@ -51,6 +51,8 @@ def test_a_full_plugin_agent_is_reported_to_the_user(host, private_mock_server, 
     """The server refuses this machine a key (409: the plugin's agent already
     holds one per machine, all in use). The session still works on the personal
     key, and the user is told so in the SessionStart systemMessage the host shows."""
+    if not host.has_plugin_identity:
+        pytest.skip(f"{host.name}: no plugin identity, so no agent key limit")
     mock = private_mock_server
     mock.identity.max_agent_keys = 1
     mock.identity.plugins_provision(host.name, DEFAULT_TEST_API_KEY)  # another machine
@@ -87,7 +89,9 @@ def test_a_full_session_works_the_way_the_host_runs_it(
     project.mkdir(parents=True)
     mock.set_recall_results([{"source": "graph", "text": MEMORY}])
 
-    session = HostSession(host, home, project, mock)
+    session = HostSession(
+        host, home, project, mock, env_extra=plugin_options(host, mock.url, DEFAULT_TEST_API_KEY)
+    )
     first, second = "what is the project codename?", "and what did you just tell me?"
     session.full(first, second)
 
@@ -99,7 +103,11 @@ def test_a_full_session_works_the_way_the_host_runs_it(
     # The session is tied to a dataset: the user's `"current": {"name": ""}` symptom.
     registered = session.calls("/api/v1/agents/register")
     assert registered, "SessionStart never registered the session"
-    assert registered[-1].get("dataset_ids"), registered[-1]
+    if host.has_plugin_identity:
+        assert registered[-1].get("dataset_ids"), registered[-1]
+    else:
+        # As the user's own key, the session goes by dataset name.
+        assert registered[-1].get("dataset_names") == [host.default_dataset], registered[-1]
 
     # Both prompts recalled, with the prompt as typed, and the memory reached the model.
     recalls = session.calls("/api/v1/recall")
@@ -264,6 +272,10 @@ def _run_setup(method: str, home: Path, url: str) -> None:
 def test_each_setup_snippet_gives_a_working_first_prompt(
     host, private_mock_server, tmp_path, method
 ):
+    if host.keys_from_plugin_options:
+        # The plugin ignores a key in the env file (its plugin options carry
+        # it), so these snippets are not its setup.
+        pytest.skip(f"{host.name}: the API key is a plugin option, not an env-file entry")
     mock = private_mock_server
     home = tmp_path / "Users" / "Test User"
     home.mkdir(parents=True)

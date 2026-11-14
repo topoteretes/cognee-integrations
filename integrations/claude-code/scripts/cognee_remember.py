@@ -17,7 +17,7 @@ Usage:
             With --file, positional <content> is not required.
 
 Configuration:
-  Resolves auth from env/api_key.json.
+  Resolves auth from the plugin option (hooks) or the local server.
   Dataset comes from this launch's record (follows a dataset switch), then
   COGNEE_PLUGIN_DATASET, then agent_sessions.
   Falls back to cognee-cli only if the server is unreachable.
