@@ -85,7 +85,7 @@ Categories (`user_context` / `project_docs` / `agent_actions`) filter by node se
 **Resolve credentials first.** The key is not in your shell (in local mode it belongs to the plugin's own server and is looked up from it; a Cloud key reaches only the plugin's hooks, so in Cloud mode the resolver exits 2 — report that and stop), so a hand-rolled `curl` without the resolver 401s and looks like a server fault when nothing is wrong. Use the forget helper's resolver in the **same** shell invocation — exports do not persist across separate Bash calls:
 
 ```bash
-eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
 curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY}" \
@@ -97,7 +97,7 @@ curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
 The server is authoritative. If a search returns empty but you expect content, confirm directly. Resolve credentials in the same invocation, as above:
 
 ```bash
-eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
 curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY}" \
@@ -203,7 +203,7 @@ The session cache is never a search source; it reaches the graph through the syn
 
 ### Inspectable evidence
 
-For source inspection, use the compact index and expand only the useful references:
+For source inspection, use the compact index and expand only the useful references: In Cloud mode `index` and `details` exit 2 before sending anything (the Cognee Cloud key reaches the plugin's hooks only, so they cannot authenticate from the shell); report that and stop. `explain` reads a local file and still works.
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" index "retry policy"

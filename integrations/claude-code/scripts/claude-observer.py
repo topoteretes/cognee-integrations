@@ -52,10 +52,11 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from _net import open_url
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _observer  # noqa: E402
@@ -814,7 +815,7 @@ def _cognee_alive(url: str) -> bool:
     if not url:
         return False
     try:
-        with urllib.request.urlopen(url + "/health", timeout=2.0) as resp:
+        with open_url(url + "/health", timeout=2.0) as resp:
             return resp.status == 200
     except Exception:
         return False

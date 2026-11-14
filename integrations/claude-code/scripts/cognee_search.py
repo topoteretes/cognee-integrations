@@ -53,6 +53,7 @@ import urllib.parse
 import urllib.request
 
 from _env_file import load_env_file
+from _net import open_url
 
 # One-time config from ~/.cognee/.env (shell exports still win).
 load_env_file()
@@ -176,7 +177,7 @@ def _connection_session_id(service_url: str, api_key: str, https_context) -> str
     )
     try:
         context = https_context() if https_context else None
-        with urllib.request.urlopen(req, timeout=15.0, context=context) as resp:
+        with open_url(req, timeout=15.0, context=context) as resp:
             payload = json.loads(resp.read().decode("utf-8") or "{}")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return ""

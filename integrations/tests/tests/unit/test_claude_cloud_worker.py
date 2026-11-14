@@ -612,6 +612,11 @@ def test_a_changed_key_retires_the_worker_and_the_next_sends_with_the_new_key(
     monkeypatch.delenv("COGNEE_IDLE_DISABLED", raising=False)
     for var in ("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "COGNEE_BASE_URL"):
         monkeypatch.setenv(var, mock_server.url)
+    # The mock is on a loopback address. The Cloud key is the key for one only
+    # when it is the configured Cloud URL option of a terminal pinned to cloud
+    # (a self-hosted server used as Cloud); otherwise it gets the owner key.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+    monkeypatch.setenv("COGNEE_BACKEND", "cloud")
 
     def options(key):
         # The option, and the variable the plugin derives from it in a process.

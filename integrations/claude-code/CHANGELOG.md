@@ -33,10 +33,13 @@ install Cognee with the command session start prints.**
   Bash-run skills, which get no options, read the URL option where Claude Code saves it
   (`pluginConfigs` in `~/.claude/settings.json`).
 - **`~/.cognee/.env` holds only tuning settings.** The plugin loads only an allowlist of
-  its own non-secret `COGNEE_*` settings from the file, and never keeps the value of a
-  refused name (anything named like a key, token, secret, password, credential or
-  auth); `doctor.py` lists those names as "ignored (set in the plugin options)".
-  `COGNEE_LOCAL_API_URL` is honoured only for a loopback address. The plugin no longer
+  its own non-secret `COGNEE_*` settings from the file, and keeps a value only for a
+  name on that allowlist: every other line's value is dropped as it is parsed, whatever
+  its name. `doctor.py` lists credential and connection names as "ignored (set in the
+  plugin options)" and the rest as "ignored (not a plugin setting)".
+  `COGNEE_LOCAL_API_URL` is honoured only for a loopback address: `localhost`, `::1`
+  or an address in `127.0.0.0/8` (a name that merely starts with `127.` is remote, and
+  `0.0.0.0` does not count). The plugin no longer
   writes a commented template into the file. Session start says once when the file
   still holds Cloud or LLM settings that the options lack, and on every start when the
   Cloud URL option is set without its key, or the key without a URL (Cognee then runs
@@ -49,11 +52,28 @@ install Cognee with the command session start prints.**
   `.env`, and `HASH_API_KEY=false`. Database, AWS, Azure and similar credentials are not
   plugin options: run your own Cognee server for those backends and connect to it with
   the URL and API key options. The login is always the local default user
-  (`COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` no longer apply).
+  (`COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` no longer apply). The server always keeps
+  its stores under `~/.cognee`: `DATA_ROOT_DIRECTORY`, `SYSTEM_ROOT_DIRECTORY` and
+  database provider settings in the shell or in `~/.cognee/.env` are ignored, and
+  session start says so once when it finds any (data stored elsewhere is untouched but
+  not used). Cognee's `TELEMETRY_DISABLED` opt-out is passed through. Only the
+  `fastembed` driver extra is checked for.
+- **Ollama and custom LLM endpoints are not supported in this version.** There is no
+  endpoint option and `LLM_ENDPOINT` is ignored, so a local Ollama, Azure or other
+  OpenAI-compatible endpoint cannot be configured. This is the most restrictive version
+  on purpose; they will be added back shortly if the plugin directory accepts it.
+- **Requests to this machine never go through a proxy.** The local Cognee server and
+  the observer shim are reached directly even with `HTTP_PROXY` set; a remote server
+  uses the proxy as before. The observer's health check sends no token.
 - **The Cloud key never goes to a local server.** A server on this machine always gets
-  its own owner key (unless the terminal is pinned with `COGNEE_BACKEND=cloud`). A
-  listed owner key that is masked or rejected by the server is replaced by a freshly
-  minted one at session start.
+  its own owner key, and the key is not even put in the environment of a process that
+  talks to one. The one exception is a terminal pinned with `COGNEE_BACKEND=cloud`
+  whose Cloud URL option is itself a loopback address (a self-hosted server used as
+  Cloud); the pin with no URL option sends the key nowhere. Every process picks the
+  same owner key: the first listed one that is a real key, skipping a masked one and a
+  stored hash, so a key minted at session start is the one the other hooks use. A
+  local server that hides its keys (`HASH_API_KEY=true`) is refused with a message
+  instead of getting a new key every session.
 - **No key is stored on disk.** `~/.cognee-plugin/api_key.json` and
   `~/.cognee-plugin/claude-code/agent_key.json` are no longer read or written. In local
   mode the plugin looks up its own server's owner key by logging in as the server's

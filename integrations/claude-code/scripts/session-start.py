@@ -27,6 +27,8 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
+from _net import is_loopback_host, open_url
+
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
 from _logfiles import console_capture_tail as _console_capture_tail
@@ -42,6 +44,7 @@ from _plugin_common import (
     _VENV_READY_MARKER,
     PRESENCE_ABSENT,
     PRESENCE_READY,
+    _api_key_with_source,
     _https_context,
     _is_loopback_host,
     _reexec_into_venv,
@@ -119,29 +122,17 @@ _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
 # driver extras (the plugin installs nothing, SDK-1411). Shown at SessionStart.
 _COGNEE_INSTALL_MARKER = _GLOBAL_STATE_DIR / "cognee-install-needed.json"
 _PINNED_COGNEE_VERSION = "1.6.6"
-# Maps a configured backend provider env var to the cognee package "extra" that
-# provides its driver. A bare `cognee==<version>` install has none of these, so
-# the server crashes on first use of any non-default backend (#232): Postgres
-# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
-# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
-# their own extra. The env var names are the ones cognee's own config classes
-# read (verified against 1.5.3's infrastructure/*/config.py field names, which
-# pydantic-settings matches case-insensitively; GRAPH_DATABASE_PROVIDER is even
-# explicit there). Values already sit in os.environ by the time the install
-# runs: ensure_cognee_installed() calls apply_cognee_env() first, and the LLM
-# and embedding providers come from the plugin options (_env_file.py), applied
-# at process start. The database providers reach only a server the user runs
-# themselves (the plugin's own server gets an allowlisted environment, see
-# _server_env), so in practice only those two matter here. `postgres`/`pgvector` share
-# one driver set, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as
-# DB_PROVIDER=postgres rather than a separate one.
-_PROVIDER_EXTRAS = (
-    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
-    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
-    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
-    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
-    ("LLM_PROVIDER", {"ollama": "ollama"}),
-)
+# Maps a provider setting to the cognee package "extra" that provides its
+# driver. A bare `cognee==<version>` install has none, so the server would fail
+# on first use. Only `fastembed` embeddings (also what the Claude observer
+# applies) are left: the plugin's own server always runs on Cognee's built-in
+# stores (SQLite, LanceDB, Kuzu) with an allowlisted environment (see
+# _server_env), so a database provider in the shell never reaches it and must
+# not block the start for a driver it would not use; a local Ollama LLM is not
+# supported in this version (no endpoint option). The value sits in os.environ
+# by now: the embedding provider comes from the plugin options (_env_file.py),
+# applied at process start.
+_PROVIDER_EXTRAS = (("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),)
 
 
 def _detect_required_extras() -> list:
@@ -253,13 +244,9 @@ def _venv_cognee_version() -> str:
 # venv-ready.json: that marker is shared with plugins that don't know about
 # extras (codex/openclaw), whose rewrites would wipe the record and force a
 # reinstall on every cold boot after theirs — the exact churn skip-at-pin
-# exists to avoid. `asyncpg` is common to the `postgres` and `postgres-binary`
-# extras, so either variant satisfies the postgres-binary requirement.
+# exists to avoid.
 _EXTRA_SENTINEL_DISTS = {
-    "postgres-binary": "asyncpg",
-    "neo4j": "neo4j",
     "fastembed": "fastembed",
-    "ollama": "transformers",
 }
 
 
@@ -445,7 +432,7 @@ def _parse_host_port(url: str) -> tuple[str, int]:
 def _is_local_url(url: str) -> bool:
     """True if the URL points at this machine (so we may boot a server on it)."""
     host, _ = _parse_host_port(url)
-    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+    return is_loopback_host(host)
 
 
 def _with_scheme(url: str) -> str:
@@ -462,7 +449,7 @@ def _health_url(service_url: str) -> str:
 
 def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=timeout, context=_https_context()) as response:
+        with open_url(url, timeout=timeout, context=_https_context()) as response:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -512,6 +499,8 @@ _SERVER_ENV_BASE = frozenset(
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
+        # cognee's own usage-telemetry opt-out: a non-secret switch the user set.
+        "TELEMETRY_DISABLED",
         "XDG_CACHE_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
@@ -791,6 +780,14 @@ _LOCAL_DEFAULT_USER_EMAIL = "default_user@example.com"
 _LOCAL_DEFAULT_USER_PASSWORD = "default_password"
 _NO_PASSWORD_MARKER = "does not have a password"
 _BAD_CREDENTIALS_MARKER = "LOGIN_BAD_CREDENTIALS"
+# Left when the local server was found to hide its keys, so session start can
+# say so (the finding may come from the detached bootstrap worker, after this
+# session's output went out). Removed once a usable owner key resolves.
+_HIDES_KEYS_MARKER = _STATE_DIR / "local-server-hides-keys.json"
+SERVER_HIDES_KEYS_MESSAGE = (
+    "This local Cognee server hides its API keys (HASH_API_KEY=true), so the plugin "
+    "can't use it. Stop it and start a new session; the plugin starts its own server."
+)
 
 
 def _login_failure_message(status: int, body: str) -> str:
@@ -825,10 +822,13 @@ async def _login_default_user_for_owner_api_key(
 ) -> str:
     """Log in as the local server's default user and return its owner API key.
 
-    Reuses the first listed key that is usable (not masked); mints one when
-    there is none, or always when ``mint`` (the listed one was rejected).
+    Reuses the first listed key that is a real key (not masked, not a stored
+    hash), the same one every other hook process finds; mints one when there is
+    none, or always when ``mint`` (the listed one was rejected). A server that
+    masks every key it lists is refused instead: a key minted there could not
+    reach the other hooks, since nothing is stored on disk.
     """
-    from _plugin_common import first_usable_key
+    from _plugin_common import first_usable_key, server_hides_keys
 
     base = _normalize_service_url(service_url)
     email = config.get("user_email", "")
@@ -855,9 +855,20 @@ async def _login_default_user_for_owner_api_key(
             timeout=30.0,
         )
         if status == 200:
-            key = first_usable_key(json.loads(body) if body else [])
+            listed = json.loads(body) if body else []
+            key = first_usable_key(listed)
             if key:
                 return key
+            if server_hides_keys(listed):
+                hook_log("local_server_hides_keys", {"base_url": base})
+                try:
+                    _HIDES_KEYS_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                    _HIDES_KEYS_MARKER.write_text(
+                        json.dumps({"base_url": base, "found_at": time.time()}), encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+                raise RuntimeError(SERVER_HIDES_KEYS_MESSAGE)
 
     status, body = _cloud_http_request(
         f"{base}/api/v1/auth/api-keys",
@@ -921,10 +932,15 @@ async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
         forget_cached_api_key,
         load_cached_api_key,
         save_cached_api_key,
+        takes_owner_key,
     )
 
     if cloud_key_applies(service_url):
-        return str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
+        return _api_key_with_source(service_url)[0]
+    if not takes_owner_key(service_url):
+        # Pinned to cloud with no Cloud URL option for this address: no key,
+        # and nothing is looked up from, or logged into, a local server.
+        return ""
 
     api_key = load_cached_api_key(service_url)
     if api_key and _local_key_rejected(service_url, api_key):
@@ -935,6 +951,10 @@ async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
         api_key = await _login_default_user_for_owner_api_key(service_url, config)
     if api_key:
         save_cached_api_key(service_url, api_key)
+        try:
+            _HIDES_KEYS_MARKER.unlink()
+        except OSError:
+            pass
     return api_key
 
 
@@ -1544,7 +1564,7 @@ async def _run_heavy(
         code_outcome = autoindex_on_session_start(
             cwd,
             service_url,
-            os.environ.get("COGNEE_API_KEY", ""),
+            _api_key_with_source(service_url)[0],
             is_local_server=service_url_is_local(service_url),
         )
         if code_outcome:
@@ -2413,9 +2433,22 @@ ENV_UPGRADE_NOTICE = (
     "plugin's options (/plugin → cognee-memory). Until then Cognee runs locally with "
     "defaults."
 )
+# Its own one-time notice: storage settings the plugin's local server no longer
+# takes from ~/.cognee/.env or the shell.
+_STORAGE_NOTICE_FLAG = _STATE_DIR / "env-storage-notice.json"
+STORAGE_NOTICE = (
+    "Cognee for Claude Code no longer reads storage settings from ~/.cognee/.env or "
+    "the shell. Its local server uses the built-in stores under ~/.cognee; data stored "
+    "elsewhere is untouched but not used."
+)
 CLOUD_KEY_EMPTY_NOTICE = (
     "Cognee Memory: the Cloud API key option is empty, so Cognee Cloud will refuse "
     "this session. Set it in the plugin's options (/plugin → cognee-memory)."
+)
+CLOUD_PIN_NO_URL_NOTICE = (
+    "Cognee Memory: COGNEE_BACKEND=cloud is set but the Cognee Cloud URL option is "
+    "empty, so Cognee sends nothing. Set the URL in the plugin's options (/plugin → "
+    "cognee-memory), or remove the switch to run locally."
 )
 CLOUD_URL_EMPTY_NOTICE = (
     "The Cognee Cloud API key option is set but the Cloud URL is empty, so Cognee is "
@@ -2427,12 +2460,20 @@ def _option_notices() -> list:
     """The SessionStart notes about the plugin options. Never raises.
 
     Once ever: ~/.cognee/.env holds Cloud or LLM settings and the matching
-    options are empty. Every session: a Cloud URL without its key, or a key
+    options are empty. Once ever, separately: storage settings (data
+    directories, database providers) in the file or the shell, which the
+    plugin's local server no longer uses. Every session: a Cloud URL without its key, or a key
     without a URL. Reads only option presence and setting names, never values.
     """
     notes: list = []
     try:
-        from _env_file import legacy_settings_in_file, option, url_option
+        from _env_file import (
+            cloud_pinned_without_url,
+            legacy_settings_in_file,
+            option,
+            storage_settings_ignored,
+            url_option,
+        )
 
         legacy = legacy_settings_in_file()
         if (legacy.get("cloud") or legacy.get("llm")) and not _ENV_UPGRADE_NOTICE_FLAG.exists():
@@ -2450,11 +2491,25 @@ def _option_notices() -> list:
                 )
             except OSError as exc:
                 hook_log("env_upgrade_notice_flag_failed", {"error": str(exc)[:200]})
+        storage = storage_settings_ignored()
+        if storage and not _STORAGE_NOTICE_FLAG.exists():
+            notes.append(STORAGE_NOTICE)
+            try:
+                _STORAGE_NOTICE_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                _STORAGE_NOTICE_FLAG.write_text(
+                    json.dumps({"shown_at": time.time(), "names": storage}), encoding="utf-8"
+                )
+            except OSError as exc:
+                hook_log("env_storage_notice_flag_failed", {"error": str(exc)[:200]})
+        if _HIDES_KEYS_MARKER.exists():
+            notes.append(SERVER_HIDES_KEYS_MESSAGE)
         url = url_option()
         key_set = bool(option("cognee_api_key"))
         if url and not service_url_is_local(url) and not key_set:
             notes.append(CLOUD_KEY_EMPTY_NOTICE)
-        if key_set and not url:
+        if cloud_pinned_without_url():
+            notes.append(CLOUD_PIN_NO_URL_NOTICE)
+        elif key_set and not url:
             notes.append(CLOUD_URL_EMPTY_NOTICE)
     except Exception as exc:
         hook_log("option_notices_failed", {"error": str(exc)[:200]})

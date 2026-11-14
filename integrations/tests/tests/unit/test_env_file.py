@@ -44,8 +44,17 @@ def env_file_env(suite, isolated_modules, tmp_path, monkeypatch):
     return ef, _fresh
 
 
-def test_parse_basic_and_quotes(env_file_env):
+def _syntax_only(ef, monkeypatch, *names: str) -> None:
+    """Let a parser-syntax test use plain names on a host whose parser keeps a
+    value only for an allowlisted tuning name (Claude Code): what is tested
+    here is how a line is read, not which names may be read."""
+    if hasattr(ef, "_TUNING_NAMES"):
+        monkeypatch.setattr(ef, "_TUNING_NAMES", frozenset(ef._TUNING_NAMES) | set(names))
+
+
+def test_parse_basic_and_quotes(env_file_env, monkeypatch):
     ef, fresh = env_file_env
+    _syntax_only(ef, monkeypatch, "PLAIN", "DQ", "SQ", "SPACED", "EXPORTED", "EMPTY")
     path = fresh(
         "\n".join(
             [
@@ -69,7 +78,8 @@ def test_parse_basic_and_quotes(env_file_env):
     assert parsed["EMPTY"] == ""
 
 
-def test_parse_skips_malformed_lines(env_file_env):
+def test_parse_skips_malformed_lines(env_file_env, monkeypatch):
+    _syntax_only(env_file_env[0], monkeypatch, "GOOD")
     ef, fresh = env_file_env
     path = fresh(
         "\n".join(
@@ -129,7 +139,8 @@ def test_denylist_never_injected(env_file_env, monkeypatch):
     monkeypatch.delenv("COGNEE_PLUGIN_VERBOSE", raising=False)
 
 
-def test_parse_tolerates_utf8_bom_and_crlf(env_file_env):
+def test_parse_tolerates_utf8_bom_and_crlf(env_file_env, monkeypatch):
+    _syntax_only(env_file_env[0], monkeypatch, "COGNEE_TEST_BOM", "COGNEE_TEST_SECOND")
     # Windows PowerShell 5.1 writes UTF-8 with a BOM and CRLF line endings;
     # the BOM must not glue onto the first key name.
     ef, fresh = env_file_env
@@ -140,7 +151,8 @@ def test_parse_tolerates_utf8_bom_and_crlf(env_file_env):
     assert parsed["COGNEE_TEST_SECOND"] == "2"
 
 
-def test_parse_tolerates_utf16(env_file_env):
+def test_parse_tolerates_utf16(env_file_env, monkeypatch):
+    _syntax_only(env_file_env[0], monkeypatch, "COGNEE_TEST_U16")
     # A PowerShell 5.1 `>` redirect (Out-File) writes UTF-16 LE with a BOM.
     ef, fresh = env_file_env
     path = fresh(None)

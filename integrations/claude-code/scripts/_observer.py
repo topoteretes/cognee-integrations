@@ -53,6 +53,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from _net import is_loopback_url, open_url
+
 SETTING_ENV = "COGNEE_LLM_OBSERVER"
 #: Set by the shim in every ``claude`` child it spawns; every hook script exits
 #: at once when it sees this, so an observer call can never re-enter the plugin.
@@ -288,8 +290,7 @@ def llm_key_configured() -> bool:
 
 
 def _is_local_url(url: str) -> bool:
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    return host in ("localhost", "::1", "0.0.0.0") or host.startswith("127.")
+    return is_loopback_url(url)
 
 
 def llm_provider_configured() -> bool:
@@ -431,10 +432,10 @@ def is_active() -> bool:
 # --- shim process control ----------------------------------------------------
 
 
-def _http_get(url: str, timeout: float) -> tuple[int, dict]:
+def _http_get(url: str, timeout: float, auth: bool = True) -> tuple[int, dict]:
     try:
-        req = urllib.request.Request(url, headers=_auth_headers())
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        req = urllib.request.Request(url, headers=_auth_headers() if auth else {})
+        with open_url(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             return resp.status, (json.loads(body) if body else {})
     except urllib.error.HTTPError as exc:
@@ -449,7 +450,7 @@ def _http_get(url: str, timeout: float) -> tuple[int, dict]:
 
 def observer_health(port_number: int | None = None, timeout: float = 1.0) -> dict:
     """The shim's ``/health`` document, or {} when nothing of ours answers there."""
-    status, body = _http_get(base_url(port_number) + "/health", timeout)
+    status, body = _http_get(base_url(port_number) + "/health", timeout, auth=False)
     if status == 200 and isinstance(body, dict) and body.get("service") == "cognee-claude-observer":
         return body
     return {}
@@ -550,7 +551,7 @@ def stop_observer(port_number: int | None = None) -> bool:
     try:
         req = urllib.request.Request(url, data=b"{}", method="POST", headers=_auth_headers())
         req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=2.0):
+        with open_url(req, timeout=2.0):
             return True
     except Exception:
         pass

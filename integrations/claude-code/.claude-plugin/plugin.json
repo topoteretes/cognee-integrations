@@ -44,7 +44,7 @@
     "llm_provider": {
       "type": "string",
       "title": "LLM provider (local mode)",
-      "description": "The local server's LLM provider, such as openai, anthropic, gemini or ollama. Leave empty for OpenAI with an LLM API key, or the Claude subscription without one.",
+      "description": "The local server's LLM provider, such as openai, anthropic or gemini. Leave empty for OpenAI with an LLM API key, or the Claude subscription without one.",
       "default": ""
     },
     "llm_model": {
@@ -56,7 +56,7 @@
     "embedding_provider": {
       "type": "string",
       "title": "Embedding provider (local mode)",
-      "description": "The local server's embedding provider, such as openai, fastembed or ollama. Leave empty for Cognee's default. A dataset built with one embedder can't be searched with another.",
+      "description": "The local server's embedding provider, such as openai or fastembed. Leave empty for Cognee's default. A dataset built with one embedder can't be searched with another.",
       "default": ""
     },
     "embedding_model": {

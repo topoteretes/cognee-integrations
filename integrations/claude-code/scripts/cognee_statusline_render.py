@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from _env_file import forced_backend, load_env_file
+from _net import is_loopback_host
 
 # ~/.cognee/.env is pure-local too, so loading it here keeps the renderer's
 # no-network/no-_plugin_common contract while honoring one-time config.
@@ -136,9 +137,6 @@ def _dataset_label(host_id: str = "", recall_auto: bool = False) -> str:
     return f"auto ({dataset})" if recall_auto else dataset
 
 
-_LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
-
-
 def _active_mode() -> str:
     # 0. explicit backend switch: forced local always reads local (the env
     # scrub in load_env_file guarantees it, this is just the direct answer);
@@ -150,7 +148,8 @@ def _active_mode() -> str:
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
     if not url:
         return "cloud" if forced == "cloud" else "local"
-    return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
+    host = urlparse(url).hostname or ""
+    return "local" if not host or is_loopback_host(host) else "cloud"
 
 
 # Where your memory actually lives is the one thing in this line worth a

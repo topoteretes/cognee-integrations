@@ -111,7 +111,22 @@ def _conn_reprobe_interval() -> float:
         return 60.0
 
 
-def _reprobe_connection(service_url: str, api_key: str = "") -> None:
+def _resolved_key(service_url: str) -> str:
+    """The key ``service_url`` takes, resolved now. Never raises.
+
+    Never read from the environment this process was spawned with: on a cold
+    local start the owner key does not exist yet at spawn time, and the Cloud
+    key option is not this machine's server's key.
+    """
+    try:
+        from _plugin_common import _api_key_with_source
+
+        return _api_key_with_source(service_url)[0]
+    except Exception:
+        return ""
+
+
+def _reprobe_connection(service_url: str, api_key: str | None = None) -> None:
     """Re-probe a recorded failure state and mark ready if the server is back.
 
     Contract, in order:
@@ -155,7 +170,10 @@ def _reprobe_connection(service_url: str, api_key: str = "") -> None:
             return
         _last_conn_reprobe_at = now
 
-        verdict = authed_liveness(base_url, api_key, timeout=2.0)
+        # No key handed in (the watcher's own loop): resolve it now, at probe
+        # time. An explicit key, the empty one included, is used as given.
+        key = _resolved_key(base_url) if api_key is None else api_key
+        verdict = authed_liveness(base_url, key, timeout=2.0)
         authed = verdict != "unknown"
         if not authed:
             verdict = probe_health(base_url, timeout=2.0)
@@ -187,7 +205,6 @@ def main() -> None:
     dataset = str(bootstrap.get("dataset") or "agent_sessions")
     session_key = str(bootstrap.get("session_key") or "")
     agent_session_name = str(bootstrap.get("agent_session_name") or "")
-    api_key = os.environ.get("COGNEE_API_KEY", "")
     service_url = str(bootstrap.get("base_url") or "")
     pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
     pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE
@@ -229,7 +246,7 @@ def main() -> None:
     )
     while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
         # Self-heal a stale red connection verdict (throttled internally).
-        _reprobe_connection(service_url, api_key)
+        _reprobe_connection(service_url)
         time.sleep(_POLL_SECONDS)
 
     if not _owns_pidfile(pidfile):
@@ -259,7 +276,9 @@ def main() -> None:
         dataset,
         session_key=session_key,
         agent_session_name=agent_session_name,
-        api_key=api_key,
+        # No key is handed over: the sync process resolves its own, from the
+        # plugin options or the local server (see _env_file).
+        api_key="",
         service_url=service_url,
     )
 

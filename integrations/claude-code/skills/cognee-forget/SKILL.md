@@ -95,7 +95,7 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 The `/api/v1/forget` endpoint can also delete more than a single document (see `$COGNEE_BASE_URL/docs`). The helper deliberately supports only single-document deletion; for a broader scope, resolve credentials with the helper's `env` command and call the endpoint directly **in the same shell invocation** (exports do not persist across separate Bash calls):
 
 ```bash
-eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
 curl -sS -X POST "${COGNEE_BASE_URL}/api/v1/forget" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY}" \

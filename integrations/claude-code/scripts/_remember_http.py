@@ -32,6 +32,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from _net import open_url
+
 UNREACHABLE = "UNREACHABLE"
 
 
@@ -136,7 +138,7 @@ def _poll_status(
     dataset_id,
     deadline_seconds,
     *,
-    opener=urllib.request.urlopen,
+    opener=open_url,
     interval_seconds=3.0,
     request_timeout=10.0,
 ):
@@ -198,7 +200,7 @@ def do_remember(
     *,
     file_path=None,
     dataset_id="",
-    opener=urllib.request.urlopen,
+    opener=open_url,
     timeout=120.0,
 ):
     """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.

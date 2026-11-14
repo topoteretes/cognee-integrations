@@ -50,8 +50,15 @@ try:
     from _env_file import load_env_file
     load_env_file()
 except Exception:
-    pass
-service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
+    # Without the loader the environment is still the one the shell exported:
+    # that URL and key are not plugin settings, so resolve nothing rather than
+    # use them. (No apostrophes in this heredoc: bash 3.2 parses them.)
+    print(json.dumps({"service_url": "", "api_key": ""}))
+    raise SystemExit(0)
+# After the loader these hold plugin settings only: the URL option (or a
+# loopback COGNEE_LOCAL_API_URL), and the Cloud key only in a process Claude
+# Code gave it to. A shell export of either was dropped.
+service_url = (os.environ.get("COGNEE_LOCAL_API_URL") or os.environ.get("COGNEE_BASE_URL") or "http://localhost:8011").strip()
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
 if not api_key:
@@ -86,7 +93,13 @@ except Exception:
     pass
 PY
 )"
-[ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
+# Never fall back to the shell's COGNEE_BASE_URL: it is not the plugin's
+# setting, and with a shell COGNEE_API_KEY next to it a request would carry
+# that key to that server.
+if [ -z "$SERVICE_URL" ]; then
+    echo "Error: could not resolve the Cognee server URL from the plugin's settings (is python3 available?)." >&2
+    exit 1
+fi
 SERVICE_URL="${SERVICE_URL%/}"
 
 usage() {

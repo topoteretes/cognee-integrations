@@ -38,6 +38,16 @@ _PROVIDER_ENV_VARS = (
 
 
 @pytest.fixture
+def database_extras(suite):
+    """Hosts whose own local server can run on a configured database or an
+    Ollama LLM. The Claude Code plugin's server always runs on the built-in
+    stores with an allowlisted environment and has no Ollama support in this
+    version, so it checks for no such driver (test_claude_second_review.py)."""
+    if suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: its server never uses a database or Ollama driver")
+
+
+@pytest.fixture
 def ss(suite, hook_module, monkeypatch):
     for var in _PROVIDER_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -52,7 +62,7 @@ def test_no_providers_configured_needs_no_extras(ss):
     assert ss._cognee_install_spec() == f"cognee=={ss._PINNED_COGNEE_VERSION}"
 
 
-def test_postgres_and_neo4j_detected(ss, monkeypatch):
+def test_postgres_and_neo4j_detected(ss, monkeypatch, database_extras):
     monkeypatch.setenv("DB_PROVIDER", "postgres")
     monkeypatch.setenv("GRAPH_DATABASE_PROVIDER", "neo4j")
     extras = ss._detect_required_extras()
@@ -62,18 +72,18 @@ def test_postgres_and_neo4j_detected(ss, monkeypatch):
     assert ss._cognee_install_spec() == f"cognee[{joined}]=={ss._PINNED_COGNEE_VERSION}"
 
 
-def test_pgvector_maps_to_postgres_binary_not_a_separate_extra(ss, monkeypatch):
+def test_pgvector_maps_to_postgres_binary_not_a_separate_extra(ss, monkeypatch, database_extras):
     monkeypatch.setenv("VECTOR_DB_PROVIDER", "pgvector")
     assert ss._detect_required_extras() == ["postgres-binary"]
 
 
-def test_postgres_and_pgvector_together_dont_duplicate_the_extra(ss, monkeypatch):
+def test_postgres_and_pgvector_together_dont_duplicate_the_extra(ss, monkeypatch, database_extras):
     monkeypatch.setenv("DB_PROVIDER", "postgres")
     monkeypatch.setenv("VECTOR_DB_PROVIDER", "pgvector")
     assert ss._detect_required_extras() == ["postgres-binary"]
 
 
-def test_fastembed_and_ollama_detected(ss, monkeypatch):
+def test_fastembed_and_ollama_detected(ss, monkeypatch, database_extras):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "fastembed")
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     extras = ss._detect_required_extras()
@@ -81,7 +91,7 @@ def test_fastembed_and_ollama_detected(ss, monkeypatch):
     assert "ollama" in extras
 
 
-def test_provider_values_are_case_insensitive(ss, monkeypatch):
+def test_provider_values_are_case_insensitive(ss, monkeypatch, database_extras):
     monkeypatch.setenv("DB_PROVIDER", "POSTGRES")
     assert "postgres-binary" in ss._detect_required_extras()
 
@@ -138,4 +148,5 @@ def test_probe_failure_fails_soft(ss, monkeypatch):
         raise OSError("probe blew up")
 
     monkeypatch.setattr(ss.subprocess, "run", _boom)
+    monkeypatch.setattr(ss, "_EXTRA_SENTINEL_DISTS", {"neo4j": "neo4j"})
     assert ss._venv_missing_extras(["neo4j"]) == []

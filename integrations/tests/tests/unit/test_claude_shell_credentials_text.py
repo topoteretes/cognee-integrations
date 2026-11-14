@@ -40,8 +40,13 @@ def _shipped_scripts():
 
 def test_api_key_variable_only_after_the_forget_helper_resolves_it():
     """``${COGNEE_API_KEY`` is empty in a shell unless ``cognee-forget.sh env``
-    set it in the same invocation; anywhere else it is an unauthenticated call."""
-    resolver = re.compile(r'eval "\$\(.*cognee-forget\.sh"? env\)"')
+    set it in the same invocation; anywhere else it is an unauthenticated call.
+
+    The helper's output is captured first and evaluated only when the helper
+    succeeded (``creds="$(… env)" && eval "$creds" && curl``). A bare
+    ``eval "$(… env)" && curl`` runs the curl even when the helper exits 2
+    (``eval ""`` returns 0), with whatever the shell exported."""
+    resolver = re.compile(r'creds="\$\(.*cognee-forget\.sh"? env\)" && eval "\$creds" && ')
     offenders = []
     for path in _model_facing_markdown():
         for line in _logical_lines(path.read_text(encoding="utf-8")):

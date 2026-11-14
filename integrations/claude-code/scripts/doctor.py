@@ -23,6 +23,8 @@ import time
 import urllib.error
 import urllib.request
 
+from _net import open_url
+
 # Ensure the scripts directory is on sys.path so sibling modules resolve.
 _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -194,9 +196,7 @@ def _check_health(server_url: str, timeout: float = 5.0) -> dict:
 
     try:
         t0 = time.monotonic()
-        with urllib.request.urlopen(
-            f"{base}/health", timeout=timeout, context=_https_context()
-        ) as resp:
+        with open_url(f"{base}/health", timeout=timeout, context=_https_context()) as resp:
             latency = (time.monotonic() - t0) * 1000  # ms
             body_text = resp.read().decode("utf-8", errors="replace")
             try:
@@ -315,12 +315,54 @@ def _stored_login_note(reason: str) -> str:
     return STORED_LOGIN_ONLY_MESSAGE if reason == STORED_LOGIN_ONLY_REASON else ""
 
 
-def _observer_health_reason() -> str:
-    """The reason the observer health check last recorded (llm-state marker), or ""."""
-    try:
-        from _plugin_common import read_llm_state
+# How long an observer health verdict speaks for the present: the status
+# line's own limit, so the two never disagree about a stale marker.
+try:
+    from cognee_statusline_render import _LLM_STATE_STALE_SECONDS
+except Exception:  # pragma: no cover - the renderer is always shipped alongside
+    _LLM_STATE_STALE_SECONDS = 30 * 60
 
-        return str(read_llm_state().get("reason") or "")
+# How the LLM row starts when the observer is the LLM in use (both the
+# computed and the recorded form), and so when its health note applies.
+_OBSERVER_ROW_PREFIX = "Claude Code observer"
+
+
+def _observer_health_note() -> str:
+    """The "stored login only" note for the observer's last health check, or "".
+
+    Shown only for a verdict that speaks for this session now: this session's
+    own marker, or the machine-wide one when it is unattributed or ours, and
+    only while it is younger than the status line's limit. Another session's
+    verdict, or one from days ago, says nothing about this one. Never raises.
+    """
+    try:
+        from _plugin_common import (
+            _LLM_STATE_DIR,
+            _LLM_STATE_MARKER,
+            _session_key_path_safe,
+            get_session_key,
+            resolve_host_key_outside_hook,
+        )
+
+        def _read(path) -> dict:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                return {}
+
+        key = get_session_key() or resolve_host_key_outside_hook()[0]
+        marker = _read(_LLM_STATE_DIR / f"{key}.json") if _session_key_path_safe(key) else {}
+        if not marker:
+            marker = _read(_LLM_STATE_MARKER)
+            owner = str(marker.get("session_key") or "")
+            if owner and owner != key:
+                return ""
+        age = time.time() - float(marker.get("checked_at") or 0)
+        if age < 0 or age > _LLM_STATE_STALE_SECONDS:
+            return ""
+        note = _stored_login_note(str(marker.get("reason") or ""))
+        return f"{note} (checked {int(age // 60)} min ago)" if note else ""
     except Exception:
         return ""
 
@@ -337,10 +379,13 @@ def _resolve_llm() -> str:
     mode = _resolve_mode()
     if mode == "Cloud":
         return "Remote server (not applicable)"
-    health_note = _stored_login_note(_observer_health_reason())
     result = _computed_llm() if _has_options() else _recorded_llm()
-    if health_note and health_note not in result:
-        result += f" {health_note}"
+    if result.startswith(_OBSERVER_ROW_PREFIX):
+        # Only while the observer is the LLM in use: with the LLM options set
+        # its past login failures are not this session's concern.
+        health_note = _observer_health_note()
+        if health_note:
+            result += f" {health_note}"
     return result
 
 
@@ -356,7 +401,7 @@ def _recorded_llm() -> str:
     if observer.get("active"):
         shim = "shim running" if observer_alive(port()) else "shim not running"
         return (
-            f"Claude Code observer (`claude -p`, model {observer.get('model') or 'default'}, "
+            f"{_OBSERVER_ROW_PREFIX} (`claude -p`, model {observer.get('model') or 'default'}, "
             f"{shim}) {as_of}"
         )
     note = _stored_login_note(reason)
@@ -389,7 +434,7 @@ def _computed_llm() -> str:
 
         shim = "shim running" if observer_alive(decision.get("port")) else "shim not running"
         return (
-            f"Claude Code observer (`claude -p`, model {decision.get('model')}, "
+            f"{_OBSERVER_ROW_PREFIX} (`claude -p`, model {decision.get('model')}, "
             f"{decision.get('endpoint')}, {shim}). {SPEND_WARNING} {embedding_warning()}"
             + (f" Warning: {decision['model_warning']}" if decision.get("model_warning") else "")
         )

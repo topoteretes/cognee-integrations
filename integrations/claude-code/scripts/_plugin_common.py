@@ -32,6 +32,7 @@ from _dataset_access import recall_fields, write_fields
 from _env_file import load_env_file
 from _logfiles import append_line as _append_log_line
 from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
+from _net import is_loopback_url, open_url
 from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
 from event_names import event_fields
 
@@ -1512,8 +1513,7 @@ def _platform_host_for(service_url: str) -> str:
 
 def service_url_is_local(url: str = "") -> bool:
     """True when the resolved service URL points at this machine (loopback)."""
-    host = (urllib.parse.urlparse(url or _local_api_url()).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    return is_loopback_url(url or _local_api_url())
 
 
 def hook_log(event: str, detail: Optional[dict] = None) -> None:
@@ -2441,14 +2441,45 @@ def is_masked_key(key: str) -> bool:
     return bool(key) and set(key) == {"*"}
 
 
+# How cognee stores a key created while ``HASH_API_KEY=true``
+# (``pbkdf2_sha256$<iterations>$<hex>``). A server now running without hashing
+# lists that stored value back: it is a hash, never a key any server accepts.
+_STORED_KEY_HASH_PREFIX = "pbkdf2_sha256$"
+
+
+def is_hashed_key(key: str) -> bool:
+    """A listed value that is a stored hash of a key, not a key."""
+    return str(key or "").strip().startswith(_STORED_KEY_HASH_PREFIX)
+
+
 def first_usable_key(keys) -> str:
-    """The first listed API key that is not masked, or ""."""
+    """The first listed API key that is a real key (not masked, not a hash), or "".
+
+    Every process picks the same one, so a key SessionStart mints once is the
+    key the other hooks find: a stale hashed row listed before it is skipped,
+    not sent.
+    """
     for entry in keys if isinstance(keys, list) else []:
         if isinstance(entry, dict):
             key = str(entry.get("key") or "").strip()
-            if key and not is_masked_key(key):
+            if key and not is_masked_key(key) and not is_hashed_key(key):
                 return key
     return ""
+
+
+def server_hides_keys(keys) -> bool:
+    """The server lists keys but masks every one (it runs ``HASH_API_KEY=true``).
+
+    Nothing is stored on disk, so a key minted there could never reach the
+    other hook processes: the plugin cannot use such a server.
+    """
+    listed = [
+        str(entry.get("key") or "").strip()
+        for entry in (keys if isinstance(keys, list) else [])
+        if isinstance(entry, dict)
+    ]
+    listed = [key for key in listed if key]
+    return bool(listed) and all(is_masked_key(key) for key in listed)
 
 
 def _local_owner_key(service_url: str) -> str:
@@ -2484,7 +2515,7 @@ def _local_owner_key(service_url: str) -> str:
             method="POST",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_url(request, timeout=timeout) as response:
             jwt = str((json.loads(response.read() or b"{}") or {}).get("access_token") or "")
         if jwt:
             remaining = max(0.1, timeout - (time.monotonic() - started))
@@ -2493,7 +2524,7 @@ def _local_owner_key(service_url: str) -> str:
                 method="GET",
                 headers={"Cookie": f"auth_token={jwt}"},
             )
-            with urllib.request.urlopen(request, timeout=remaining) as response:
+            with open_url(request, timeout=remaining) as response:
                 key = first_usable_key(json.loads(response.read() or b"[]"))
     except Exception as exc:
         error = type(exc).__name__
@@ -2518,7 +2549,7 @@ def load_cached_api_key(service_url: str = "") -> str:
     the plugin option, already in the environment.
     """
     url = _normalize_service_url(service_url or _local_api_url())
-    if not url or not service_url_is_local(url):
+    if not url or not takes_owner_key(url):
         return ""
     return _local_owner_key(url)
 
@@ -2526,7 +2557,7 @@ def load_cached_api_key(service_url: str = "") -> str:
 def save_cached_api_key(service_url: str, key: str) -> None:
     """Keys are never written to disk; remember a fresh local key in-process."""
     url = _normalize_service_url(service_url)
-    if url and str(key or "").strip() and service_url_is_local(url):
+    if url and str(key or "").strip() and takes_owner_key(url):
         _LOCAL_OWNER_KEYS[url] = str(key).strip()
         _LOCAL_OWNER_FAILED_AT.pop(url, None)
 
@@ -3276,16 +3307,24 @@ def managed_endpoint_enabled(config: dict | None = None) -> bool:
 def cloud_key_applies(service_url: str) -> bool:
     """Whether the Cloud key option is the key for ``service_url``.
 
-    True for a remote server, and for any server while the terminal is pinned
-    to cloud (``COGNEE_BACKEND=cloud``: the user says the URL is their cloud,
-    even on a loopback address). A server on this machine otherwise gets its
-    own owner key, never the Cloud key.
+    True for a remote server, and for the configured Cloud URL option while the
+    terminal is pinned to cloud (``COGNEE_BACKEND=cloud``: a self-hosted server
+    on a loopback address used as Cloud). Any other server on this machine
+    gets its own owner key, never the Cloud key; the pin with no URL option
+    sends the key nowhere. The rule itself lives in ``_env_file``.
     """
-    if not service_url_is_local(service_url):
-        return True
+    from _env_file import cloud_key_applies as _applies
+
+    return _applies(service_url)
+
+
+def takes_owner_key(service_url: str) -> bool:
+    """Whether ``service_url`` is the plugin's own local server, authenticated
+    with the owner key looked up from it: a server on this machine, unless the
+    terminal is pinned to cloud (then nothing is looked up or logged into)."""
     from _env_file import forced_backend
 
-    return forced_backend() == "cloud"
+    return service_url_is_local(service_url) and forced_backend() != "cloud"
 
 
 def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
@@ -3298,15 +3337,15 @@ def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
     """
     service_url = _normalize_service_url(service_url or _local_api_url())
     if not cloud_key_applies(service_url):
+        # The local server's own key, or none at all while pinned to cloud.
         local = load_cached_api_key(service_url)
         return (local, "local_owner_key") if local else ("", "missing")
-    env_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
-    principal = str(os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or "").strip()
-    if env_key:
-        return env_key, "env_api_key"
-    if principal:
-        return principal, "env_api_key"
-    return "", "missing"
+    from _env_file import option
+
+    # The option itself where this process has it; the environment otherwise
+    # (set from the option by ``_env_file`` only when the Cloud key applies).
+    key = option("cognee_api_key") or str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
+    return (key, "env_api_key") if key else ("", "missing")
 
 
 def require_shell_auth(service_url: str, api_key: str, tool: str) -> None:
@@ -3317,7 +3356,7 @@ def require_shell_auth(service_url: str, api_key: str, tool: str) -> None:
     before any request, beats a 401 that sends the user to an option they
     already set. A local server needs no key from the shell (owner key).
     """
-    if service_url_is_local(str(service_url or "")) or str(api_key or "").strip():
+    if str(api_key or "").strip() or takes_owner_key(str(service_url or "")):
         return
     print(
         f"{tool}: no API key. The Cognee Cloud key is a plugin option that Claude Code "
@@ -3371,9 +3410,7 @@ def probe_health(service_url: str = "", timeout: float = 1.0) -> str:
     if not base:
         return UNKNOWN
     try:
-        with urllib.request.urlopen(
-            f"{base}/health", timeout=timeout, context=_https_context()
-        ) as resp:
+        with open_url(f"{base}/health", timeout=timeout, context=_https_context()) as resp:
             return "ready" if resp.status == 200 else UNKNOWN
     except Exception as exc:
         verdict = classify_transport_exception(exc)
@@ -4223,7 +4260,7 @@ def authed_liveness(service_url: str = "", api_key: str = "", timeout: float = 1
     req = urllib.request.Request(f"{base}/api/v1/datasets", method="GET")
     req.add_header("X-Api-Key", key)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
+        with open_url(req, timeout=timeout, context=_https_context()) as resp:
             status = resp.status
             if 200 <= status < 300:
                 return "ready"
@@ -4535,7 +4572,7 @@ def urlopen_following_307(req, *, timeout: float, context=None):
 
     for _ in range(_MAX_REDIRECT_REPLAYS):
         try:
-            return urllib.request.urlopen(req, timeout=timeout, context=context)
+            return open_url(req, timeout=timeout, context=context)
         except urllib.error.HTTPError as exc:
             if exc.code not in _REDIRECT_REPLAY_CODES:
                 raise
@@ -4557,7 +4594,7 @@ def urlopen_following_307(req, *, timeout: float, context=None):
                 target, data=req.data, headers=dict(req.headers), method=req.get_method()
             )
             req = replay
-    return urllib.request.urlopen(req, timeout=timeout, context=context)
+    return open_url(req, timeout=timeout, context=context)
 
 
 _FALSE = {"0", "false", "no", "off"}
@@ -4612,6 +4649,16 @@ def _json_http_request(
     # billing routes). api_key overrides the resolved key for calls that must
     # authenticate as a specific identity (e.g. plugin provisioning runs as
     # the principal, never as the provisioned agent).
+    if base_url is None:
+        from _env_file import cloud_pinned_without_url
+
+        if cloud_pinned_without_url():
+            # Pinned to cloud with no Cloud URL option: the local address is
+            # not that server. Fail as an unreachable server would, without
+            # sending the request (and what it carries) anywhere.
+            raise urllib.error.URLError(
+                "COGNEE_BACKEND=cloud is set but the Cognee Cloud URL option is empty"
+            )
     base_url = (base_url or _local_api_url()).rstrip("/")
     api_key = api_key if api_key is not None else _api_key()
     headers = {"Content-Type": "application/json"}
@@ -5103,7 +5150,7 @@ def _backend_reachable(base_url: str, timeout: float | None = None) -> bool:
     if timeout is None:
         timeout = positive_float_env("COGNEE_REACHABLE_TIMEOUT", REACHABLE_TIMEOUT_DEFAULT_SECONDS)
     try:
-        with urllib.request.urlopen(
+        with open_url(
             f"{base_url.rstrip('/')}/health", timeout=timeout, context=_https_context()
         ) as resp:
             return 200 <= resp.status < 500
@@ -5573,9 +5620,7 @@ def ensure_dataset_via_http(dataset: str) -> None:
                     method="POST",
                 )
                 try:
-                    with urllib.request.urlopen(
-                        req, timeout=15.0, context=_https_context()
-                    ) as resp:
+                    with open_url(req, timeout=15.0, context=_https_context()) as resp:
                         resp.read()
                     hook_log("dataset_ensured", {"dataset": dataset, "via": "redirect"})
                     return

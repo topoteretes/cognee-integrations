@@ -38,6 +38,7 @@ ISOLATED_MODULES = (
     "_credits",
     "_cognee_client",
     "_env_file",
+    "_net",
     "_logfiles",
     "_file_lock",
     "_deadlines",
@@ -102,10 +103,15 @@ def scrub_env_dict(env: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in env.items() if not k.startswith(_SCRUBBED_PREFIXES)}
 
 
+#: Set by the plugin itself, per HOME, on import (``apply_cognee_env``). A value
+#: left by an earlier test's home would read as a user's own storage setting.
+_SCRUBBED_NAMES = ("SYSTEM_ROOT_DIRECTORY", "DATA_ROOT_DIRECTORY", "CACHE_ROOT_DIRECTORY")
+
+
 def scrub_cognee_env(monkeypatch) -> None:
     """Delete all Cognee and host-integration vars for one test (in-process)."""
     for key in list(os.environ):
-        if key.startswith(_SCRUBBED_PREFIXES):
+        if key.startswith(_SCRUBBED_PREFIXES) or key in _SCRUBBED_NAMES:
             monkeypatch.delenv(key, raising=False)
 
 

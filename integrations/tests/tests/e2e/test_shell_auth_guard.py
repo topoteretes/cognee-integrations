@@ -8,10 +8,10 @@ the user to an option they already set. Every shell entry point therefore exits
 2 first, with the reason, and nothing reaches the server (SDK-1411).
 
 The remote URL is ``http://127.1:<port>``: the plugin reads it as remote (only
-``localhost``/``127.0.0.1``/``::1``/``0.0.0.0`` are local), yet it still
-resolves to the mock server, so "no request arrived" means the script stopped
-itself rather than failing to connect. A control run with the key option set
-proves the URL reaches the server.
+``localhost`` and a literal loopback address are local, and ``127.1`` is not a
+literal address), yet it still resolves to the mock server, so "no request
+arrived" means the script stopped itself rather than failing to connect. A
+control run with the key option set proves the URL reaches the server.
 
 Also covered: with no CLI fallback any more, an unreachable server makes search
 and remember exit 1 with a message and never start ``cognee-cli``.
@@ -102,6 +102,21 @@ def _command(suite, name: str, home) -> list[str]:
             "--session-key",
             LAUNCH_KEY,
         ]
+    if name == "evidence-index":
+        return [sys.executable, str(scripts / "cognee-evidence.py"), "index", "retry policy"]
+    if name == "evidence-details":
+        reference = json.dumps([{"dataset_id": "d", "data_id": "x"}])
+        return [
+            sys.executable,
+            str(scripts / "cognee-evidence.py"),
+            "details",
+            "--references",
+            reference,
+        ]
+    if name == "forget-datasets":
+        return [BASH, str(scripts / "cognee-forget.sh"), "datasets"]
+    if name == "forget-env":
+        return [BASH, str(scripts / "cognee-forget.sh"), "env"]
     if name == "switch-dataset-list":
         return [
             sys.executable,
@@ -139,6 +154,10 @@ def _run(cmd, env, home):
         "list-datasets",
         "switch-dataset",
         "switch-dataset-list",
+        "evidence-index",
+        "evidence-details",
+        "forget-datasets",
+        "forget-env",
     ],
 )
 def test_remote_url_without_a_key_exits_2_before_any_request(
@@ -157,6 +176,108 @@ def test_remote_url_without_a_key_exits_2_before_any_request(
     assert result.returncode == 2, (result.stdout, result.stderr)
     assert GUARD_TEXT in result.stderr, result.stderr
     assert mock_server.calls == []
+
+
+def test_evidence_explain_needs_no_server_and_still_runs_in_cloud_mode(
+    claude_only, temp_home, mock_server, assert_clean_real_home
+):
+    """``explain`` reads a local file only, so the guard leaves it alone."""
+    _with_url_option(temp_home, _remote_alias(mock_server.url))
+    cmd = [
+        sys.executable,
+        str(claude_only.scripts_dir / "cognee-evidence.py"),
+        "explain",
+        "--session-key",
+        LAUNCH_KEY,
+    ]
+    result = _run(cmd, _shell_env(claude_only, temp_home), temp_home)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert json.loads(result.stdout)["status"] == "unavailable"
+    assert mock_server.calls == []
+
+
+# Every script a skill or the recall agent tells the agent to run, and how it
+# is covered: by the guard test above (it calls the server), or as a command
+# that makes no authenticated server call from the shell.
+_GUARDED_SCRIPTS = {
+    "cognee-search.sh",
+    "cognee-remember.sh",
+    "cognee-recap.py",
+    "cognee-index-repo.sh",
+    "sync-session-to-graph.py",
+    "list-datasets.py",
+    "switch-dataset.py",
+    "cognee-evidence.py",
+    "cognee-forget.sh",
+}
+_NO_KEYED_CALL_SCRIPTS = {
+    # doctor checks only the unauthenticated /health; the report reads local files.
+    "cognee-doctor.sh",
+    "plugin_eval.py",
+    "_session_stats.py",
+}
+
+
+def test_every_script_the_skills_name_is_guarded_or_makes_no_keyed_call(claude_only):
+    """The guard is added script by script, which is how one was missed once:
+    a script newly named in a skill must be put in one of the two sets."""
+    import re
+
+    plugin = claude_only.scripts_dir.parent
+    named: set[str] = set()
+    for path in list((plugin / "skills").rglob("*.md")) + list((plugin / "agents").rglob("*.md")):
+        named |= set(
+            re.findall(r"scripts/([A-Za-z0-9_.-]+\.(?:py|sh))", path.read_text(encoding="utf-8"))
+        )
+    assert named, "no script found in the skill texts"
+    assert sorted(named - _GUARDED_SCRIPTS - _NO_KEYED_CALL_SCRIPTS) == []
+
+
+# ── the shipped curl blocks stop when the helper fails ────────────────────
+
+
+def _shipped_curl_blocks(plugin) -> list[tuple[str, str]]:
+    """Every ```bash block in the skill and agent texts that resolves its key
+    with ``cognee-forget.sh env``, as ``(where, shell code)``."""
+    import re
+
+    blocks = []
+    for path in sorted(
+        list((plugin / "skills").rglob("*.md")) + list((plugin / "agents").rglob("*.md"))
+    ):
+        text = path.read_text(encoding="utf-8")
+        for index, code in enumerate(re.findall(r"```bash\n(.*?)```", text, flags=re.S)):
+            if "cognee-forget.sh" in code and " env)" in code:
+                blocks.append((f"{path.relative_to(plugin)}#{index}", code))
+    return blocks
+
+
+def test_the_shipped_curl_blocks_send_nothing_when_the_helper_fails(
+    claude_only, temp_home, mock_server, assert_clean_real_home
+):
+    """Cloud mode from a shell: the helper prints nothing and exits 2. Each
+    shipped block must stop there. With the earlier ``eval "$(… env)" && curl``
+    form, ``eval ""`` returned 0 and the curl ran with the shell's own
+    ``COGNEE_BASE_URL``/``COGNEE_API_KEY`` (a 1.8.x user still exports both),
+    sending that key to that URL."""
+    if BASH is None:
+        pytest.skip("requires a working POSIX bash")
+    plugin = claude_only.scripts_dir.parent
+    blocks = _shipped_curl_blocks(plugin)
+    assert len(blocks) >= 4, blocks
+    _with_url_option(temp_home, _remote_alias(mock_server.url))
+    env = _shell_env(claude_only, temp_home)
+    # What an upgraded user's shell still exports: it points at the mock, so a
+    # curl that runs is seen.
+    env["COGNEE_BASE_URL"] = mock_server.url
+    env["COGNEE_API_KEY"] = "ck-shell-legacy"
+    for where, code in blocks:
+        # Claude Code substitutes the plugin root into the skill text; the
+        # Bash tool's environment does not have the variable.
+        script = code.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin))
+        result = _run([BASH, "-c", script], env, temp_home)
+        assert result.returncode == 2, (where, result.stdout, result.stderr)
+        assert mock_server.calls == [], (where, mock_server.calls)
 
 
 def test_the_remote_alias_reaches_the_server_when_a_key_is_set(

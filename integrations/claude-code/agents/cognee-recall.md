@@ -39,7 +39,7 @@ In Cloud mode the wrapper exits 2 before sending anything: the Cognee Cloud key 
 
 **Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm directly. Category filtering uses `node_name` (the wrapper doesn't expose it). Resolve the URL and key with the forget helper in the **same** shell invocation — exports do not persist across Bash calls:
 ```bash
-eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
 curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY}" \

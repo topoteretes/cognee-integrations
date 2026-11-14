@@ -307,3 +307,94 @@ def test_doctor_lists_refused_env_file_names_as_ignored(options_doctor, tmp_path
     line = doctor._resolve_env_file()
     assert "COGNEE_API_KEY ignored (set in the plugin options)" in line
     assert "ck_secret" not in line
+
+
+# ── the observer's "stored login only" note speaks for this session, now ──
+
+_STORED_LOGIN = "can use only Claude Code's stored login"
+_OBSERVER_ACTIVE = {
+    "cloud_key_option_set": False,
+    "llm_key_option_set": False,
+    "llm_provider": "",
+    "llm_model": "",
+    "observer": {"active": True, "reason": "observer", "model": "haiku"},
+    "key_source": "local_owner_key",
+}
+_LLM_OPTIONS_SET = {
+    "cloud_key_option_set": False,
+    "llm_key_option_set": True,
+    "llm_provider": "openai",
+    "llm_model": "openai/gpt-4o-mini",
+    "observer": {"active": False, "reason": "llm_key_configured", "model": ""},
+    "key_source": "local_owner_key",
+}
+
+
+def _health_marker(pc, *, owner: str, age_seconds: float) -> None:
+    """The machine-wide observer health marker, as a session's watcher left it."""
+    pc._LLM_STATE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    pc._LLM_STATE_MARKER.write_text(
+        json.dumps(
+            {
+                "llm_state": "auth_failed",
+                "checked_at": time.time() - age_seconds,
+                "session_key": owner,
+                "reason": "observer_needs_stored_login",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_an_old_observer_verdict_from_another_session_is_not_shown(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    """The observer failed on login three weeks ago in another session; the
+    user has set the LLM options since. Doctor must not repeat the advice."""
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(pc, project_dir, _LLM_OPTIONS_SET)
+    _health_marker(pc, owner="some-old-session", age_seconds=20 * 24 * 3600)
+    llm = options_doctor._resolve_llm()
+    assert llm.startswith("Configured provider (openai, model openai/gpt-4o-mini)")
+    assert _STORED_LOGIN not in llm
+
+
+def test_the_observer_note_is_not_added_when_the_llm_options_are_in_use(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    """Even a fresh verdict from this session says nothing once the LLM in use
+    is the configured provider, not the observer."""
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    monkeypatch.setenv("COGNEE_SESSION_KEY", "sess-doctor")
+    _launch_record(pc, project_dir, _LLM_OPTIONS_SET)
+    _health_marker(pc, owner="sess-doctor", age_seconds=60)
+    assert _STORED_LOGIN not in options_doctor._resolve_llm()
+
+
+def test_a_fresh_observer_verdict_of_this_session_is_shown_with_its_age(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    monkeypatch.setenv("COGNEE_SESSION_KEY", "sess-doctor")
+    _launch_record(pc, project_dir, _OBSERVER_ACTIVE)
+    _health_marker(pc, owner="sess-doctor", age_seconds=4 * 60 + 5)
+    llm = options_doctor._resolve_llm()
+    assert llm.startswith("Claude Code observer")
+    assert _STORED_LOGIN in llm and "(checked 4 min ago)" in llm
+
+
+@pytest.mark.parametrize(
+    "owner, age_seconds",
+    [("another-session", 60), ("sess-doctor", 31 * 60)],
+    ids=["another session's", "older than the status line's limit"],
+)
+def test_an_observer_verdict_that_is_not_ours_or_not_fresh_is_not_shown(
+    options_doctor, pc, project_dir, monkeypatch, owner, age_seconds
+):
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    monkeypatch.setenv("COGNEE_SESSION_KEY", "sess-doctor")
+    _launch_record(pc, project_dir, _OBSERVER_ACTIVE)
+    _health_marker(pc, owner=owner, age_seconds=age_seconds)
+    llm = options_doctor._resolve_llm()
+    assert llm.startswith("Claude Code observer")
+    assert _STORED_LOGIN not in llm

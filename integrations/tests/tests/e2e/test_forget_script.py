@@ -27,7 +27,14 @@ pytestmark = pytest.mark.skipif(
 
 def run_forget(suite, *args, home, service_url=None, api_key=None):
     script = suite.scripts_dir / "cognee-forget.sh"
-    env = build_env(suite, home, service_url=service_url, api_key=api_key)
+    extra = None
+    if suite.keys_from_plugin_options and api_key:
+        # The mock is on a loopback address, and the Claude Code plugin sends
+        # its Cloud key option to one only as the configured Cloud URL of a
+        # terminal pinned to cloud (a self-hosted server used as Cloud). Any
+        # other server on this machine gets its own owner key.
+        extra = {"COGNEE_BACKEND": "cloud"}
+    env = build_env(suite, home, service_url=service_url, api_key=api_key, extra=extra)
     return subprocess.run(
         [BASH, str(script), *args],
         env=env,

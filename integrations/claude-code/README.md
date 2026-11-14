@@ -115,12 +115,11 @@ py -3.12 -m venv "%USERPROFILE%\.cognee-plugin\venv" && "%USERPROFILE%\.cognee-p
 ```
 
 If `python3` is older than 3.10, use a newer one by name (for example `python3.12`).
-When your configured providers need driver extras, the requirement gains them, for
-example `cognee[postgres-binary,neo4j]==1.6.6`: Postgres or pgvector
-(`postgres-binary`), Neo4j (`neo4j`), fastembed embeddings (`fastembed`, also used by
-the [Claude observer](#claude-observer-local-mode-on-your-claude-subscription)) and
-an Ollama LLM (`ollama`). Session start prints the command with the right extras for
-your settings, so copying it from there is the easy way. Then start a new session.
+With fastembed embeddings (the embedding provider option, also what the
+[Claude observer](#claude-observer-local-mode-on-your-claude-subscription) uses) the
+requirement gains that extra: `cognee[fastembed]==1.6.6`. Session start prints the
+command for your settings, so copying it from there is the easy way. Then start a new
+session.
 
 **If local mode refuses to start.** A session that opens with *"Cognee Memory: local mode needs Cognee installed by you; the plugin does not download or install packages."* names the reason (Cognee is not installed in `~/.cognee-plugin/venv`, the installed cognee is older than 1.6.6, or driver extras are missing) and the command that fixes it. The hooks ran (they only need 3.9), but local mode stays off: the server is never started from an unusable venv. Run the command and start a new session. The reason is kept in `~/.cognee-plugin/cognee-install-needed.json` and repeated at every session start until a usable venv clears it. `doctor.py` reports the venv's Python in its `Runtime Python` row. Cloud mode has no such requirement.
 
@@ -140,9 +139,9 @@ Then set the plugin's options. Claude Code asks for them when the plugin is enab
 | Cognee Cloud URL | `cognee_base_url` | Your Cognee Cloud instance, such as `https://your-instance.cognee.ai`, or your own Cognee server. Leave empty to run Cognee locally on this machine. |
 | Cognee Cloud API key | `cognee_api_key` (sensitive) | The `ck_…` key from your Cognee Cloud account (or your own server). Needed only with a remote URL; it is never sent to a server on this machine. |
 | LLM API key (local mode) | `llm_api_key` (sensitive) | The model provider key the local Cognee server builds memory with (OpenAI unless the LLM provider is set). Leave empty to use your Claude subscription through the `claude` CLI instead. |
-| LLM provider (local mode) | `llm_provider` | Such as `openai`, `anthropic`, `gemini` or `ollama`. Empty: OpenAI with a key, or the Claude observer without one. |
+| LLM provider (local mode) | `llm_provider` | Such as `openai`, `anthropic` or `gemini`. Empty: OpenAI with a key, or the Claude observer without one. |
 | LLM model (local mode) | `llm_model` | Such as `openai/gpt-4o-mini`. Empty: the provider's default. |
-| Embedding provider (local mode) | `embedding_provider` | Such as `openai`, `fastembed` or `ollama`. Empty: Cognee's default. |
+| Embedding provider (local mode) | `embedding_provider` | Such as `openai` or `fastembed`. Empty: Cognee's default. |
 | Embedding model (local mode) | `embedding_model` | Such as `openai/text-embedding-3-large`. Empty: Cognee's default. |
 | Embedding dimensions (local mode) | `embedding_dimensions` | The model's vector size, such as `3072`. Empty: Cognee's default. |
 | Embedding API key (local mode) | `embedding_api_key` (sensitive) | The embedding provider's key. Empty: the LLM API key is reused. |
@@ -154,6 +153,10 @@ Claude Code keeps the keys in its secure credential store and passes the options
 **Cognee Cloud or a remote server.** Set the Cognee Cloud URL and the Cognee Cloud API key options.
 
 **Database passwords and cloud credentials are not plugin options.** The local server the plugin starts uses Cognee's built-in stores (SQLite, LanceDB, Kuzu) and gets an allowlisted environment: no Postgres, Neo4j or PGVector password, AWS or Azure credential, Langfuse key or other token from your shell or a `.env` reaches it. To use such a backend, run your own Cognee server with it and connect the plugin to that server with the URL and API key options.
+
+**Storage location is fixed.** The plugin's local server always keeps its stores under `~/.cognee`. `DATA_ROOT_DIRECTORY`, `SYSTEM_ROOT_DIRECTORY` and database provider settings (`DB_PROVIDER`, `GRAPH_DATABASE_PROVIDER`, `VECTOR_DB_PROVIDER`) in your shell or in `~/.cognee/.env` are ignored; session start says so once when it finds any. Data you stored elsewhere with an earlier version is untouched but not used. Cognee's own `TELEMETRY_DISABLED` opt-out in your shell is passed to the local server.
+
+**Ollama and custom LLM endpoints are not supported in this version.** There is no endpoint option, and `LLM_ENDPOINT` in the shell or in `~/.cognee/.env` is ignored, so a local Ollama, Azure or other OpenAI-compatible endpoint cannot be configured (Ollama embeddings included). This is deliberate: 1.9.0 is the most restrictive version of the plugin, built to pass Anthropic's plugin directory review. They will be added back shortly if the directory accepts this version. Until then, local mode uses a hosted provider through the LLM options, or the Claude observer.
 
 > The plugin is an HTTP client in both modes; the hooks never import cognee in-process. Cloud mode needs no local Cognee runtime. The virtualenv (`~/.cognee-plugin/venv`) is needed only in local mode, where it runs the local Cognee server the hooks talk to; you build it yourself.
 >

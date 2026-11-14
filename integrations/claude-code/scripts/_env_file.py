@@ -43,8 +43,9 @@ import os
 import re
 import stat
 import sys
-import urllib.parse
 from pathlib import Path
+
+from _net import is_loopback_host, is_loopback_url  # noqa: F401  (re-exported)
 
 _COGNEE_HOME = Path.home() / ".cognee"
 _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
@@ -73,6 +74,20 @@ _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH")
 # The login the plugin used to take from the environment; always the default
 # user now (config.py), so an inherited value is dropped.
 _SHELL_DROPPED = ("COGNEE_PRINCIPAL_API_KEY", "COGNEE_USER_EMAIL", "COGNEE_USER_PASSWORD")
+# Where the plugin's local server keeps its stores: always the built-in
+# location under ~/.cognee (set by ``_plugin_common.apply_cognee_env``), never
+# a value from the shell or the file.
+_STORAGE_DIR_VARS = ("SYSTEM_ROOT_DIRECTORY", "DATA_ROOT_DIRECTORY")
+_STORAGE_DIR_DEFAULTS = {
+    "SYSTEM_ROOT_DIRECTORY": str(_COGNEE_HOME / "system"),
+    "DATA_ROOT_DIRECTORY": str(_COGNEE_HOME / "data"),
+}
+# Storage settings the plugin's server no longer takes from the shell or the
+# file (names only): named once in the session-start upgrade notice.
+_STORAGE_NAMES = frozenset(_STORAGE_DIR_VARS)
+_STORAGE_PREFIXES = ("DB_", "GRAPH_DATABASE_", "VECTOR_DB_")
+# Storage names this process found in the shell it was started from.
+_shell_storage_names: list = []
 # Honoured, from the file or the shell, only when it names this machine.
 _LOCAL_URL_VAR = "COGNEE_LOCAL_API_URL"
 # Set once the first plugin process has replaced the shell's LLM_* /
@@ -129,6 +144,7 @@ _TUNING_NAMES = frozenset(
         "COGNEE_PLUGIN_CITE_MEMORY",
         "COGNEE_PLUGIN_DATASET",
         "COGNEE_PLUGIN_LOG_MAX_BYTES",
+        "COGNEE_PLUGIN_READ_DATASET_IDS",
         "COGNEE_PLUGIN_RECALL_MODE",
         "COGNEE_PLUGIN_VERBOSE",
         "COGNEE_PREFER_MEMORY",
@@ -151,6 +167,7 @@ _TUNING_NAMES = frozenset(
         "COGNEE_REMEMBER_WAIT_SECONDS",
         "COGNEE_REPORT_HINT",
         "COGNEE_SERVER_BOOT_DEADLINE",
+        "COGNEE_SESSION_COMPANION_DATASET",
         "COGNEE_SESSION_PREFIX",
         "COGNEE_SESSION_STRATEGY",
         "COGNEE_SHARED_AGENT_MEMORY",
@@ -214,12 +231,42 @@ def refused(name: str) -> bool:
     )
 
 
-def is_loopback_url(url: str) -> bool:
-    try:
-        host = (urllib.parse.urlparse(str(url or "").strip()).hostname or "").lower()
-    except ValueError:
+def _normalized_url(url: str) -> str:
+    return str(url or "").strip().rstrip("/")
+
+
+def cloud_key_applies(service_url: str) -> bool:
+    """Whether the Cloud key option is the key for ``service_url``.
+
+    True for a remote server. A server on this machine gets its own owner key,
+    never the Cloud key, with one exception: the terminal is pinned to cloud
+    (``COGNEE_BACKEND=cloud``) **and** ``service_url`` is the configured Cloud
+    URL option, a self-hosted server on a loopback address used as Cloud. The
+    pin alone, with no URL option, sends the key nowhere.
+    """
+    url = _normalized_url(service_url)
+    if not url:
         return False
-    return host in ("localhost", "::1", "0.0.0.0") or host.startswith("127.")
+    if not is_loopback_url(url):
+        return True
+    if forced_backend() != "cloud":
+        return False
+    configured = _normalized_url(url_option())
+    return bool(configured) and configured == url
+
+
+def cloud_pinned_without_url() -> bool:
+    """The terminal is pinned to cloud (``COGNEE_BACKEND=cloud``) but the Cloud
+    URL option is empty: there is no server to talk to. Nothing falls back to
+    the local address, so no request is sent until the option is set."""
+    return forced_backend() == "cloud" and not url_option()
+
+
+def resolved_service_url() -> str:
+    """The URL requests go to, as ``_plugin_common._local_api_url`` resolves it,
+    or "" for the built-in local default."""
+    local = os.environ.get(_LOCAL_URL_VAR, "").strip()
+    return local or os.environ.get("COGNEE_BASE_URL", "").strip()
 
 
 def _loadable(name: str, value: str) -> bool:
@@ -257,6 +304,14 @@ def _apply_plugin_options() -> None:
     """
     for var in _SHELL_DROPPED:
         os.environ.pop(var, None)
+    for var in _STORAGE_DIR_VARS:
+        # A value other than the plugin's own (which a child inherits from its
+        # parent) came from the shell: dropped, and named for the notice.
+        value = os.environ.get(var, "").strip()
+        if value and value != _STORAGE_DIR_DEFAULTS[var]:
+            os.environ.pop(var, None)
+            if var not in _shell_storage_names:
+                _shell_storage_names.append(var)
     local_url = os.environ.get(_LOCAL_URL_VAR, "")
     if local_url.strip() and not is_loopback_url(local_url):
         os.environ.pop(_LOCAL_URL_VAR, None)
@@ -273,17 +328,22 @@ def _apply_plugin_options() -> None:
 
 
 def _apply_connection_options() -> None:
-    """The Cloud key and URL, from the options in every process."""
-    key = option("cognee_api_key")
-    if key:
-        os.environ["COGNEE_API_KEY"] = key
-    else:
-        os.environ.pop("COGNEE_API_KEY", None)
+    """The Cloud key and URL, from the options in every process.
+
+    The key is exported only for a server it is the key for (see
+    ``cloud_key_applies``): with a local server it is not put in the
+    environment at all, so nothing can send it there by reading the variable.
+    """
     base_url = url_option()
     if base_url:
         os.environ["COGNEE_BASE_URL"] = base_url
     else:
         os.environ.pop("COGNEE_BASE_URL", None)
+    key = option("cognee_api_key")
+    if key and cloud_key_applies(resolved_service_url()):
+        os.environ["COGNEE_API_KEY"] = key
+    else:
+        os.environ.pop("COGNEE_API_KEY", None)
 
 
 def _url_option_from_settings() -> str:
@@ -312,14 +372,26 @@ def _url_option_from_settings() -> str:
     return ""
 
 
-def _parse(path: Path) -> tuple[dict, list]:
-    """(values of the names that may be read, names of refused ones). Never raises.
+def _keeps_value(name: str, value: str) -> bool:
+    """Whether the parser may keep ``name``'s value: only what the plugin uses."""
+    if name == _LOCAL_URL_VAR:
+        return is_loopback_url(_unquote(value))
+    return name in _TUNING_NAMES and not refused(name)
 
-    The value of a refused name is dropped as soon as its line is split, so it
-    is never kept in any structure this module returns or holds.
+
+def _parse(path: Path) -> tuple[dict, list, list]:
+    """(values the plugin may use, refused names, other ignored names). Never raises.
+
+    A value is kept only for an allowlisted tuning name (``_TUNING_NAMES``) or a
+    loopback ``COGNEE_LOCAL_API_URL``. Every other line's value is dropped as
+    soon as the line is split, whatever its name looks like, so it is never
+    kept in any structure this module returns or holds. Refused names
+    (credentials and connection settings, matched case-insensitively) and the
+    remaining ignored names are recorded by name only.
     """
     values: dict[str, str] = {}
     refused_names: list[str] = []
+    ignored_names: list[str] = []
     try:
         # utf-8-sig strips a UTF-8 BOM when present (Windows PowerShell 5.1
         # writes one) and is a no-op otherwise. A PS5 `>` redirect produces
@@ -329,7 +401,7 @@ def _parse(path: Path) -> tuple[dict, list]:
         except UnicodeDecodeError:
             text = path.read_text(encoding="utf-16")
     except Exception:
-        return values, refused_names
+        return values, refused_names, ignored_names
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -341,13 +413,15 @@ def _parse(path: Path) -> tuple[dict, list]:
         key = key.strip()
         if not key or not all(c.isalnum() or c == "_" for c in key):
             continue
-        if refused(key):
-            if key not in refused_names:
-                refused_names.append(key)
-            values.pop(key, None)
+        if _keeps_value(key, value):
+            values[key] = _unquote(value)
             continue
-        values[key] = _unquote(value)
-    return values, refused_names
+        del value
+        values.pop(key, None)
+        names = refused_names if refused(key.upper()) else ignored_names
+        if key not in names:
+            names.append(key)
+    return values, refused_names, ignored_names
 
 
 def parse_env_file(path: Path) -> dict:
@@ -366,6 +440,30 @@ def refused_names_in_file(path: Path | None = None) -> list:
     if not path.is_file():
         return []
     return sorted(_parse(path)[1])
+
+
+def _is_storage_name(name: str) -> bool:
+    upper = name.upper()
+    return upper in _STORAGE_NAMES or upper.startswith(_STORAGE_PREFIXES)
+
+
+def storage_settings_ignored() -> list:
+    """Storage setting names in ``~/.cognee/.env`` or the shell that the
+    plugin's local server no longer uses (names only, never values)."""
+    names = set(_shell_storage_names)
+    names.update(
+        n
+        for n in os.environ
+        if n in ("DB_PROVIDER", "VECTOR_DB_PROVIDER", "GRAPH_DATABASE_PROVIDER")
+    )
+    try:
+        path = env_file_path()
+        if path.is_file():
+            _values, refused_names, ignored_names = _parse(path)
+            names.update(n for n in refused_names + ignored_names if _is_storage_name(n))
+    except Exception:
+        pass
+    return sorted(names)
 
 
 _loaded = False
@@ -402,6 +500,9 @@ def load_env_file() -> None:
                     _injected[key] = value
     except Exception:
         pass
+    # The file may have set the local URL or the backend switch: decide again
+    # whether the Cloud key belongs in this process's environment.
+    _apply_connection_options()
     _apply_backend_switch()
 
 
@@ -434,7 +535,6 @@ def refresh_env_file() -> None:
         _seen = stamp
     except Exception:
         return
-    lifted = False
     for key, last in list(_injected.items()):
         if os.environ.get(key) != last:
             # Set by something else since (an export, a test): theirs now.
@@ -442,15 +542,14 @@ def refresh_env_file() -> None:
         elif key not in fresh:
             os.environ.pop(key, None)
             _injected.pop(key)
-            lifted = lifted or key in ("COGNEE_BASE_URL", "COGNEE_API_KEY")
     for key, value in fresh.items():
         if key in _injected or key not in os.environ:
             os.environ[key] = value
             _injected[key] = value
-    if lifted:
-        # A lifted backend switch left the connection empty: take it from the
-        # options again (the switch, if still set, empties it once more).
-        _apply_connection_options()
+    # A lifted backend switch left the connection empty, and a changed local
+    # URL or switch changes which server the Cloud key is for: take both from
+    # the options again (the switch, if still set, empties them once more).
+    _apply_connection_options()
     _apply_backend_switch()
 
 
@@ -538,13 +637,13 @@ def env_file_status() -> dict:
         info["mode"] = oct(stat.S_IMODE(path.stat().st_mode))
     except Exception:
         pass
-    values, refused_names = _parse(path)
+    values, refused_names, ignored_names = _parse(path)
     loadable = sorted(k for k, v in values.items() if _loadable(k, v))
     info["keys"] = loadable
     # Credentials and connection settings: set them in the plugin options.
     info["refused"] = sorted(refused_names)
     # Anything else the plugin does not read from the file.
-    info["ignored"] = sorted(k for k in values if k not in loadable)
+    info["ignored"] = sorted(set(ignored_names) | {k for k in values if k not in loadable})
     # A shell export (or another source) that set a different value wins over
     # the file; surface those so mode-selection surprises are debuggable.
     info["overridden"] = sorted(k for k in loadable if os.environ.get(k, values[k]) != values[k])

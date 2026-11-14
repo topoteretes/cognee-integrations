@@ -133,7 +133,15 @@ def test_keys_in_the_file_or_shell_are_ignored(suite, isolated_modules, tmp_path
     assert "COGNEE_PRINCIPAL_API_KEY" not in os.environ
     assert "LLM_API_KEY" not in os.environ
 
+    # The key option alone means local mode: the key is for no local server,
+    # so it is not exported at all.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck_option")
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert "COGNEE_API_KEY" not in os.environ
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "https://tenant.cognee.ai")
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
     assert os.environ["COGNEE_API_KEY"] == "ck_option"

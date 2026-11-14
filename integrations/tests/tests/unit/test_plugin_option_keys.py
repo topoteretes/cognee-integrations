@@ -151,18 +151,21 @@ def test_a_masked_listed_key_counts_as_none(suite, isolated_modules, mock_server
     assert pc._local_owner_key(mock_server.url) == ""
 
 
-def test_session_start_mints_a_key_when_the_listed_one_is_masked(
+def test_session_start_refuses_a_server_that_masks_every_key(
     suite, run_hook, payloads, mock_server
 ):
+    """A local server running ``HASH_API_KEY=true`` lists every key masked. A
+    key minted there could never reach the other hooks (nothing is stored on
+    disk), so session start mints none, registers nothing and says why."""
     mock_server.identity.seed_user("default_user@example.com")
     mock_server.identity.user_api_keys["default_user@example.com"] = [{"key": "************"}]
     result = run_hook(
         suite, "session-start.py", stdin=payloads.session_start(), service_url=mock_server.url
     )
     assert result.returncode == 0, result.stderr
-    assert _minted(mock_server)
-    key = _register_key(mock_server)
-    assert key and key != "************"
+    assert not _minted(mock_server)
+    assert not [c for c in mock_server.calls if c["path"] == "/api/v1/agents/register"]
+    assert "hides its API keys" in json.loads(result.stdout)["systemMessage"]
 
 
 def test_session_start_mints_a_key_when_the_listed_one_is_rejected(
