@@ -13,7 +13,7 @@
       "name": "cognee-memory",
       "source": "./integrations/claude-code",
       "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
-      "version": "1.8.0",
+      "version": "1.8.1",
       "author": {
         "name": "Cognee"
       },

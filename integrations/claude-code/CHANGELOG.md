@@ -10,6 +10,23 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-11-14
+
+### Fixed
+
+- Make the merged first-session registration fixes available to existing marketplace installs.
+  The plugin now creates a named dataset before registering against it, and distinguishes
+  a dataset-access refusal from an invalid API key (SDK-1513, #594). These changes were
+  already on `main` under the unchanged 1.8.0 version, so installed clients were not offered
+  an update. The plugin manifest, marketplace entry and inventory now agree on 1.8.1.
+
+### Updating
+
+- Refresh the marketplace with `claude plugin marketplace update cognee`, then run
+  `claude plugin update cognee-memory@cognee` and start a new Claude Code session.
+- This release does not include the pending cloud-worker capture fix in #598. If captures
+  remain queued after registration succeeds, investigate that separately.
+
 ## [1.8.0]
 
 ### Added
