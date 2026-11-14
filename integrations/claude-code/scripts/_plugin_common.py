@@ -2419,6 +2419,10 @@ def _normalize_service_url(value: str) -> str:
 # key would mean storing it.
 _LOCAL_OWNER_KEYS: dict = {}
 _LOCAL_OWNER_FAILED_AT: dict = {}
+# Why the last lookup for a URL failed (the exception), so a request refused
+# for want of a key reports the same transport verdict: a lookup that timed
+# out means a slow server, a refused one a server that is down.
+_LOCAL_OWNER_LAST_ERROR: dict = {}
 _LOCAL_OWNER_RETRY_SECONDS = 5.0
 _LOCAL_OWNER_LOOKUP_TIMEOUT = 5.0
 # Hooks Claude Code waits on before the turn goes on (UserPromptSubmit recall,
@@ -2528,6 +2532,7 @@ def _local_owner_key(service_url: str) -> str:
                 key = first_usable_key(json.loads(response.read() or b"[]"))
     except Exception as exc:
         error = type(exc).__name__
+        _LOCAL_OWNER_LAST_ERROR[url] = exc
         key = ""
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
     detail = {"local_owner_key_lookup_ms": elapsed_ms, "found": bool(key), "timeout": timeout}
@@ -2537,6 +2542,7 @@ def _local_owner_key(service_url: str) -> str:
     if key:
         _LOCAL_OWNER_KEYS[url] = key
         _LOCAL_OWNER_FAILED_AT.pop(url, None)
+        _LOCAL_OWNER_LAST_ERROR.pop(url, None)
     else:
         _LOCAL_OWNER_FAILED_AT[url] = time.monotonic()
     return key
@@ -4673,8 +4679,17 @@ def _json_http_request(
     resolved_key = api_key is None
     api_key = api_key if api_key is not None else _api_key()
     if resolved_key and not api_key and takes_owner_key(base_url):
-        hook_log("local_key_unavailable", {"path": path})
-        raise LocalKeyUnavailable("no local owner key yet; request not sent")
+        # Carry the lookup's own failure as the reason: a timeout or a refused
+        # connection classifies as it would have for the request itself.
+        cause = _LOCAL_OWNER_LAST_ERROR.get(_normalize_service_url(base_url))
+        if isinstance(cause, urllib.error.URLError) and not isinstance(
+            cause, urllib.error.HTTPError
+        ):
+            cause = cause.reason
+        hook_log("local_key_unavailable", {"path": path, "cause": type(cause).__name__})
+        raise LocalKeyUnavailable(
+            cause if isinstance(cause, OSError) else "no local owner key yet; request not sent"
+        )
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key

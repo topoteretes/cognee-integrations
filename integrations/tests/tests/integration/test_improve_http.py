@@ -28,12 +28,19 @@ IMPROVE = "/api/v1/improve"
 STATUS = "/api/v1/datasets/status"
 
 
+LOCAL_OWNER_KEY = "k-local-owner"
+
+
 @pytest.fixture
 def pc(suite, isolated_modules, mock_server, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.setenv("COGNEE_API_KEY", "principal-key")
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
+    if suite.keys_from_plugin_options:
+        # A local server: requests carry its owner key, and none is sent
+        # without one.
+        mock_server.identity.seed_owner_key("default_user@example.com", LOCAL_OWNER_KEY)
     return common
 
 
@@ -43,7 +50,7 @@ def expected_key(suite, mock_server):
     Claude Code it is a local server: it gets its owner key, never the Cloud
     key option (SDK-1411)."""
     if suite.keys_from_plugin_options:
-        return mock_server.identity.seed_owner_key("default_user@example.com")
+        return LOCAL_OWNER_KEY
     return "principal-key"
 
 

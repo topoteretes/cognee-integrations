@@ -39,6 +39,9 @@ def sync_mod(suite, hook_module, mock_server, monkeypatch):
     monkeypatch.setattr(module, "load_config", lambda: {})
     monkeypatch.setattr(module, "http_api_ready", lambda: True)
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
+    if suite.keys_from_plugin_options:
+        # A local server: no request is sent to it without its owner key.
+        mock_server.identity.seed_owner_key("default_user@example.com")
     return module
 
 

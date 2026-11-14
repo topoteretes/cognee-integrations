@@ -42,6 +42,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:users_me_lookup_failed` | `config.users_me_lookup_failed` |
 | `hook:local_owner_key_lookup_failed` | `config.local_owner_key_lookup_failed` |
 | `hook:local_owner_key_lookup` | `config.local_owner_key_lookup` |
+| `hook:local_key_unavailable` | `config.local_key_unavailable` |
 | `hook:local_owner_key_minted` | `config.local_owner_key_minted` |
 | `hook:local_server_hides_keys` | `config.local_server_hides_keys` |
 | `hook:local_owner_key_rejected` | `config.local_owner_key_rejected` |
