@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-agno"
+version = "0.1.0"
+description = "An Agno toolkit exposing Cognee memory (remember, search, forget) to Agno agents"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "cognee>=1.0.0,<=1.1.2",
+    "agno>=3.0.0,<4.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/agno"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_agno*"]
+exclude = ["examples*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.14.6",
+    # The example and agent-construction test drive an OpenAI model.
+    "openai>=1.0.0",
+]
