@@ -30,7 +30,14 @@ def pc(suite, isolated_modules, mock_server, tmp_path, monkeypatch):
     return common
 
 
-def test_buffered_entries_reach_the_server_in_order(pc, mock_server):
+def test_buffered_entries_reach_the_server_in_order(suite, pc, mock_server):
+    # The mock listens on this machine, so for Claude Code it is a local server:
+    # the replay carries its owner key, never the Cloud key option (SDK-1411).
+    expected_key = (
+        mock_server.identity.seed_owner_key("default_user@example.com")
+        if suite.keys_from_plugin_options
+        else "principal-key"
+    )
     pc.append_warmup_entry("agent_sessions", "sid-1", {"type": "trace", "origin_function": "Bash"})
     pc.append_warmup_entry("agent_sessions", "sid-1", {"type": "trace", "origin_function": "Read"})
     pc.append_warmup_entry(
@@ -49,7 +56,7 @@ def test_buffered_entries_reach_the_server_in_order(pc, mock_server):
     for call in posted:
         assert call["json"]["dataset_name"] == "agent_sessions"
         assert call["json"]["session_id"] == "sid-1"
-        assert call["headers"].get("X-Api-Key") == "principal-key"
+        assert call["headers"].get("X-Api-Key") == expected_key
 
 
 def test_server_503_leaves_the_entry_buffered_and_arms_backoff(pc, mock_server):

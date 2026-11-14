@@ -68,6 +68,7 @@ from _plugin_common import (  # noqa: E402
     recall_mode,
     recall_pin_reason,
     register_agent_via_http,
+    require_shell_auth,
     resolve_host_key_outside_hook,
     resolve_shared_dataset,
     resolved_http_endpoint_auth,
@@ -574,6 +575,17 @@ def _auto(host_key: str, rec: dict) -> dict:
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
+def _require_auth() -> None:
+    """Exit 2, before any request, when a remote server has no key here.
+
+    This runs from a shell (the cognee-switch-datasets skill), where Claude
+    Code passes no Cloud key option; listing or switching could only 401.
+    ``auto`` and ``pin`` only edit the launch record, so they skip the check.
+    """
+    service_url, api_key = resolved_http_endpoint_auth()
+    require_shell_auth(service_url, api_key, "cognee-switch-datasets")
+
+
 def _print_listing(result: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result))
@@ -617,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
         if positional and positional[0].strip().lower() == "pin":
             _print_switch(_pin(host_key, rec), as_json)
             return EXIT_OK
+        _require_auth()
         if do_list or not positional:
             _print_listing(_list(host_key, rec), as_json)
             return EXIT_OK

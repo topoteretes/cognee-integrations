@@ -31,7 +31,7 @@ Explain the paths relevant to the question:
 - Cloud calls go to the Cognee Cloud URL using the Cognee Cloud API key, both plugin
   options that Claude Code asks for when the plugin is enabled (the key is kept in
   Claude Code's secure storage and never written to disk by the plugin). Local mode
-  uses a local server. Cloud credit status comes from the Cognee platform API.
+  uses a local server.
 - Recall injects selected memory into Claude's context. The injection budget drops
   whole entries and the session ledger avoids repeating cloud memory until context
   is cleared or compacted.

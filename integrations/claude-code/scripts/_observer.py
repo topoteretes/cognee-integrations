@@ -13,8 +13,8 @@ nothing in cognee changes — it sees an OpenAI-shaped endpoint.
 
 Embeddings cannot come from the subscription (Claude has no embedding
 endpoint), so the observer pairs the LLM shim with cognee's local CPU
-embedder (``EMBEDDING_PROVIDER=fastembed``), whose driver extra session start
-installs automatically.
+embedder (``EMBEDDING_PROVIDER=fastembed``), whose driver extra is part of the
+install command session start prints.
 
 Decision (``resolve_observer``), in order:
 
@@ -22,11 +22,14 @@ Decision (``resolve_observer``), in order:
 * cloud mode → off (the remote server owns its LLM key).
 * ``COGNEE_MANAGED_ENDPOINT=true`` → off (the external deployment owns its LLM).
 * ``auto`` (default) and an ``LLM_API_KEY`` or an explicit ``LLM_PROVIDER`` is
-  configured → off: the user chose a provider, respect it. A key in a ``.env``
-  that cognee itself loads is not looked for (the plugin reads no key file,
-  SDK-1411); cognee still prefers that key at runtime.
+  configured → off: the user chose a provider, respect it.
 * no ``claude`` executable reachable → off (``true`` surfaces this as an error).
 * otherwise → on.
+
+The ``claude`` child uses only Claude Code's stored login (the keychain or
+``.credentials.json``): no provider-routing or token variable reaches it, so a
+Claude Code routed through Bedrock, Vertex, Foundry or a gateway, or logged in
+with ``setup-token``, cannot run the observer (``STORED_LOGIN_ONLY_MESSAGE``).
 
 This module is stdlib-only and side-effect free on import. ``apply_observer_env``
 is the only writer of the environment; it runs in SessionStart before the
@@ -72,6 +75,16 @@ DEFAULT_CLAUDE_MODEL = "haiku"
 #: retrieval model in the fastembed registry. 384 dimensions.
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_EMBEDDING_DIMENSIONS = "384"
+
+#: The ``llm_state`` reason, and the user-facing text, for an observer probe that
+#: reports an auth failure. The shim's ``claude`` child never sees provider
+#: routing or token variables, so "log in to Claude Code" is not always the fix:
+#: a Bedrock/Vertex/gateway/``setup-token`` setup is logged in and still fails.
+STORED_LOGIN_ONLY_REASON = "observer_needs_stored_login"
+STORED_LOGIN_ONLY_MESSAGE = (
+    "The Claude observer can use only Claude Code's stored login (not Bedrock, "
+    "Vertex, a gateway or setup-token); set the LLM options instead."
+)
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "observer"
 PIDFILE = _STATE_DIR / "observer.pid"
@@ -398,8 +411,8 @@ def is_active() -> bool:
     itself and every worker it spawned). Hooks run in the host's environment,
     which has none of that — so a watcher re-spawned from a hook falls back to
     the launch record SessionStart stamped (``llm_observer.active``). Without
-    the fallback that watcher would run the litellm key check against a launch
-    that has no key by design and put a false ✕ on the status line.
+    the fallback that watcher would skip the observer check and withdraw the
+    session's verdict, so a broken observer login would never reach the bar.
     """
     if os.environ.get(ACTIVE_ENV_FLAG, "") == "1":
         return True

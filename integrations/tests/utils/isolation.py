@@ -143,26 +143,42 @@ def build_env(
     return with_plugin_options(suite, env)
 
 
-#: The Claude Code plugin reads its secrets only from its plugin options, which
-#: Claude Code exports to hook processes as CLAUDE_PLUGIN_OPTION_<KEY>.
+#: The Claude Code plugin reads every credential and connection setting only
+#: from its plugin options, which Claude Code exports to hook processes as
+#: CLAUDE_PLUGIN_OPTION_<KEY>: the variable each option becomes, by option.
 _CLAUDE_PLUGIN_OPTIONS = {
+    "COGNEE_BASE_URL": "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL",
     "COGNEE_API_KEY": "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY",
     "LLM_API_KEY": "CLAUDE_PLUGIN_OPTION_LLM_API_KEY",
+    "LLM_PROVIDER": "CLAUDE_PLUGIN_OPTION_LLM_PROVIDER",
+    "LLM_MODEL": "CLAUDE_PLUGIN_OPTION_LLM_MODEL",
+    "EMBEDDING_PROVIDER": "CLAUDE_PLUGIN_OPTION_EMBEDDING_PROVIDER",
+    "EMBEDDING_MODEL": "CLAUDE_PLUGIN_OPTION_EMBEDDING_MODEL",
+    "EMBEDDING_DIMENSIONS": "CLAUDE_PLUGIN_OPTION_EMBEDDING_DIMENSIONS",
+    "EMBEDDING_API_KEY": "CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY",
 }
+#: Claude Code exports the options only to hook processes, which it marks with
+#: CLAUDE_PLUGIN_ROOT; a process without it reads the URL from settings.json.
+_HOOK_PROCESS_MARKER = "CLAUDE_PLUGIN_ROOT"
 
 
 def with_plugin_options(suite: Suite, env: dict[str, str]) -> dict[str, str]:
-    """Hand a test's keys to the Claude Code plugin the way Claude Code does.
+    """Hand a test's settings to the Claude Code plugin the way Claude Code does.
 
-    Tests say "the user configured this key" by setting COGNEE_API_KEY /
-    LLM_API_KEY; for the Claude Code suite that means the plugin option, since
-    the plugin ignores the plain variables. An explicit option in ``env`` wins.
+    Tests say "the user configured this" by setting COGNEE_BASE_URL /
+    COGNEE_API_KEY / LLM_* / EMBEDDING_*; for the Claude Code suite that means
+    the plugin option, since the plugin ignores the plain variables. An
+    explicit option in ``env`` wins. With any option set, the process is
+    marked as a hook process (the only kind Claude Code gives options to),
+    unless ``env`` already decides that.
     """
     if not suite.keys_from_plugin_options:
         return env
     for var, option in _CLAUDE_PLUGIN_OPTIONS.items():
         if env.get(var) and option not in env:
             env[option] = env[var]
+    if any(env.get(option) for option in _CLAUDE_PLUGIN_OPTIONS.values()):
+        env.setdefault(_HOOK_PROCESS_MARKER, str(suite.scripts_dir.parent))
     return env
 
 

@@ -218,7 +218,6 @@ _COGNEE_HOOK_SCRIPTS = (
     "store-user-prompt.py",
     "session-context-lookup.py",
     "clear-transcript-context.py",
-    "credits-refresh.py",
     "sync-session-to-graph.py",
 )
 _SCRIPT_NAME_RE = re.compile(r"scripts/([\w.\-]+\.(?:py|sh))")

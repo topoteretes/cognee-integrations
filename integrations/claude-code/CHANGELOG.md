@@ -16,24 +16,50 @@ A conservative release to meet Anthropic's plugin directory policy (SDK-1411). S
 1.7.0 every version has been held by that policy, and since Nov 4 the listed 1.6.6 no
 longer meets its credential rule. The plugin now reads no credential from the
 machine, stores none, writes nothing into Claude Code's settings, installs nothing
-and sends nothing anywhere but the Cognee server. **Existing users: enter your keys
-once in the plugin's options; in local mode, install Cognee with the command session
-start prints.**
+and sends nothing anywhere but the Cognee server. **Existing users: enter your Cloud URL
+and key, or your local LLM settings, once in the plugin's options; in local mode,
+install Cognee with the command session start prints.**
 
 ### Changed
 
-- **API keys are plugin options.** Claude Code asks for the Cognee Cloud URL, the Cognee
-  Cloud API key and the local-mode LLM API key when the plugin is enabled
-  (`userConfig`: `cognee_base_url`, `cognee_api_key`, `llm_api_key`), and keeps the two
-  keys in its secure credential store. The plugin reads `COGNEE_API_KEY` and
-  `LLM_API_KEY` only from those options: a value in the shell or in `~/.cognee/.env` is
-  ignored. `COGNEE_BASE_URL` still works from either; the option wins when set. The
-  status line and Bash-run skills, which get no options, read the URL option where
-  Claude Code saves it (`pluginConfigs` in `~/.claude/settings.json`).
+- **Credentials and connection settings are plugin options.** Claude Code asks for the
+  Cognee Cloud URL and API key, and the local server's LLM and embedding settings, when
+  the plugin is enabled (`userConfig`: `cognee_base_url`, `cognee_api_key`,
+  `llm_api_key`, `llm_provider`, `llm_model`, `embedding_provider`, `embedding_model`,
+  `embedding_dimensions`, `embedding_api_key`), and keeps the keys in its secure
+  credential store. The plugin reads them only from those options: `COGNEE_BASE_URL`,
+  `COGNEE_API_KEY`, `COGNEE_PRINCIPAL_API_KEY`, `COGNEE_USER_*`, `LLM_*` and
+  `EMBEDDING_*` in the shell or in `~/.cognee/.env` are ignored. The status line and
+  Bash-run skills, which get no options, read the URL option where Claude Code saves it
+  (`pluginConfigs` in `~/.claude/settings.json`).
+- **`~/.cognee/.env` holds only tuning settings.** The plugin loads only an allowlist of
+  its own non-secret `COGNEE_*` settings from the file, and never keeps the value of a
+  refused name (anything named like a key, token, secret, password, credential or
+  auth); `doctor.py` lists those names as "ignored (set in the plugin options)".
+  `COGNEE_LOCAL_API_URL` is honoured only for a loopback address. The plugin no longer
+  writes a commented template into the file. Session start says once when the file
+  still holds Cloud or LLM settings that the options lack, and on every start when the
+  Cloud URL option is set without its key, or the key without a URL (Cognee then runs
+  locally).
+- **The local server starts with an allowlisted environment.** Only path, home,
+  locale, temp, proxy, TLS and platform variables, the plugin's own settings and the
+  option-derived LLM and embedding values reach it: no provider key, database password
+  or token from the shell. It gets `COGNEE_ENV_FILE` pointing at an empty plugin-owned
+  file (`~/.cognee-plugin/claude-code/server.env`), so cognee never picks up another
+  `.env`, and `HASH_API_KEY=false`. Database, AWS, Azure and similar credentials are not
+  plugin options: run your own Cognee server for those backends and connect to it with
+  the URL and API key options. The login is always the local default user
+  (`COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` no longer apply).
+- **The Cloud key never goes to a local server.** A server on this machine always gets
+  its own owner key (unless the terminal is pinned with `COGNEE_BACKEND=cloud`). A
+  listed owner key that is masked or rejected by the server is replaced by a freshly
+  minted one at session start.
 - **No key is stored on disk.** `~/.cognee-plugin/api_key.json` and
   `~/.cognee-plugin/claude-code/agent_key.json` are no longer read or written. In local
   mode the plugin looks up its own server's owner key by logging in as the server's
-  default user, once per process.
+  default user. A found key is kept for the process; a failed lookup is retried after
+  5 seconds. The prompt-time recall and `Read` file-context hooks give up after 1.5
+  seconds; the lookup time is logged as `local_owner_key_lookup_ms`.
 - **Plugin identity is off.** Every request runs as the user's own key: no per-machine
   agent key is minted, so there is no shared agent memory role and no agent key limit.
   `COGNEE_PLUGIN_IDENTITY` is ignored. Registration still says `type: claude_code`.
@@ -53,7 +79,16 @@ start prints.**
   an allowlisted environment (path, home, config dir, locale, proxy and certificate
   settings). A login that lives only in `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
   can no longer run the observer; set the LLM API key option instead. The observer no
-  longer opens the local server's `.env` to decide whether to start.
+  longer opens the local server's `.env` to decide whether to start. When the observer
+  cannot answer, the status line and doctor say it can use only Claude Code's stored
+  login (not Bedrock, Vertex, a gateway or setup-token).
+- **Doctor reports what session start decided.** Run from a shell it has no plugin
+  options, so it shows the key source, LLM provider and model, and observer state from
+  the newest launch record ("as of session start"), which holds booleans and names
+  only.
+- **Skills stop early in Cloud mode.** A skill run from the shell with a remote URL and
+  no key exits with status 2 and "no API key" before sending any request, instead of
+  a 401 that pointed at the option the user had already set.
 
 ### Removed
 
@@ -68,6 +103,13 @@ start prints.**
   Cloud dashboard.
 - **The update check:** no daily request for the published version, and no update
   notice on the status line or at session start. Claude Code's plugin updates cover it.
+- **The status line's credit balance** and its refresh (`credits-refresh.py`, the
+  `StopFailure` hook, `COGNEE_STATUSLINE_CREDITS`, `COGNEE_BILLING_URL`): no request to
+  the Cognee platform API.
+- **The local LLM key check** (`COGNEE_LLM_KEY_CHECK`, `COGNEE_LLM_CHECK_INTERVAL`): the
+  plugin no longer validates your LLM key with a provider call; only the Claude
+  observer is checked.
+- **The `cognee-cli` fallback** of the search and remember skills.
 - **From `cognee-report`:** the `--server` check, the Notion export
   (`--export-notion`, which read `NOTION_TOKEN`) and the `outcomes` command. The outcome
   harness moved to `integrations/tests/claude_outcome_eval/` in the repository and no
@@ -79,7 +121,10 @@ start prints.**
   through the Bash tool (search, remember, forget, code indexing, the recaps, the
   dataset switch's listing, the doctor's auth check, the `cognee-recall` agent) cannot
   authenticate in Cloud mode. Automatic recall and capture work in both modes.
-- Local mode logs in to its own server once per hook process, adding a little latency.
+- Local mode logs in to its own server in each hook process (median about 40 ms
+  against an idle server), adding a little latency; the key is never passed to child
+  processes through the environment.
+- Upgrading users re-enter their Cloud or LLM settings once in the plugin options.
 
 ## [1.8.1] - 2026-11-14
 

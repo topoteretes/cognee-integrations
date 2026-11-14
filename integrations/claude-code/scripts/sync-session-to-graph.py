@@ -49,6 +49,8 @@ _FINAL_SYNC_ONCE_TTL_SECONDS = 3600
 _DETACHED_RETRIES_DEFAULT = 3
 _DETACHED_RETRY_DELAY_DEFAULT = 10.0
 _SESSION_END_START_DELAY_DEFAULT = 2.0
+#: What ``_sync`` returns when no server credentials resolved (not strict).
+_NO_AUTH = "no_auth"
 
 
 def _stop_idle_watcher() -> None:
@@ -345,7 +347,9 @@ async def _sync(
             print("cognee-sync: skipped, no server credentials resolved", file=sys.stderr)
             if strict:
                 raise RuntimeError("no server credentials resolved")
-            return
+            # A manual /cognee-sync reports it as a failure (main exits 1), so
+            # the caller does not take "skipped" for a sync.
+            return _NO_AUTH
 
         incomplete: list[str] = []
         # The final (strict) sync must always run; a manual /cognee-sync too.
@@ -448,6 +452,17 @@ def _coding_flush(payload_raw: str) -> None:
         hook_log("coding_session_end_flush_failed", {"error": str(exc)[:200]})
 
 
+def _require_shell_auth() -> None:
+    """Exit 2 when the server is remote and no key resolved in this process."""
+    try:
+        from _plugin_common import _local_api_url, require_shell_auth
+    except ImportError:
+        return
+    # A remote server's key is the option alone (no lookup, no request).
+    key = os.environ.get("COGNEE_API_KEY") or os.environ.get("COGNEE_PRINCIPAL_API_KEY") or ""
+    require_shell_auth(_local_api_url(), key.strip(), "cognee-sync")
+
+
 def main():
     if is_observer_child():
         return
@@ -478,6 +493,14 @@ def main():
 
     if is_session_end and not detached_final and payload_raw.strip():
         _coding_flush(payload_raw)
+
+    manual = not detached_final and not is_session_end
+    if manual:
+        # A manual /cognee-sync runs from a shell, before any request: against a
+        # remote server with no key here (a Cloud key reaches hooks only) it
+        # exits 2 with the reason. The session-end sync runs in a hook and is
+        # unaffected.
+        _require_shell_auth()
 
     from _cloud_worker import enabled as cloud_enabled
     from _cloud_worker import request_improve
@@ -548,7 +571,7 @@ def main():
     last_error: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
-            asyncio.run(
+            outcome = asyncio.run(
                 _sync(
                     stop_watcher=False,
                     unregister_on_finish=unregister_on_finish,
@@ -560,7 +583,9 @@ def main():
                     include_touched=detached_final,
                 )
             )
-            return
+            if manual and outcome == _NO_AUTH:
+                return 1
+            return 0
         except Exception as exc:
             last_error = exc
             # Non-fatal: session sync failure should not crash Codex.
@@ -583,4 +608,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

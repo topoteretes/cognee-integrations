@@ -2,9 +2,10 @@
 
 Unless the user pinned a dataset, a graph search that names none sends none, so
 the server picks the dataset. Shared memory's UUIDs name datasets too, so they
-are dropped with it. When the server is unreachable the wrapper falls back to
-the local cognee-cli, which follows the same rule: no ``-d`` under auto recall,
-the active dataset when pinned.
+are dropped with it. Where the wrapper still falls back to the local cognee-cli
+when the server is unreachable, the CLI follows the same rule: no ``-d`` under
+auto recall, the active dataset when pinned. A tree without the fallback
+(Claude Code, SDK-1411) never starts it.
 """
 
 from __future__ import annotations
@@ -98,6 +99,16 @@ def test_the_cli_fallback_follows_the_recall_mode(suite, temp_home, fake_cli, pi
     extra = _launch(suite, temp_home, pinned=pinned)
     extra["PATH"] = fake_cli["path"] + os.pathsep + os.environ.get("PATH", "")
     result = _run(suite, temp_home, UNREACHABLE, extra)
+    wrappers = ("cognee-search.sh", "cognee_search.py")
+    if not any(
+        "cognee-cli" in (suite.scripts_dir / name).read_text(encoding="utf-8")
+        for name in wrappers
+        if (suite.scripts_dir / name).is_file()
+    ):
+        assert result.returncode == 1, result.stderr
+        assert "server unreachable — search not run" in result.stderr
+        assert not fake_cli["log"].exists(), "cognee-cli was started"
+        return
     assert "falling back to cognee-cli" in result.stderr, result.stderr
     (argv,) = fake_cli["log"].read_text(encoding="utf-8").splitlines()
     assert argv.startswith("recall what did we decide")

@@ -10,7 +10,9 @@ the host's own shell (see utils.host_launch), in the order a session produces:
     SessionStart -> prompt -> tool call -> Stop -> second prompt -> SessionEnd
 
 in cloud mode, which is what that user runs, configured the way the setup
-instructions configure it: through ``~/.cognee/.env``, not exported variables.
+instructions configure it: through ``~/.cognee/.env``, not exported variables
+(the Claude Code plugin: through its plugin options, which Claude Code exports
+to hooks; it reads no Cloud or LLM setting from the file).
 
 Covered here: the full lifecycle, text people type, profile paths with spaces
 and non-ASCII letters, a Windows session with no resolvable home, and the
@@ -136,7 +138,9 @@ def test_text_outside_the_ansi_code_page_survives_the_round_trip(
     remembered = "Кодовое имя — 蓝鳍 ✓ 🐟"
     mock.set_recall_results([{"source": "graph", "text": remembered}])
 
-    session = HostSession(host, home, project, mock)
+    session = HostSession(
+        host, home, project, mock, env_extra=plugin_options(host, mock.url, DEFAULT_TEST_API_KEY)
+    )
     prompt = "what's the codename? 记忆 ✓ 🚀 naïve café"
     session.start()
     session.prompt(prompt)
@@ -296,3 +300,75 @@ def test_each_setup_snippet_gives_a_working_first_prompt(
     )
     [lookup] = session.outputs("UserPromptSubmit", "session-context-lookup.py")
     assert MEMORY in _context(lookup)
+
+
+# --- Claude Code: Cloud and LLM settings are plugin options (SDK-1411) ----------
+
+
+@pytest.fixture
+def options_host(host):
+    if not host.keys_from_plugin_options:
+        pytest.skip(f"{host.name}: reads its Cloud and LLM settings from ~/.cognee/.env")
+    return host
+
+
+def _system_message(session) -> str:
+    (output,) = session.outputs("SessionStart", "session-start.py")[-1:]
+    return output.get("systemMessage") or ""
+
+
+def test_an_upgrading_user_is_told_once_that_the_env_file_settings_moved(
+    options_host, private_mock_server, tmp_path
+):
+    """Replaces the env-file setup snippets for this plugin: a 1.8 user's
+    ~/.cognee/.env still names Cloud and LLM settings. Its LLM settings are not
+    in the options yet, so the first session says so, once."""
+    mock = private_mock_server
+    home = make_home(tmp_path, "cognee")
+    (home / ".cognee" / ".env").write_text(
+        f'COGNEE_BASE_URL="{mock.url}"\nCOGNEE_API_KEY=ck_file_secret\n'
+        "LLM_API_KEY=sk-file-secret\nCOGNEE_RECALL_TIMEOUT=5\n",
+        encoding="utf-8",
+    )
+    project = home / "project"
+    project.mkdir()
+    options = {"CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": mock.url}
+
+    first = HostSession(options_host, home, project, mock, env_extra=options)
+    first.start()
+    first.assert_every_hook_succeeded()
+    assert "no longer reads Cloud or LLM settings from ~/.cognee/.env" in _system_message(first)
+
+    # A later session (a new session id, same installed plugin).
+    first.sid = first.sid + "-2"
+    first.start()
+    first.assert_every_hook_succeeded()
+    assert "no longer reads" not in _system_message(first)
+    # The file's key never reached the server, and the flag is the plugin's own.
+    assert not any(c["headers"].get("X-Api-Key") == "ck_file_secret" for c in mock.calls)
+    assert (home / ".cognee-plugin" / "claude-code" / "env-upgrade-notice.json").is_file()
+    assert not (home / ".claude" / "settings.json").exists()
+    flag = (home / ".cognee-plugin" / "claude-code" / "env-upgrade-notice.json").read_text()
+    assert "sk-file-secret" not in flag and "ck_file_secret" not in flag
+
+
+def test_configured_options_show_no_notice_and_the_shell_url_is_ignored(
+    options_host, private_mock_server, tmp_path, closed_port_url
+):
+    mock = private_mock_server
+    home = make_home(tmp_path, "cognee")
+    project = home / "project"
+    project.mkdir()
+    extra = {
+        **plugin_options(options_host, mock.url, DEFAULT_TEST_API_KEY),
+        # An exported URL from the user's shell: never followed.
+        "COGNEE_BASE_URL": closed_port_url,
+    }
+    session = HostSession(options_host, home, project, mock, env_extra=extra)
+    session.start()
+    session.prompt("what is the project codename?")
+    session.assert_every_hook_succeeded()
+    message = _system_message(session)
+    assert "no longer reads" not in message
+    assert "API key option" not in message
+    assert session.calls("/api/v1/agents/register"), "the URL option was not followed"

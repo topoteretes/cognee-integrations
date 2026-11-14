@@ -17,6 +17,7 @@ flip to XPASS and the marks must come off.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -25,7 +26,7 @@ import subprocess
 import pytest
 from utils import host_launch as hl
 from utils.fixtures import DEFAULT_TEST_API_KEY
-from utils.host_launch import HostSession, make_home, write_env_file
+from utils.host_launch import HostSession, make_home, plugin_options, write_env_file
 
 MEMORY = "The project codename is BLUEFIN."
 
@@ -71,16 +72,36 @@ def connected(suite, private_mock_server, tmp_path):
     project = home / "project"
     project.mkdir()
     mock.set_recall_results([{"source": "graph", "text": MEMORY}])
-    session = HostSession(suite, home, project, mock)
+    # Claude Code gives the plugin its URL and key as options, to hooks only;
+    # the agent's shell reads the URL where Claude Code saves it (pluginConfigs).
+    options = plugin_options(suite, mock.url, DEFAULT_TEST_API_KEY)
+    if options:
+        _save_url_option(home, mock.url)
+    session = HostSession(suite, home, project, mock, env_extra=options)
     session.start()
     session.assert_every_hook_succeeded()
     return session
+
+
+def _save_url_option(home, url: str) -> None:
+    """The URL option where Claude Code keeps non-secret option values."""
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps(
+            {"pluginConfigs": {"cognee-memory@cognee": {"options": {"cognee_base_url": url}}}}
+        ),
+        encoding="utf-8",
+    )
 
 
 def _agent_env(session: HostSession, tmp_path, setup: str) -> dict[str, str]:
     env = dict(session.env)
     for name in ("PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"):
         env.pop(name, None)
+    # Plugin options reach hook processes only, never the agent's shell.
+    for name in [n for n in env if n.startswith("CLAUDE_PLUGIN_OPTION_")]:
+        env.pop(name)
     shims = _PYTHON_SETUPS[setup]
     if shims:
         directory = hl.make_shims(tmp_path / "bin", **shims)

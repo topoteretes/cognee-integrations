@@ -26,19 +26,55 @@
     "cognee_base_url": {
       "type": "string",
       "title": "Cognee Cloud URL",
-      "description": "Your Cognee Cloud instance, such as https://your-instance.cognee.ai. Leave empty to run Cognee locally on this machine.",
+      "description": "Your Cognee Cloud instance, such as https://your-instance.cognee.ai, or your own Cognee server. Leave empty to run Cognee locally on this machine.",
       "default": ""
     },
     "cognee_api_key": {
       "type": "string",
       "title": "Cognee Cloud API key",
-      "description": "The ck_… key from your Cognee Cloud account. Needed only with a Cloud URL.",
+      "description": "The ck_… key from your Cognee Cloud account (or your own server). Needed only with a Cloud URL; a local server needs none.",
       "sensitive": true
     },
     "llm_api_key": {
       "type": "string",
       "title": "LLM API key (local mode)",
-      "description": "The model provider key the local Cognee server builds memory with (OpenAI by default). Leave empty to use your Claude subscription through the claude CLI instead.",
+      "description": "The model provider key the local Cognee server builds memory with (OpenAI unless LLM provider is set). Leave empty to use your Claude subscription through the claude CLI instead.",
+      "sensitive": true
+    },
+    "llm_provider": {
+      "type": "string",
+      "title": "LLM provider (local mode)",
+      "description": "The local server's LLM provider, such as openai, anthropic, gemini or ollama. Leave empty for OpenAI with an LLM API key, or the Claude subscription without one.",
+      "default": ""
+    },
+    "llm_model": {
+      "type": "string",
+      "title": "LLM model (local mode)",
+      "description": "The model the local server uses, such as openai/gpt-4o-mini. Leave empty for the provider's default.",
+      "default": ""
+    },
+    "embedding_provider": {
+      "type": "string",
+      "title": "Embedding provider (local mode)",
+      "description": "The local server's embedding provider, such as openai, fastembed or ollama. Leave empty for Cognee's default. A dataset built with one embedder can't be searched with another.",
+      "default": ""
+    },
+    "embedding_model": {
+      "type": "string",
+      "title": "Embedding model (local mode)",
+      "description": "The embedding model, such as openai/text-embedding-3-large. Leave empty for Cognee's default.",
+      "default": ""
+    },
+    "embedding_dimensions": {
+      "type": "string",
+      "title": "Embedding dimensions (local mode)",
+      "description": "The embedding model's vector size, such as 3072. Leave empty for Cognee's default.",
+      "default": ""
+    },
+    "embedding_api_key": {
+      "type": "string",
+      "title": "Embedding API key (local mode)",
+      "description": "The embedding provider's key. Leave empty to reuse the LLM API key.",
       "sensitive": true
     }
   }

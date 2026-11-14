@@ -13,6 +13,13 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _ships_credits(suite):
+    """Claude Code removed credits (SDK-1411); the other hosts still ship them."""
+    if not (suite.scripts_dir / "credits-refresh.py").exists():
+        pytest.skip(f"{suite.name}: ships no credits")
+
+
 @pytest.fixture
 def pc(suite, isolated_modules):
     return isolated_modules(suite, "_plugin_common")

@@ -21,6 +21,7 @@ Windows workflow runs this suite rather than that script.
 
 from __future__ import annotations
 
+import importlib
 import json
 import time
 
@@ -29,7 +30,12 @@ import pytest
 
 @pytest.fixture
 def doctor(suite, isolated_modules):
-    return isolated_modules(suite, "doctor")
+    module = isolated_modules(suite, "doctor")
+    # Load the settings layer now, as the doctor process does before any
+    # test sets a variable: the Claude Code plugin replaces the shell's
+    # connection settings with its options when that layer loads.
+    importlib.import_module("config")
+    return module
 
 
 @pytest.fixture
@@ -111,7 +117,11 @@ def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
 def test_api_key_source_env(doctor, suite, monkeypatch):
     monkeypatch.setenv("COGNEE_API_KEY", "test-key-from-env")
     if suite.keys_from_plugin_options:
+        # Run from a hook (options present), against a remote server: the
+        # Cloud key is never used for a local one.
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
         monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "test-key-from-env")
+        monkeypatch.setenv("COGNEE_BASE_URL", "https://tenant.cognee.ai")
     expected = "Plugin option" if suite.keys_from_plugin_options else "ENV"
     assert doctor._resolve_api_key_source() == expected
 
@@ -204,3 +214,96 @@ def test_breaker_open(doctor, suite, isolated_modules):
         encoding="utf-8",
     )
     assert doctor._resolve_circuit_breaker().startswith("Open")
+
+
+# ── doctor run from a shell reports what session start decided (SDK-1411) ──
+
+
+@pytest.fixture
+def options_doctor(suite, doctor):
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: has no plugin options")
+    return doctor
+
+
+def _launch_record(pc, cwd, facts: dict, key: str = "sess-doctor") -> None:
+    pc._write_map_record(key, {"session_id": "s1", "conn_uuid": "c1", "cwd": str(cwd)})
+    pc.record_launch_facts(key, facts)
+
+
+def test_doctor_reads_the_cloud_launch_record_without_options(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(
+        pc,
+        project_dir,
+        {
+            "cloud_key_option_set": True,
+            "llm_key_option_set": False,
+            "embedding_key_option_set": False,
+            "llm_provider": "",
+            "llm_model": "",
+            "observer": {"active": False, "reason": "cloud", "model": ""},
+            "key_source": "plugin_option",
+            # Anything that is not a boolean or a name is dropped.
+            "api_key": "ck_never_written",
+        },
+    )
+    assert "ck_never_written" not in (pc._SESSIONS_MAP_DIR / "sess-doctor.json").read_text()
+    source = doctor._resolve_api_key_source()
+    assert source.startswith("Plugin option (as of session start, ")
+
+
+def test_doctor_shows_the_recorded_provider_in_local_mode(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(
+        pc,
+        project_dir,
+        {
+            "cloud_key_option_set": False,
+            "llm_key_option_set": True,
+            "llm_provider": "anthropic",
+            "llm_model": "anthropic/claude-sonnet",
+            "observer": {"active": False, "reason": "llm_key_configured", "model": ""},
+            "key_source": "local_owner_key",
+        },
+    )
+    llm = doctor._resolve_llm()
+    assert "Configured provider (anthropic, model anthropic/claude-sonnet)" in llm
+    assert "(as of session start, " in llm
+    assert doctor._resolve_api_key_source().startswith("Local server (as of session start")
+
+
+def test_doctor_names_the_stored_login_limit(options_doctor, pc, project_dir, monkeypatch):
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(
+        pc,
+        project_dir,
+        {
+            "observer": {"active": False, "reason": "observer_needs_stored_login", "model": ""},
+            "key_source": "local_owner_key",
+        },
+    )
+    assert "can use only Claude Code's stored login" in doctor._resolve_llm()
+
+
+def test_doctor_without_a_record_says_it_cannot_see_the_options(options_doctor):
+    doctor = options_doctor
+    assert "not visible from a shell" in doctor._resolve_api_key_source()
+    assert "not visible from a shell" in doctor._resolve_llm()
+
+
+def test_doctor_lists_refused_env_file_names_as_ignored(options_doctor, tmp_path, monkeypatch):
+    doctor = options_doctor
+    path = tmp_path / ".env"
+    path.write_text("COGNEE_API_KEY=ck_secret\nCOGNEE_PLUGIN_DATASET=x\n", encoding="utf-8")
+    monkeypatch.setenv("COGNEE_ENV_FILE", str(path))
+    line = doctor._resolve_env_file()
+    assert "COGNEE_API_KEY ignored (set in the plugin options)" in line
+    assert "ck_secret" not in line

@@ -99,10 +99,7 @@ def _spawn_sync(
 # hook runs, so a server that recovers while the user is idle leaves a stale
 # ✕ on the bar for up to the renderer's 30-minute fade. This process lives as
 # long as the host session, so it is the right place for a slow background
-# re-probe. Credits are deliberately NOT polled here: the balance only moves
-# when this session does something, so the hook-time refreshes (prompt start,
-# turn end, remember, improve) are the whole cadence and an idle terminal
-# makes no billing calls; the renderer shows the reading's age instead.
+# re-probe.
 _CONN_REPROBE_STATES = ("unreachable", "server_error", "not_responding", "auth_failed")
 _last_conn_reprobe_at = 0.0
 

@@ -19,6 +19,7 @@ endpoints, dependencies) via Cognee's enola-backed pipeline. Requires a Cognee
 server >= 1.5.3. Indexing makes **no LLM or embedding calls** — it is fast,
 deterministic, and token-free.
 
+In Cloud mode this skill can't authenticate from the shell; automatic recall and capture still work. The command then exits 2 and says why (the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only): pass that on and stop.
 
 ## Visible search progress
 

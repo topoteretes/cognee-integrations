@@ -947,15 +947,18 @@ def test_doctor_hint_follows_the_tree(recap, suite):
 @pytest.mark.parametrize(
     "code, reason, needle",
     [
-        # The key hint names COGNEE_API_KEY, or (Claude Code) its API key option.
-        (401, "Unauthorized", "— check "),
-        (403, "Forbidden", "— check "),
+        # The key hint: Claude Code says the server rejected the key (its key is
+        # an option the user already set); Codex names COGNEE_API_KEY.
+        (401, "Unauthorized", "KEY_HINT"),
+        (403, "Forbidden", "KEY_HINT"),
         (500, "boom", "answered HTTP 500"),
     ],
 )
 def test_main_names_an_http_status_instead_of_unreachable(
-    recap, monkeypatch, capsys, code, reason, needle
+    recap, suite, monkeypatch, capsys, code, reason, needle
 ):
+    if needle == "KEY_HINT":
+        needle = "— the server rejected the key" if suite.keys_from_plugin_options else "— check "
     monkeypatch.setattr(
         recap,
         "_json_http_request",

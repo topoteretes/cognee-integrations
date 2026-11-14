@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -589,28 +590,117 @@ def test_a_rejected_capture_is_reported_as_failed(worker, monkeypatch):
     assert saved.get("ok") is False and "buffered" not in saved
 
 
-# ── the worker follows ~/.cognee/.env ──────────────────────────────────────
+# ── a changed key or URL retires the running worker (SDK-1411) ─────────────
 
 
-def test_target_follows_an_edit_of_the_env_file(suite, isolated_modules, monkeypatch, tmp_path):
-    """The worker lives for hours. Pinned to the tenant it started with, it
-    never served a session pointed at another, whose captures and improves
-    then starved (a dataset switch waited its full 14 minutes on one)."""
+def test_a_changed_key_retires_the_worker_and_the_next_sends_with_the_new_key(
+    suite, isolated_modules, monkeypatch, mock_server
+):
+    """The key reaches a process only through its plugin options, so a running
+    worker never sees it change. The hook publishes its own target; the old
+    worker exits on the mismatch, the next hook starts a fresh one, and that
+    one sends only the items stamped with the new key, with the new key. Items
+    queued under the old key are never sent with the new one."""
     if suite.name != "claude-code":
         pytest.skip("Cloud worker")
-    # The loader scrubs COGNEE_* before the import, so the file is named
-    # afterwards: exactly a worker that started before the file was edited.
+    import importlib
+    import os
+
     worker = isolated_modules(suite, "_cloud_worker")
+    pc = importlib.import_module("_plugin_common")
+    monkeypatch.setenv("COGNEE_SESSION_KEY", "host-a")
+    monkeypatch.delenv("COGNEE_IDLE_DISABLED", raising=False)
+    for var in ("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "COGNEE_BASE_URL"):
+        monkeypatch.setenv(var, mock_server.url)
+
+    def options(key):
+        # The option, and the variable the plugin derives from it in a process.
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", key)
+        monkeypatch.setenv("COGNEE_API_KEY", key)
+
+    events, spawned = [], []
+    monkeypatch.setattr(worker, "log", lambda event, **kw: events.append(event))
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda argv, **kw: spawned.append(argv))
+    state = worker.root()
+    pidfile = state / "cloud-worker-pid.json"
+
+    # A hook with key A spools an item and starts a worker, which is running.
+    options("key-A")
+    target_a = worker.target()
+    old_item = worker.enqueue("ds", "sid", {"type": "qa", "answer": "for A"}, "answer")
+    assert len(spawned) == 1
+    assert worker.read(state / "cloud-worker-runtime.json")["target"] == target_a
+    worker.atomic_json(pidfile, {"pid": os.getpid()})
+
+    # The key option changes; the next hook spools under key B. The worker is
+    # alive, so nothing is spawned, but the hook's target is published (a
+    # hash: the key itself is never written).
+    options("key-B")
+    target_b = worker.target()
+    assert target_b != target_a
+    new_item = worker.enqueue("ds", "sid", {"type": "qa", "answer": "for B"}, "answer")
+    assert len(spawned) == 1
+    runtime = (state / "cloud-worker-runtime.json").read_text(encoding="utf-8")
+    assert json.loads(runtime)["target"] == target_b and "key-B" not in runtime
+
+    # The running worker still has key A in its environment: it exits without
+    # sending anything or re-exec'ing, and gives up its pid file.
+    options("key-A")
+    real_drain = worker.drain
+    monkeypatch.setattr(worker, "_refresh_console_log", lambda: None)
+    monkeypatch.setattr(pc, "sweep_stale_state", lambda *a, **k: {})
+    monkeypatch.setattr(worker, "drain", lambda *a, **k: pytest.fail("old worker sent"))
+    monkeypatch.setattr(worker.os, "execv", lambda *a: pytest.fail("old worker re-exec'd"))
+    worker.run()
+    assert "cloud_worker_target_changed" in events
+    assert not pidfile.exists()
+
+    # The next hook (key B) finds no worker and starts one.
+    options("key-B")
+    worker.ensure_worker()
+    assert len(spawned) == 2
+
+    # The new worker (key B) sends B's item with B's key, and never A's. The
+    # mock listens on loopback; it stands in for a remote tenant, which is the
+    # only server the Cloud key is sent to.
+    monkeypatch.setattr(pc, "service_url_is_local", lambda _url: False)
+
+    def send(item):
+        return pc._json_http_request("/api/v1/remember/entry", {"entry": item["entry"]}, timeout=5)
+
+    assert real_drain(send) == 1
+    assert real_drain(send) == 0
+    sent = [c for c in mock_server.calls if c["path"] == "/api/v1/remember/entry"]
+    assert [c["json"]["entry"]["answer"] for c in sent] == ["for B"]
+    assert sent[0]["headers"].get("X-Api-Key") == "key-B"
+    assert not new_item.exists()
+    # A's item stays queued for a key-A worker (or the 7-day expiry).
+    assert old_item.exists()
+
+
+def test_a_worker_keeps_running_while_the_hook_target_matches(worker, monkeypatch):
+    assert not worker._target_changed({})
+    assert not worker._target_changed({"script": "x"})
+    assert not worker._target_changed({"target": worker.target()})
+    assert worker._target_changed(
+        {"target": {"base_url": "https://cloud.example", "principal": "rotated"}}
+    )
+
+
+def test_target_reads_no_env_file(suite, isolated_modules, monkeypatch, tmp_path):
+    """The target comes from the process's own options, never a re-read of a
+    key file (SDK-1411)."""
+    if suite.name != "claude-code":
+        pytest.skip("Cloud worker")
+    import importlib
+
+    worker = isolated_modules(suite, "_cloud_worker")
+    importlib.import_module("_plugin_common")  # applies the options at import
     monkeypatch.setattr(worker, "ensure_worker", lambda: None)
+    for var in ("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "COGNEE_BASE_URL"):
+        monkeypatch.setenv(var, "https://tenant-a.aws.cognee.ai")
     env_file = tmp_path / "cognee.env"
     monkeypatch.setenv("COGNEE_ENV_FILE", str(env_file))
-    env_file.write_text('COGNEE_BASE_URL="https://tenant-a.aws.cognee.ai"\n', encoding="utf-8")
+    env_file.write_text('COGNEE_BASE_URL="https://tenant-b.aws.cognee.ai"\n', encoding="utf-8")
     assert worker.target()["base_url"] == "https://tenant-a.aws.cognee.ai"
-
-    env_file.write_text('COGNEE_BASE_URL="https://tenant-b.stg-aws.cognee.ai"\n', encoding="utf-8")
-    assert worker.target()["base_url"] == "https://tenant-b.stg-aws.cognee.ai"
-
-    # A real export still wins over the file, as at load.
-    monkeypatch.setenv("COGNEE_BASE_URL", "https://exported.example")
-    env_file.write_text('COGNEE_BASE_URL="https://tenant-c.aws.cognee.ai"\n', encoding="utf-8")
-    assert worker.target()["base_url"] == "https://exported.example"
+    assert "refresh_env_file" not in Path(worker.__file__).read_text(encoding="utf-8")

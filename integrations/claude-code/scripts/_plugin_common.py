@@ -1496,6 +1496,20 @@ def _buffer_lock():
                 hook_log("buffer_lock_release_failed", {"error": str(exc)[:200]})
 
 
+def _platform_host_for(service_url: str) -> str:
+    """``api.<env>`` for a ``tenant-<id>.<env>`` data-plane host, else "".
+
+    The cloud names its hosts by role under one environment suffix: the memory
+    data plane is ``tenant-<id>.<env>`` and the platform (account) is
+    ``api.<env>``. Only used to tell a Cognee Cloud tenant from other servers.
+    """
+    host = (urllib.parse.urlparse(str(service_url or "").strip()).hostname or "").lower()
+    label, _, rest = host.partition(".")
+    if not rest or not label.startswith("tenant-") or len(label) <= len("tenant-"):
+        return ""
+    return f"api.{rest}"
+
+
 def service_url_is_local(url: str = "") -> bool:
     """True when the resolved service URL points at this machine (loopback)."""
     host = (urllib.parse.urlparse(url or _local_api_url()).hostname or "").lower()
@@ -2394,25 +2408,66 @@ def _normalize_service_url(value: str) -> str:
 # No key is stored on disk by this plugin (directory policy: a credential
 # reaches the plugin only through Claude Code's plugin options). The user's
 # Cloud key is the principal, taken from CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY in
-# every process (see _env_file). Against the plugin's own local server there is
-# no user key: the owner key is looked up from that server, once per process,
-# by logging in as its default user. Plugin identity (a minted per-machine
-# agent key) is off, since keeping that key would mean storing it.
+# every process (see _env_file), and is sent only to a remote server. Against
+# the plugin's own local server there is no user key: the owner key is looked
+# up from that server by logging in as its default user. A found key is kept
+# for the life of the process; a failed lookup is retried, but no sooner than
+# _LOCAL_OWNER_RETRY_SECONDS later, so a long-lived process that started before
+# the server recovers once it is up. The key is never handed to a child process
+# through the environment: at ~40 ms a lookup, children log in themselves.
+# Plugin identity (a minted per-machine agent key) is off, since keeping that
+# key would mean storing it.
 _LOCAL_OWNER_KEYS: dict = {}
+_LOCAL_OWNER_FAILED_AT: dict = {}
+_LOCAL_OWNER_RETRY_SECONDS = 5.0
 _LOCAL_OWNER_LOOKUP_TIMEOUT = 5.0
+# Hooks Claude Code waits on before the turn goes on (UserPromptSubmit recall,
+# PreToolUse Read): a slow lookup there means no recall this turn, not a stall.
+_LOCAL_OWNER_FAST_TIMEOUT = 1.5
+_BLOCKING_HOOK_SCRIPTS = ("session-context-lookup.py", "file-context.py")
+
+
+def _in_blocking_hook() -> bool:
+    return any(os.path.basename(str(arg)) in _BLOCKING_HOOK_SCRIPTS for arg in sys.argv[:3])
+
+
+def _owner_lookup_timeout() -> float:
+    return _LOCAL_OWNER_FAST_TIMEOUT if _in_blocking_hook() else _LOCAL_OWNER_LOOKUP_TIMEOUT
+
+
+def is_masked_key(key: str) -> bool:
+    """A key the server lists masked (``HASH_API_KEY=true``): unusable as a key."""
+    key = str(key or "").strip()
+    return bool(key) and set(key) == {"*"}
+
+
+def first_usable_key(keys) -> str:
+    """The first listed API key that is not masked, or ""."""
+    for entry in keys if isinstance(keys, list) else []:
+        if isinstance(entry, dict):
+            key = str(entry.get("key") or "").strip()
+            if key and not is_masked_key(key):
+                return key
+    return ""
 
 
 def _local_owner_key(service_url: str) -> str:
     """The local server's owner API key, looked up by logging in. Never raises.
 
-    Lists the default user's existing keys and returns the first one; minting
-    the first key stays with SessionStart. Memoized per process, failures
-    included, so a down server costs one attempt per process.
+    Lists the default user's existing keys and returns the first usable one;
+    minting a key stays with SessionStart. A masked key (the server hashes its
+    keys) counts as none. Logs ``local_owner_key_lookup_ms``.
     """
     url = _normalize_service_url(service_url)
-    if url in _LOCAL_OWNER_KEYS:
+    if _LOCAL_OWNER_KEYS.get(url):
         return _LOCAL_OWNER_KEYS[url]
+    failed_at = _LOCAL_OWNER_FAILED_AT.get(url)
+    if failed_at is not None and time.monotonic() - failed_at < _LOCAL_OWNER_RETRY_SECONDS:
+        return ""
+    timeout = _owner_lookup_timeout()
+    started = time.monotonic()
     key = ""
+    error = ""
     try:
         from config import load_config
 
@@ -2429,22 +2484,30 @@ def _local_owner_key(service_url: str) -> str:
             method="POST",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        with urllib.request.urlopen(request, timeout=_LOCAL_OWNER_LOOKUP_TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             jwt = str((json.loads(response.read() or b"{}") or {}).get("access_token") or "")
         if jwt:
+            remaining = max(0.1, timeout - (time.monotonic() - started))
             request = urllib.request.Request(
                 f"{url}/api/v1/auth/api-keys",
                 method="GET",
                 headers={"Cookie": f"auth_token={jwt}"},
             )
-            with urllib.request.urlopen(request, timeout=_LOCAL_OWNER_LOOKUP_TIMEOUT) as response:
-                keys = json.loads(response.read() or b"[]")
-            if isinstance(keys, list) and keys and isinstance(keys[0], dict):
-                key = str(keys[0].get("key") or "").strip()
+            with urllib.request.urlopen(request, timeout=remaining) as response:
+                key = first_usable_key(json.loads(response.read() or b"[]"))
     except Exception as exc:
-        hook_log("local_owner_key_lookup_failed", {"error": type(exc).__name__})
+        error = type(exc).__name__
         key = ""
-    _LOCAL_OWNER_KEYS[url] = key
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    detail = {"local_owner_key_lookup_ms": elapsed_ms, "found": bool(key), "timeout": timeout}
+    if error:
+        detail["error"] = error
+    hook_log("local_owner_key_lookup" if not error else "local_owner_key_lookup_failed", detail)
+    if key:
+        _LOCAL_OWNER_KEYS[url] = key
+        _LOCAL_OWNER_FAILED_AT.pop(url, None)
+    else:
+        _LOCAL_OWNER_FAILED_AT[url] = time.monotonic()
     return key
 
 
@@ -2465,6 +2528,12 @@ def save_cached_api_key(service_url: str, key: str) -> None:
     url = _normalize_service_url(service_url)
     if url and str(key or "").strip() and service_url_is_local(url):
         _LOCAL_OWNER_KEYS[url] = str(key).strip()
+        _LOCAL_OWNER_FAILED_AT.pop(url, None)
+
+
+def forget_cached_api_key(service_url: str) -> None:
+    """Drop an in-process owner key the server rejected."""
+    _LOCAL_OWNER_KEYS.pop(_normalize_service_url(service_url), None)
 
 
 def load_cached_agent_key(service_url: str = "") -> str:
@@ -3204,19 +3273,59 @@ def managed_endpoint_enabled(config: dict | None = None) -> bool:
     return val.strip().lower() in ("1", "true", "yes", "on")
 
 
+def cloud_key_applies(service_url: str) -> bool:
+    """Whether the Cloud key option is the key for ``service_url``.
+
+    True for a remote server, and for any server while the terminal is pinned
+    to cloud (``COGNEE_BACKEND=cloud``: the user says the URL is their cloud,
+    even on a loopback address). A server on this machine otherwise gets its
+    own owner key, never the Cloud key.
+    """
+    if not service_url_is_local(service_url):
+        return True
+    from _env_file import forced_backend
+
+    return forced_backend() == "cloud"
+
+
 def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
-    """The key every request runs as: the user's own (no plugin identity)."""
+    """The key every request runs as: the user's own (no plugin identity).
+
+    A remote server gets the Cloud key option. A local one gets its own owner
+    key: the Cloud key is never sent to this machine's server (it would be
+    refused, and it is not that server's key), unless the terminal is pinned to
+    cloud (see ``cloud_key_applies``).
+    """
     service_url = _normalize_service_url(service_url or _local_api_url())
+    if not cloud_key_applies(service_url):
+        local = load_cached_api_key(service_url)
+        return (local, "local_owner_key") if local else ("", "missing")
     env_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
     principal = str(os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or "").strip()
     if env_key:
         return env_key, "env_api_key"
     if principal:
         return principal, "env_api_key"
-    local = load_cached_api_key(service_url)
-    if local:
-        return local, "local_owner_key"
     return "", "missing"
+
+
+def require_shell_auth(service_url: str, api_key: str, tool: str) -> None:
+    """Stop a Bash-run command that has no key for a remote server. Exits 2.
+
+    Claude Code passes the Cloud key option to the plugin's hooks only, so a
+    command run from a shell (a skill) has none in Cloud mode; failing here,
+    before any request, beats a 401 that sends the user to an option they
+    already set. A local server needs no key from the shell (owner key).
+    """
+    if service_url_is_local(str(service_url or "")) or str(api_key or "").strip():
+        return
+    print(
+        f"{tool}: no API key. The Cognee Cloud key is a plugin option that Claude Code "
+        "passes to the plugin's hooks only, so this command can't use it from a shell; "
+        "automatic recall and capture still work.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def _api_key() -> str:
@@ -3889,6 +3998,80 @@ def _url_identity(url: str) -> str:
     return f"{parts.scheme.lower()}://{host}:{port}{parts.path.rstrip('/')}"
 
 
+#: Non-secret facts SessionStart records on the launch record, for doctor and
+#: the status line, which run without the plugin options (booleans and names
+#: only, never a key).
+LAUNCH_FACT_FIELDS = (
+    "cloud_key_option_set",
+    "llm_key_option_set",
+    "embedding_key_option_set",
+    "llm_provider",
+    "llm_model",
+    "observer",
+    "key_source",
+)
+
+
+def record_launch_facts(host_key: str, facts: dict) -> None:
+    """Merge ``facts`` (see LAUNCH_FACT_FIELDS) into this launch's record. Never raises.
+
+    Anything that is not a boolean, a short string or the observer's small
+    dict of those is dropped, so a key can never be written by mistake.
+    """
+    try:
+        host_key = _sanitize_session_key(host_key) or get_session_key()
+        rec = _read_map_record(host_key)
+        if not rec:
+            return
+        clean: dict = {}
+        for name in LAUNCH_FACT_FIELDS:
+            if name not in facts:
+                continue
+            value = facts[name]
+            if name == "observer" and isinstance(value, dict):
+                clean[name] = {
+                    "active": bool(value.get("active")),
+                    "reason": str(value.get("reason") or "")[:64],
+                    "model": str(value.get("model") or "")[:80],
+                }
+            elif isinstance(value, bool):
+                clean[name] = value
+            elif isinstance(value, str):
+                clean[name] = value[:80]
+        clean["recorded_at"] = datetime.now(timezone.utc).timestamp()
+        rec["launch_facts"] = clean
+        _write_map_record(host_key, rec)
+    except Exception as exc:
+        hook_log("launch_facts_write_failed", {"error": str(exc)[:200]})
+
+
+def latest_launch_facts(cwd: str = "") -> dict:
+    """The newest recorded launch facts for ``cwd``, else the newest overall, or {}."""
+    best_here: dict = {}
+    best_any: dict = {}
+    want = os.path.normcase(os.path.abspath(cwd)) if cwd else ""
+    try:
+        paths = list(_SESSIONS_MAP_DIR.glob("*.json"))
+    except Exception:
+        paths = []
+    for path in paths:
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        facts = rec.get("launch_facts") if isinstance(rec, dict) else None
+        if not isinstance(facts, dict):
+            continue
+        stamp = float(facts.get("recorded_at") or 0)
+        if stamp > float(best_any.get("recorded_at") or 0):
+            best_any = facts
+        rec_cwd = str(rec.get("cwd") or "")
+        if want and rec_cwd and os.path.normcase(os.path.abspath(rec_cwd)) == want:
+            if stamp > float(best_here.get("recorded_at") or 0):
+                best_here = facts
+    return dict(best_here or best_any)
+
+
 def set_launch_base_url(host_key: str, base_url: str) -> None:
     """Record the server this launch registered on. Called by every SessionStart.
 
@@ -4089,7 +4272,7 @@ def write_llm_state(state: str, detail: str = "", reason: str = "") -> None:
     Readers show a verdict only when it is theirs, or unattributable.
 
     ``reason`` is an optional status-line label overriding the default
-    ``incorrect_llm_api_key`` for a failed state — e.g. ``claude_not_logged_in``
+    ``incorrect_llm_api_key`` for a failed state — e.g. ``observer_needs_stored_login``
     when the LLM is the Claude observer and no key is involved at all.
     """
     if state not in LLM_STATES:
@@ -5206,8 +5389,6 @@ def drain_warmup_entries(
                 drained += 1
             except urllib.error.HTTPError as exc:
                 http_failure = True
-                if exc.code == 402:
-                    record_payment_required("save")
                 hook_log(
                     "warmup_drain_error",
                     {"error": str(exc)[:200], "drained": drained, "status": exc.code},
@@ -5461,10 +5642,6 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
             reason = "failed"
     ok = bool(result.get("ok"))
     error = str(result.get("error") or "")
-    if result.get("status") == 402:
-        record_payment_required("improve")
-    elif ok:
-        clear_payment_required()
     hook_log(
         "improve_fired",
         {
@@ -5481,11 +5658,6 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
 
         update_stats(get_session_key(), improves_landed=1)
         record_improve_success(session_id, dataset, trigger)
-        # Status-line credits: attribute the spend recorded since the previous
-        # reading to this improve. Approximate on purpose — the submit is
-        # run_in_background, so part of this run's cognify cost lands in later
-        # unlabeled refreshes. refresh_credits never raises and no-ops locally.
-        refresh_credits("improve")
     else:
         record_improve_failure(
             session_id, dataset, trigger, (error or "failed") if reason == "failed" else reason
@@ -5505,28 +5677,6 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
 
 # Split out to keep this file under the plugin directory's 256 KiB per-file
 # limit; re-exported so every importer keeps using _plugin_common.<name>.
-from _credits import (  # noqa: E402,F401
-    _CREDITS_ENTRY_MAX_AGE_SECONDS,
-    _CREDITS_LOCK,
-    _CREDITS_LOCK_STALE_SECONDS,
-    _CREDITS_MARKER,
-    _CREDITS_URL_KEY_PREFIX,
-    _PLATFORM_API_URL_DEFAULT,
-    _credits_entry_for_url,
-    _credits_entry_last_seen,
-    _locate_credits_entry,
-    _placeholder_credits_key,
-    _platform_api_url,
-    _platform_host_for,
-    _release_credits_lock,
-    _select_tenant_budget,
-    _try_acquire_credits_lock,
-    _write_credits_marker,
-    clear_payment_required,
-    read_credits_marker,
-    record_payment_required,
-    refresh_credits,
-)
 from _state_sweep import (  # noqa: E402,F401
     _SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS,
     _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS,

@@ -16,7 +16,12 @@ def test_shell_beats_dotenv_and_legacy_json(suite, isolated_modules, monkeypatch
     (config._STATE_DIR / "config.json").write_text(json.dumps({"dataset": "obsolete"}))
     cfg = config.load_config()
     assert cfg["dataset"] == "from-shell"
-    assert cfg["base_url"] == "https://file.example"
+    if suite.keys_from_plugin_options:
+        # Claude Code takes the server URL only from its plugin option: the
+        # file's COGNEE_BASE_URL is refused, not loaded (SDK-1411).
+        assert cfg["base_url"] == ""
+    else:
+        assert cfg["base_url"] == "https://file.example"
 
 
 def test_plugin_specific_backend_wins(suite, isolated_modules, monkeypatch):

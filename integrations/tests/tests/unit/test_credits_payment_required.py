@@ -25,6 +25,14 @@ import urllib.error
 import pytest
 from utils.recall import URL, arm_code_lane, drive_recall
 
+
+@pytest.fixture(autouse=True)
+def _ships_credits(suite):
+    """Claude Code removed credits (SDK-1411); the other hosts still ship them."""
+    if not (suite.scripts_dir / "credits-refresh.py").exists():
+        pytest.skip(f"{suite.name}: ships no credits")
+
+
 _TENANT = "f8c21da4-6674-4cc5-bc56-de5e93db881d"
 _URL = f"https://tenant-{_TENANT}.aws.cognee.ai"
 

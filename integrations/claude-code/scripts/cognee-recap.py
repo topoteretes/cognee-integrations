@@ -983,6 +983,22 @@ def _doctor_hint() -> str:
     return f"{tool} --json shows the mode/URL"
 
 
+def _require_shell_auth(url: str) -> None:
+    """Exit 2, before any request, when a remote server has no key in this process.
+
+    A Cognee Cloud key is a plugin option Claude Code passes to the plugin's
+    hooks only, so a recap run from a shell has none; an unauthenticated
+    request could only 401. The check and its message live in _plugin_common.
+    """
+    try:
+        from _plugin_common import require_shell_auth
+    except ImportError:
+        return
+    # A remote server's key is the option alone (no lookup, no request).
+    key = os.environ.get("COGNEE_API_KEY") or os.environ.get("COGNEE_PRINCIPAL_API_KEY") or ""
+    require_shell_auth(url, key.strip(), "cognee-recap")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.projects = [p.strip() for p in (args.projects or "").split(",") if p.strip()]
@@ -990,6 +1006,7 @@ def main(argv: list[str] | None = None) -> int:
     server: Server | None = None
     url = _local_api_url()
     doctor = _doctor_hint()
+    _require_shell_auth(url)
     try:
         server = Server(args.session_key)
         url = server.url
@@ -1003,7 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
             events = collect_timeline(server, args.topic, cutoff, records)
     except urllib.error.HTTPError as exc:
         # HTTPError is a URLError: name the status before "unreachable" can claim it.
-        hint = " — check the plugin's Cognee Cloud API key option" if exc.code in (401, 403) else ""
+        hint = " — the server rejected the key" if exc.code in (401, 403) else ""
         print(
             f"[cognee-recap] Cognee server at {url} answered HTTP {exc.code} "
             f"({str(exc.reason)[:60]}){hint}; no recap ({doctor}).",

@@ -277,15 +277,23 @@ _CHILD_ENV_ALLOWLIST = frozenset(
     }
 )
 _CHILD_ENV_PREFIXES = ("LC_",)
+#: Always set in the child, whatever the parent has: an observer call never
+#: sends telemetry or other nonessential traffic and never checks for updates.
+_CHILD_ENV_CONSTANTS = {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_AUTOUPDATER": "1",
+}
 
 
 def child_env() -> dict:
-    """Environment for the ``claude`` child: the allowlist and the observer flag."""
+    """Environment for the ``claude`` child: the allowlist, the observer flag and
+    the fixed opt-outs in ``_CHILD_ENV_CONSTANTS``."""
     env = {
         key: value
         for key, value in os.environ.items()
         if key in _CHILD_ENV_ALLOWLIST or key.startswith(_CHILD_ENV_PREFIXES)
     }
+    env.update(_CHILD_ENV_CONSTANTS)
     env[_observer.CHILD_ENV_FLAG] = "1"
     return env
 
