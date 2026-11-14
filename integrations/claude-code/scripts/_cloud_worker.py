@@ -296,10 +296,9 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
     A session waiting on a retry holds back only its own later events; a server-wide
     failure ends the pass; a payload the server will never accept is expired.
     """
-    from _capture_policy import allow_tool, capture_enabled, sanitize
+    from _capture_policy import sanitize, tool_allowed
 
     now = time.time() if now is None else now
-    capturing = capture_enabled()
     deadline = time.monotonic() + 20
     delivered = 0
     identity = target()
@@ -312,8 +311,10 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
             _expire(path, "capture")
             _mark_capture_unsaved(item, buffered=False)
             continue
-        # With capture off nothing is sent, but old events still age out above.
-        if not capturing or item.get("target") != identity:
+        # Capture is decided per session by the hook at enqueue time; the worker
+        # is shared by every session and inherits the spawning session's
+        # environment, so it must not re-apply COGNEE_CAPTURE (#582).
+        if item.get("target") != identity:
             continue
         session = item.get("session_id")
         if session in held:
@@ -322,7 +323,7 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
             held.add(session)
             continue
         try:
-            if item.get("kind") == "trace" and not allow_tool(
+            if item.get("kind") == "trace" and not tool_allowed(
                 item.get("entry", {}).get("origin_function", ""),
                 item.get("entry", {}).get("method_params", {}),
             ):

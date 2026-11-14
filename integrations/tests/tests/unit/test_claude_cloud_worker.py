@@ -299,16 +299,29 @@ def test_server_wide_failure_ends_the_pass(worker):
     assert calls == ["sid-a"]
 
 
-def test_queue_still_ages_out_while_capture_is_off(worker, monkeypatch):
+def test_worker_delivers_spooled_captures_whatever_its_own_capture_switch_says(worker, monkeypatch):
     old = worker.enqueue("ds", "sid", {"type": "qa", "answer": "old"}, "answer")
     fresh = worker.enqueue("ds", "sid", {"type": "qa", "answer": "fresh"}, "answer")
+    trace = worker.enqueue(
+        "ds",
+        "sid",
+        {
+            "type": "trace",
+            "origin_function": "Read",
+            "method_params": {"file_path": "/project/main.py"},
+        },
+        "trace",
+    )
     item = worker.read(old)
     item["created_at"] -= 7 * 86400 + 1
     worker.atomic_json(old, item)
     monkeypatch.setenv("COGNEE_CAPTURE", "false")
-    assert worker.drain(lambda _: pytest.fail("capture is off")) == 0
+    sent = []
+    assert worker.drain(lambda entry: sent.append(entry) or {"entry_id": "saved"}) == 2
     assert not old.exists() and (old.parent / "expired" / old.name).exists()
-    assert fresh.exists()
+    assert not fresh.exists() and not trace.exists()
+    assert len(sent) == 2
+    assert not (trace.parent / "expired" / trace.name).exists()
 
 
 def test_worker_idles_out_only_without_work_or_recent_sessions(worker):
