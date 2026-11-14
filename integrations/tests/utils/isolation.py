@@ -98,20 +98,33 @@ DETERMINISTIC_ENV = {
 _SCRUBBED_PREFIXES = ("COGNEE_", "LLM_", "CLAUDE_", "CODEX_", "AGY_")
 
 
-def scrub_env_dict(env: dict[str, str]) -> dict[str, str]:
-    """Return ``env`` without any developer-exported Cognee/plugin variables."""
-    return {k: v for k, v in env.items() if not k.startswith(_SCRUBBED_PREFIXES)}
-
-
 #: Set by the plugin itself, per HOME, on import (``apply_cognee_env``). A value
 #: left by an earlier test's home would read as a user's own storage setting.
 _SCRUBBED_NAMES = ("SYSTEM_ROOT_DIRECTORY", "DATA_ROOT_DIRECTORY", "CACHE_ROOT_DIRECTORY")
 
+#: Database provider settings: the plugin names any of these in its storage
+#: notice, so a developer's export (or an earlier test's) would show it.
+_SCRUBBED_STORAGE_PREFIXES = ("DB_", "VECTOR_DB_", "GRAPH_DATABASE_")
+
+
+def _is_scrubbed(key: str) -> bool:
+    return (
+        key.startswith(_SCRUBBED_PREFIXES)
+        or key.startswith(_SCRUBBED_STORAGE_PREFIXES)
+        or key in _SCRUBBED_NAMES
+    )
+
+
+def scrub_env_dict(env: dict[str, str]) -> dict[str, str]:
+    """Return ``env`` without any developer-exported Cognee/plugin variables,
+    the plugin's own storage directories or a database provider setting."""
+    return {k: v for k, v in env.items() if not _is_scrubbed(k)}
+
 
 def scrub_cognee_env(monkeypatch) -> None:
-    """Delete all Cognee and host-integration vars for one test (in-process)."""
+    """Delete the same variables for one test (in-process)."""
     for key in list(os.environ):
-        if key.startswith(_SCRUBBED_PREFIXES) or key in _SCRUBBED_NAMES:
+        if _is_scrubbed(key):
             monkeypatch.delenv(key, raising=False)
 
 

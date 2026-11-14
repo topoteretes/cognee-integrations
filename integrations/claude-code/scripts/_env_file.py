@@ -88,6 +88,10 @@ _STORAGE_NAMES = frozenset(_STORAGE_DIR_VARS)
 _STORAGE_PREFIXES = ("DB_", "GRAPH_DATABASE_", "VECTOR_DB_")
 # Storage names this process found in the shell it was started from.
 _shell_storage_names: list = []
+# The same names (never values), carried in the environment across the re-exec
+# into the plugin venv and to children: the new process sees only the
+# defaults, so without this the notice would never fire.
+_SHELL_STORAGE_IGNORED_VAR = "COGNEE_PLUGIN_SHELL_STORAGE_IGNORED"
 # Honoured, from the file or the shell, only when it names this machine.
 _LOCAL_URL_VAR = "COGNEE_LOCAL_API_URL"
 # Set once the first plugin process has replaced the shell's LLM_* /
@@ -116,6 +120,7 @@ _TUNING_NAMES = frozenset(
         "COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE",
         "COGNEE_CODE_AUTOINDEX",
         "COGNEE_CODING_MEMORY",
+        "COGNEE_PLUGIN_DISABLED",
         "COGNEE_COGNIFY_POLL_INTERVAL",
         "COGNEE_CONN_REPROBE_INTERVAL",
         "COGNEE_DRAIN_BUDGET",
@@ -312,6 +317,13 @@ def _apply_plugin_options() -> None:
             os.environ.pop(var, None)
             if var not in _shell_storage_names:
                 _shell_storage_names.append(var)
+    if _shell_storage_names:
+        carried = [
+            n for n in os.environ.get(_SHELL_STORAGE_IGNORED_VAR, "").split(",") if n.strip()
+        ]
+        os.environ[_SHELL_STORAGE_IGNORED_VAR] = ",".join(
+            sorted(set(carried) | set(_shell_storage_names))
+        )
     local_url = os.environ.get(_LOCAL_URL_VAR, "")
     if local_url.strip() and not is_loopback_url(local_url):
         os.environ.pop(_LOCAL_URL_VAR, None)
@@ -452,6 +464,11 @@ def storage_settings_ignored() -> list:
     plugin's local server no longer uses (names only, never values)."""
     names = set(_shell_storage_names)
     names.update(
+        n.strip()
+        for n in os.environ.get(_SHELL_STORAGE_IGNORED_VAR, "").split(",")
+        if n.strip() in _STORAGE_DIR_VARS
+    )
+    names.update(
         n
         for n in os.environ
         if n in ("DB_PROVIDER", "VECTOR_DB_PROVIDER", "GRAPH_DATABASE_PROVIDER")
@@ -504,6 +521,23 @@ def load_env_file() -> None:
     # whether the Cloud key belongs in this process's environment.
     _apply_connection_options()
     _apply_backend_switch()
+    if plugin_disabled():
+        # Every hook, command and the status line load their settings here:
+        # stop before anything reaches a server or starts one.
+        try:
+            sys.stderr.write("cognee-plugin: disabled (COGNEE_PLUGIN_DISABLED)\n")
+        except Exception:
+            pass
+        raise SystemExit(0)
+
+
+_PLUGIN_DISABLED_VAR = "COGNEE_PLUGIN_DISABLED"
+
+
+def plugin_disabled() -> bool:
+    """``COGNEE_PLUGIN_DISABLED=true`` (shell or ``~/.cognee/.env``) turns the
+    plugin off: no hook or command does anything. Used by the eval scaffold."""
+    return os.environ.get(_PLUGIN_DISABLED_VAR, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def refresh_env_file() -> None:

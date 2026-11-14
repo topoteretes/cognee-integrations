@@ -509,7 +509,9 @@ def test_no_shipped_script_opens_a_url_except_through_the_shared_opener(suite):
     for path in sorted(suite.scripts_dir.parent.rglob("*.py")):
         if "__pycache__" in path.parts or path.name in exempt:
             continue
-        if "urllib.request.urlopen(" in path.read_text(encoding="utf-8"):
+        # The bare name: a default argument or a reference sends a request
+        # through the proxy just as a call does.
+        if "urllib.request.urlopen" in path.read_text(encoding="utf-8"):
             offenders.append(str(path.relative_to(suite.scripts_dir.parent)))
     assert offenders == []
 
@@ -665,7 +667,13 @@ def test_storage_settings_never_reach_the_server_and_are_named_once(
 
 def test_no_storage_settings_means_no_storage_notice(suite, hook_module, monkeypatch):
     _as_hook(monkeypatch, suite)
-    for name in ("DATA_ROOT_DIRECTORY", "SYSTEM_ROOT_DIRECTORY", "DB_PROVIDER"):
+    for name in (
+        "DATA_ROOT_DIRECTORY",
+        "SYSTEM_ROOT_DIRECTORY",
+        "DB_PROVIDER",
+        "VECTOR_DB_PROVIDER",
+        "GRAPH_DATABASE_PROVIDER",
+    ):
         monkeypatch.delenv(name, raising=False)
     session_start = hook_module(suite, "session-start.py")
     assert session_start.STORAGE_NOTICE not in session_start._option_notices()

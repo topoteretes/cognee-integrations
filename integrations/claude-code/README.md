@@ -596,6 +596,7 @@ A **failed** attempt arms the same window as a **backoff**: if the submit timed 
 
 | Env var | Default | Effect |
 |---|---|---|
+| `COGNEE_PLUGIN_DISABLED` | unset (on) | `true` turns the whole plugin off: every hook, command and the status line exit without contacting or starting a server (the eval scaffold uses it) |
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
 | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session; persisted per session |
 | `COGNEE_CODING_MEMORY` | unset (off) | `true` switches to [coding memory](#coding-memory-opt-in): capture once per request, one lesson block per session |

@@ -73,7 +73,12 @@ if not api_key:
     except Exception:
         pass
 
-print(json.dumps({"service_url": service_url, "api_key": api_key}))
+try:
+    from _net import is_loopback_url
+    loopback = is_loopback_url(service_url)
+except Exception:
+    loopback = False
+print(json.dumps({"service_url": service_url, "api_key": api_key, "loopback": loopback}))
 PY
 )"
 
@@ -89,6 +94,16 @@ API_KEY="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
 import json, sys
 try:
     print((json.loads(sys.argv[1] or "{}").get("api_key") or "").strip())
+except Exception:
+    pass
+PY
+)"
+# "1" when the server is on this machine: such a request never goes through a
+# proxy (curl would otherwise send it, with the key, to ALL_PROXY/http_proxy).
+LOOPBACK="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print("1" if json.loads(sys.argv[1] or "{}").get("loopback") else "")
 except Exception:
     pass
 PY
@@ -132,8 +147,16 @@ if [ -z "$API_KEY" ]; then
 fi
 
 CMD="${1:-}"
+# Every request goes through here: a local server is reached directly.
+server_curl() {
+    if [ -n "$LOOPBACK" ]; then
+        curl --noproxy '*' "$@"
+    else
+        curl "$@"
+    fi
+}
 api_get() {
-    curl -sS "$1" -H "X-Api-Key: ${API_KEY}" -w '\nHTTP %{http_code}\n'
+    server_curl -sS "$1" -H "X-Api-Key: ${API_KEY}" -w '\nHTTP %{http_code}\n'
 }
 
 case "$CMD" in
@@ -160,7 +183,7 @@ case "$CMD" in
         # Python source. Belt and braces with validate_uuid above: this helper
         # must only ever be able to express a single-document delete.
         payload="$(FORGET_DATASET_ID="$2" FORGET_DATA_ID="$3" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "dataId": os.environ["FORGET_DATA_ID"]}))')"
-        curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
+        server_curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
             -H "Content-Type: application/json" \
             -H "X-Api-Key: ${API_KEY}" \
             -d "$payload" \
@@ -170,6 +193,14 @@ case "$CMD" in
         # For manual/broader calls only (see SKILL.md) — eval in the same shell
         # as the curl that uses it; exports do not persist across Bash calls.
         printf 'export COGNEE_BASE_URL=%q\nexport COGNEE_API_KEY=%q\n' "$SERVICE_URL" "$API_KEY"
+        # A curl to a local server must not go through a proxy: exempt this
+        # machine for the shell that evals these lines, keeping the user's own
+        # entries. (curl reads no_proxy; Python reads either spelling.)
+        if [ -n "$LOOPBACK" ]; then
+            no_proxy_value="${no_proxy:-${NO_PROXY:-}}"
+            no_proxy_value="${no_proxy_value:+${no_proxy_value},}127.0.0.1,localhost,::1"
+            printf 'export NO_PROXY=%q no_proxy=%q\n' "$no_proxy_value" "$no_proxy_value"
+        fi
         ;;
     *)
         echo "Error: unknown command '${CMD}'" >&2

@@ -92,6 +92,10 @@ def _build_https_opener():
         ctx = ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         ctx = ssl.create_default_context()
+        if sys.platform == "win32":
+            # The default context already reads the Windows certificate store;
+            # there is no file bundle to look for.
+            return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
         _cert_loaded = False
         for path in filter(
             None,

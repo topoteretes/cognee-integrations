@@ -63,8 +63,18 @@ install Cognee with the command session start prints.**
   OpenAI-compatible endpoint cannot be configured. This is the most restrictive version
   on purpose; they will be added back shortly if the plugin directory accepts it.
 - **Requests to this machine never go through a proxy.** The local Cognee server and
-  the observer shim are reached directly even with `HTTP_PROXY` set; a remote server
-  uses the proxy as before. The observer's health check sends no token.
+  the observer shim are reached directly even with `HTTP_PROXY` set, including the
+  code-graph indexing requests and the `cognee-forget.sh` commands (whose `env`
+  output also exempts this machine in `NO_PROXY`); a remote server uses the proxy as
+  before. The local server gets `127.0.0.1`, `localhost` and `::1` added to `NO_PROXY`
+  when a proxy setting is passed to it, so its calls to the observer shim stay on this
+  machine. The observer's health check sends no token.
+- **No request to the local server without its key.** When the local owner key is not
+  available yet (the server is busy, or still starting), the request is not sent, and
+  the prompt hook no longer reports that as a rejected key.
+- **`COGNEE_PLUGIN_DISABLED=true`** (shell or `~/.cognee/.env`) turns the whole plugin
+  off. The skill-routing eval scaffold uses it instead of pointing the plugin at an
+  unreachable server, which the env file can no longer do.
 - **The Cloud key never goes to a local server.** A server on this machine always gets
   its own owner key, and the key is not even put in the environment of a process that
   talks to one. The one exception is a terminal pinned with `COGNEE_BACKEND=cloud`

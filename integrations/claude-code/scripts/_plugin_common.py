@@ -4635,6 +4635,16 @@ def recall_node_sets(project_tags: list[str]) -> list[str]:
     return list(dict.fromkeys(tags + extra))
 
 
+class LocalKeyUnavailable(urllib.error.URLError):
+    """No owner key for the plugin's local server yet (the lookup timed out,
+    the bootstrap has not minted it, or the server hides its keys).
+
+    The request is not sent: without a key the server can only answer 401,
+    which would read as a rejected key. Callers see it as a transport failure
+    with no verdict, like a timeout, never as an auth failure.
+    """
+
+
 def _json_http_request(
     path: str,
     payload: dict | None = None,
@@ -4660,7 +4670,11 @@ def _json_http_request(
                 "COGNEE_BACKEND=cloud is set but the Cognee Cloud URL option is empty"
             )
     base_url = (base_url or _local_api_url()).rstrip("/")
+    resolved_key = api_key is None
     api_key = api_key if api_key is not None else _api_key()
+    if resolved_key and not api_key and takes_owner_key(base_url):
+        hook_log("local_key_unavailable", {"path": path})
+        raise LocalKeyUnavailable("no local owner key yet; request not sent")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key

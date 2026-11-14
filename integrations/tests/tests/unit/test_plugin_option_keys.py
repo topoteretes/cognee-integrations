@@ -258,6 +258,9 @@ def test_a_blocking_hook_gives_up_after_one_and_a_half_seconds(
 
 def test_require_shell_auth_stops_a_keyless_remote_command(suite, isolated_modules, capsys):
     pc = isolated_modules(suite, "_plugin_common")
+    # Loading the modules may warn on stderr (no certificate bundle found):
+    # only what the guard writes is under test.
+    capsys.readouterr()
     with pytest.raises(SystemExit) as stopped:
         pc.require_shell_auth("https://tenant.cognee.ai", "", "cognee-search")
     assert stopped.value.code == 2

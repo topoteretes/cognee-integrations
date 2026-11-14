@@ -531,6 +531,8 @@ _SERVER_ENV_BASE = frozenset(
         "COMPUTERNAME",
     )
 )
+_PROXY_NAMES = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
+_LOOPBACK_NO_PROXY = ("127.0.0.1", "localhost", "::1")
 # Server settings the plugin itself puts in its environment (apply_cognee_env).
 _SERVER_ENV_PLUGIN = frozenset(
     {
@@ -572,6 +574,20 @@ def _server_env() -> dict:
             or name.startswith(("LLM_", "EMBEDDING_"))
         ):
             env[name] = value
+    # The server calls this machine too (the observer shim, with its bearer
+    # token and the full prompt). With a proxy copied over, exempt loopback in
+    # both spellings so those calls never reach the proxy host, keeping the
+    # user's own entries.
+    if any(name.upper() in _PROXY_NAMES for name in env):
+        own = env.get("no_proxy") or env.get("NO_PROXY") or ""
+        entries = [e.strip() for e in own.split(",") if e.strip()]
+        for host in _LOOPBACK_NO_PROXY:
+            if host not in entries:
+                entries.append(host)
+        env["NO_PROXY"] = ",".join(entries)
+        # Windows names are case-insensitive: one spelling there.
+        if sys.platform != "win32":
+            env["no_proxy"] = env["NO_PROXY"]
     # Run in agent mode: the server tears itself down once all registered
     # agents disconnect.
     env["COGNEE_AGENT_MODE"] = "true"
