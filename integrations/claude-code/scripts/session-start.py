@@ -14,12 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -114,53 +112,13 @@ _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() n
     "no",
 )
 
-# --- Self-managed cognee install ---------------------------------------------
-# The runtime venv is built ONLY from tooling already on the machine. The plugin
-# never downloads an installer script or an interpreter: the Claude Code plugin
-# directory admits only code that is in the reviewed repository or a package
-# pinned to an exact version, so the one thing fetched at setup is
-# ``cognee==<_PINNED_COGNEE_VERSION>`` from PyPI. uv is used when the user
-# already has it (fast resolver, and it can pick any suitable interpreter on
-# the machine); otherwise the stdlib ``venv`` + pip build from a host Python
-# 3.10+ (cognee requires 3.10-3.14). Nothing touches the user's PATH or shell
-# profile. The hooks themselves need only a stdlib python3 of 3.9+ (SDK-617):
-# the host interpreter never imports cognee, it only builds and talks to the venv.
-_UV_DIR = _GLOBAL_STATE_DIR / "uv"
-_UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
-# Where earlier plugin versions let uv store a downloaded interpreter. Still
-# handed to uv as a *discovery* location so a machine that already has one keeps
-# using it; downloads themselves are disabled (UV_PYTHON_DOWNLOADS=never).
-_UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
-# The interpreter range cognee itself supports (its ``requires-python``): both
-# the uv request and the stdlib fallback are bounded by it, so a too-new Python
-# (which cognee's wheels would refuse) is skipped the same as a too-old one.
-_FALLBACK_VENV_MIN_PYTHON = (3, 10)
-_FALLBACK_VENV_MAX_PYTHON = (3, 14)
-# A version *range*, not a single minor: lets uv pick whichever cognee-compatible
-# interpreter is already installed instead of insisting on one it would have to
-# fetch. COGNEE_PLUGIN_PYTHON overrides it (a version, a name, or a path).
-_PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or ">={}.{},<{}.{}".format(
-    *_FALLBACK_VENV_MIN_PYTHON, _FALLBACK_VENV_MAX_PYTHON[0], _FALLBACK_VENV_MAX_PYTHON[1] + 1
-)
-# Interpreter names probed on PATH for that fallback, newest first, when the
-# python3 that launched the hook is itself too old: macOS ships 3.9 as
-# /usr/bin/python3 while a Homebrew or python.org 3.12 sits beside it.
-_HOST_PYTHON_CANDIDATES = (
-    "python3.14",
-    "python3.13",
-    "python3.12",
-    "python3.11",
-    "python3.10",
-    "python3",
-    "python",
-)
-# Written when that fallback is refused; read by the next SessionStart so the
-# refusal reaches the user as a systemMessage (the worker that hits it runs
-# detached, with nothing it prints visible). Cleared once a venv is ready.
+# Written by earlier versions when they could not build the runtime venv; read
+# (and cleared once a venv is ready) so a stale refusal still reaches the user.
 _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
+# Why local mode cannot start: no user-built venv, cognee too old, or missing
+# driver extras (the plugin installs nothing, SDK-1411). Shown at SessionStart.
+_COGNEE_INSTALL_MARKER = _GLOBAL_STATE_DIR / "cognee-install-needed.json"
 _PINNED_COGNEE_VERSION = "1.6.6"
-_INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
-
 # Maps a configured backend provider env var to the cognee package "extra" that
 # provides its driver. A bare `cognee==<version>` install has none of these, so
 # the server crashes on first use of any non-default backend (#232): Postgres
@@ -209,106 +167,6 @@ def _cognee_install_spec() -> str:
     )
 
 
-# Install single-flight. Distinct from the server boot lock (which is short, on
-# the assumption a boot completes in ~a minute): a cold cognee install can take
-# minutes, so concurrent sessions must NOT install into the same venv at once.
-_VENV_INSTALL_LOCK = _GLOBAL_STATE_DIR / "venv-install.lock"
-_VENV_INSTALL_LOCK_STALE_SECONDS = _INSTALL_TIMEOUT_SECONDS + 60.0
-_VENV_INSTALL_WAIT_SECONDS = _INSTALL_TIMEOUT_SECONDS + 60.0
-_VENV_INSTALL_POLL_SECONDS = 0.5
-
-
-def _find_uv() -> str:
-    """Locate a uv that is already on the machine: the copy an earlier plugin
-    version left under ~/.cognee-plugin, then anything on PATH. Never fetched."""
-    if _UV_BIN.exists():
-        return str(_UV_BIN)
-    found = shutil.which("uv")
-    return found or ""
-
-
-def _host_python_version(python: str) -> tuple:
-    """``(major, minor)`` of an interpreter on disk, or ``()`` if it cannot run."""
-    try:
-        out = subprocess.run(
-            [python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        ).stdout.strip()
-        major, minor = out.split(".")
-        return (int(major), int(minor))
-    except Exception:
-        return ()
-
-
-def _cognee_supports(version: tuple) -> bool:
-    """Whether a ``(major, minor)`` falls inside cognee's supported range."""
-    if not version:
-        return False
-    return _FALLBACK_VENV_MIN_PYTHON <= tuple(version[:2]) <= _FALLBACK_VENV_MAX_PYTHON
-
-
-def _find_host_python() -> str:
-    """A Python inside cognee's supported range (3.10-3.14) already installed on
-    this machine, or '' when there is none.
-
-    Used by the stdlib ``venv`` fallback. The interpreter running this hook is
-    tried first (no subprocess), then the versioned names on PATH, newest first.
-    Nothing is downloaded: a miss is reported by ``_refuse_fallback_venv``.
-    """
-    if _cognee_supports(tuple(sys.version_info[:2])):
-        return sys.executable
-    seen = {sys.executable}
-    for name in _HOST_PYTHON_CANDIDATES:
-        found = shutil.which(name)
-        if not found or found in seen:
-            continue
-        seen.add(found)
-        if _cognee_supports(_host_python_version(found)):
-            return found
-    return ""
-
-
-def _host_python_label() -> str:
-    """``<sys.executable> (Python X.Y.Z)`` — names the interpreter a user must replace."""
-    return "{} (Python {}.{}.{})".format(sys.executable, *sys.version_info[:3])
-
-
-def _refuse_fallback_venv() -> None:
-    """Record why no runtime venv could be built: no Python 3.10+ on the machine.
-
-    Three readers: hook.log (forensics), this process's stderr (the bootstrap
-    log when detached, the terminal when not), and the marker the next
-    SessionStart turns into a systemMessage via ``_apply_host_python_warning``.
-    """
-    message = (
-        "Cognee Memory: cannot start the local Cognee server. Cognee requires Python 3.10 or "
-        "newer (up to 3.14), and no such interpreter is installed on this machine: the hook "
-        "runs under {}, none of {} on PATH qualifies, and the plugin does not download "
-        "interpreters. Install Python 3.10+ (python.org, Homebrew, or `uv python install "
-        "3.12` if you use uv), then start a new session. Cloud mode (COGNEE_BASE_URL) has no "
-        "such requirement.".format(_host_python_label(), "/".join(_HOST_PYTHON_CANDIDATES[:5]))
-    )
-    detail = {
-        "python": sys.executable,
-        "version": "{}.{}.{}".format(*sys.version_info[:3]),
-        "required": "{}.{}".format(*_FALLBACK_VENV_MIN_PYTHON),
-        "supported": "{}.{}-{}.{}".format(*_FALLBACK_VENV_MIN_PYTHON, *_FALLBACK_VENV_MAX_PYTHON),
-    }
-    hook_log("host_python_too_old_for_venv", detail)
-    print(message, file=sys.stderr)
-    try:
-        _HOST_PYTHON_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _HOST_PYTHON_MARKER.write_text(
-            json.dumps({"message": message, "updated_at": time.time(), **detail}),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        hook_log("host_python_marker_write_failed", {"error": str(exc)[:200]})
-
-
 def _apply_key_limit_warning(output: dict) -> dict:
     """Warn (systemMessage) while this machine runs on the personal key because
     the server refused it a key of its own: the plugin's agent is full (409).
@@ -339,15 +197,16 @@ def _apply_host_python_warning(output: dict) -> dict:
     the broken host repeats the message until a venv is built (which clears it
     in ``_write_venv_ready``) — this is the loud failure SDK-617 asks for.
     """
-    try:
-        if not _HOST_PYTHON_MARKER.exists():
-            return output
-        message = str(
-            json.loads(_HOST_PYTHON_MARKER.read_text(encoding="utf-8")).get("message") or ""
-        )
-    except Exception as exc:
-        hook_log("host_python_marker_read_failed", {"error": str(exc)[:200]})
-        return output
+    messages = []
+    for marker in (_HOST_PYTHON_MARKER, _COGNEE_INSTALL_MARKER):
+        try:
+            if marker.exists():
+                text = str(json.loads(marker.read_text(encoding="utf-8")).get("message") or "")
+                if text:
+                    messages.append(text)
+        except Exception as exc:
+            hook_log("host_python_marker_read_failed", {"error": str(exc)[:200]})
+    message = "\n\n".join(messages)
     if not message:
         return output
     result = dict(output or {})
@@ -361,18 +220,6 @@ def _apply_host_python_warning(output: dict) -> dict:
     top = str(result.get("systemMessage") or "").strip()
     result["systemMessage"] = "{}\n\n{}".format(top, message) if top else message
     return result
-
-
-def _install_failure(via: str, exc: BaseException) -> dict:
-    """hook.log detail for a failed venv build: the exception and the tail of
-    what uv / pip said. CalledProcessError's str() is just the command and exit
-    status; the reason (no matching interpreter, disk quota, resolver error) is
-    only in stderr, and without it a failed build on a new runner image or a
-    new OS cannot be diagnosed from the log alone."""
-    stderr = getattr(exc, "stderr", "") or ""
-    if isinstance(stderr, bytes):
-        stderr = stderr.decode("utf-8", "replace")
-    return {"via": via, "error": str(exc)[:300], "stderr": str(stderr).strip()[-300:]}
 
 
 def _venv_cognee_version() -> str:
@@ -464,33 +311,94 @@ def _write_venv_ready(version: str) -> None:
             "python": str(_VENV_PYTHON),
             "updated_at": time.time(),
         }
+        _VENV_READY_MARKER.parent.mkdir(parents=True, exist_ok=True)
         tmp = _VENV_READY_MARKER.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, _VENV_READY_MARKER)
     except Exception as exc:
         hook_log("venv_ready_write_failed", {"error": str(exc)[:200]})
     try:
-        # A usable venv exists, so the host-python refusal (if any) is moot.
+        # A usable venv exists, so an earlier refusal (if any) is moot.
         _HOST_PYTHON_MARKER.unlink(missing_ok=True)
+        _COGNEE_INSTALL_MARKER.unlink(missing_ok=True)
     except Exception as exc:
         hook_log("host_python_marker_unlink_failed", {"error": str(exc)[:200]})
 
 
-def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
-    """Ensure the plugin venv exists and holds the pinned cognee version.
+def _version_tuple(version: str) -> tuple:
+    parts = []
+    for piece in str(version or "").split(".")[:3]:
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
 
-    Called from the server-boot critical section (so it is already
-    single-flighted) and only at boot points where the server is POSITIVELY
-    absent (see server_presence) — a merely unresponsive server may be busy and
-    still holding the graph store's file lock, and upgrading the venv under it
-    corrupts the databases. Always installs the exact pinned version
-    (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
-    a known-good release, plus the extras the configured backend providers
-    need (_cognee_install_spec, #232).
 
-    Fails soft: if the install can't run (e.g. offline) but a usable cognee is
-    already present, returns True with whatever version is there. Returns False
-    only when no importable cognee venv exists afterwards.
+def manual_install_command() -> str:
+    """The one command that builds the local runtime the plugin no longer installs."""
+    spec = _cognee_install_spec()
+    if os.name == "nt":
+        venv = r"%USERPROFILE%\.cognee-plugin\venv"
+        return rf'py -3.12 -m venv "{venv}" && "{venv}\Scripts\python.exe" -m pip install "{spec}"'
+    return (
+        "python3 -m venv ~/.cognee-plugin/venv && "
+        f'~/.cognee-plugin/venv/bin/python -m pip install "{spec}"'
+    )
+
+
+def _refuse_local_runtime(reason: str, detail: dict) -> None:
+    """Record why local mode cannot start, with the command that fixes it.
+
+    The next SessionStart shows the marker as a systemMessage (see
+    ``_apply_host_python_warning``) until a usable runtime clears it.
+    """
+    message = (
+        "Cognee Memory: local mode needs Cognee installed by you; the plugin does not "
+        f"download or install packages. {reason} Run (with Python 3.10-3.14):\n"
+        f"  {manual_install_command()}\n"
+        "then start a new session. Cognee Cloud needs no local install."
+    )
+    hook_log("local_runtime_unavailable", {"reason": reason, **detail})
+    print(message, file=sys.stderr)
+    try:
+        _COGNEE_INSTALL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _COGNEE_INSTALL_MARKER.write_text(
+            json.dumps({"message": message, "updated_at": time.time(), **detail}),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        hook_log("cognee_install_marker_write_failed", {"error": str(exc)[:200]})
+
+
+def _flag_missing_local_runtime() -> None:
+    """Say at once when local mode has no venv at all (a file check, no probe).
+
+    A venv that exists but is too old or lacks extras is found by the boot path
+    (``ensure_cognee_installed``), which records the same marker.
+    """
+    try:
+        from _cloud_worker import enabled as cloud_enabled
+        from _plugin_common import managed_endpoint_enabled, service_url_is_local
+
+        if cloud_enabled() or managed_endpoint_enabled() or not service_url_is_local():
+            return
+        if _VENV_PYTHON.exists() or _COGNEE_INSTALL_MARKER.exists():
+            return
+        _refuse_local_runtime(
+            "Cognee is not installed in ~/.cognee-plugin/venv.", {"installed": ""}
+        )
+    except Exception as exc:
+        hook_log("local_runtime_check_failed", {"error": str(exc)[:200]})
+
+
+def ensure_cognee_installed(timeout: float = 0.0) -> bool:
+    """Whether the user-built venv holds a usable cognee. Never installs (SDK-1411).
+
+    Usable: cognee ``_PINNED_COGNEE_VERSION`` or newer (the version this plugin
+    release is tested with is the floor), with the driver extras the configured
+    providers need. Anything else is recorded with the exact install command and
+    local mode stays off; the server is never booted from an unusable venv.
     """
     apply_cognee_env()
     for directory in (_COGNEE_SYSTEM_DIR, _COGNEE_DATA_DIR, _COGNEE_CACHE_DIR):
@@ -500,167 +408,31 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
             hook_log(
                 "cognee_data_dir_mkdir_failed", {"dir": str(directory), "error": str(exc)[:200]}
             )
-
-    owner = f"install:{os.getpid()}"
-    acquired = False
-    deadline = time.monotonic() + _VENV_INSTALL_WAIT_SECONDS
-    try:
-        _VENV_INSTALL_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        while True:
-            now = time.time()
-            if _VENV_INSTALL_LOCK.exists():
-                stale = False
-                try:
-                    raw = json.loads(_VENV_INSTALL_LOCK.read_text(encoding="utf-8"))
-                    pid = int(raw.get("pid", 0) or 0)
-                    created_at = float(raw.get("created_at", 0) or 0)
-                    stale = (not _pid_alive(pid)) or (
-                        now - created_at > _VENV_INSTALL_LOCK_STALE_SECONDS
-                    )
-                except Exception:
-                    stale = True
-                if stale:
-                    try:
-                        _VENV_INSTALL_LOCK.unlink()
-                    except Exception as exc:
-                        hook_log("venv_install_lock_unlink_failed", {"error": str(exc)[:200]})
-
-            try:
-                fd = os.open(str(_VENV_INSTALL_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
-                acquired = True
-                break
-            except FileExistsError:
-                # Another process owns the install. Don't install concurrently —
-                # wait for it to produce a usable venv, then reuse it. The venv
-                # must satisfy our extras too: the other installer may be an
-                # extras-unaware plugin doing a bare install, in which case we
-                # keep waiting for the lock and add the drivers ourselves.
-                if _venv_cognee_version() == _PINNED_COGNEE_VERSION and not _venv_missing_extras(
-                    _detect_required_extras()
-                ):
-                    return True
-                if time.monotonic() >= deadline:
-                    return bool(_venv_cognee_version())
-                time.sleep(_VENV_INSTALL_POLL_SECONDS)
-
-        # Already at the pin AND holding the configured providers' drivers:
-        # there is nothing to install, so do not touch the venv. The install
-        # used to run unconditionally at every cold boot; on a machine where
-        # two plugins with different pins share this venv that made each boot
-        # flip the version back and forth — and a `pip install` is a mutation
-        # window the shared runtime is better off without. The version alone
-        # is not enough, though: a provider configured after the venv was
-        # built leaves the pin satisfied with its drivers missing (#232), so
-        # extras are probed too and a miss falls through to the install.
-        # The marker is (re)written so every plugin reading it sees the truth.
-        current = _venv_cognee_version()
-        required_extras = _detect_required_extras()
-        missing_extras = _venv_missing_extras(required_extras)
-        if current == _PINNED_COGNEE_VERSION:
-            if not missing_extras:
-                _write_venv_ready(current)
-                hook_log(
-                    "cognee_install_skipped_at_pin",
-                    {"version": current, "extras": required_extras},
-                )
-                return True
-            hook_log("cognee_extras_missing_at_pin", {"missing": missing_extras})
-
-        uv = _find_uv()
-        venv_present = _VENV_PYTHON.exists()
-        installed_via_uv = False
-
-        if uv:
-            env = os.environ.copy()
-            # uv must never fetch an interpreter: the runtime is built from what
-            # is already installed (no binaries downloaded at setup). The install
-            # dir is passed only so an interpreter an earlier plugin version put
-            # there is still discovered.
-            env["UV_PYTHON_DOWNLOADS"] = "never"
-            env.setdefault("UV_PYTHON_INSTALL_DIR", str(_UV_PYTHON_DIR))
-            try:
-                if not venv_present:
-                    subprocess.run(
-                        [uv, "venv", str(_VENV_DIR), "--python", _PINNED_PYTHON],
-                        env=env,
-                        cwd=str(_GLOBAL_STATE_DIR),
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                    )
-                subprocess.run(
-                    [
-                        uv,
-                        "pip",
-                        "install",
-                        "--upgrade",
-                        "--python",
-                        str(_VENV_PYTHON),
-                        _cognee_install_spec(),
-                    ],
-                    env=env,
-                    cwd=str(_GLOBAL_STATE_DIR),
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-                installed_via_uv = True
-            except Exception as exc:
-                hook_log("cognee_install_failed", _install_failure("uv", exc))
-
-        if not installed_via_uv and not _VENV_PYTHON.exists():
-            # Fallback: stdlib venv + pip, from a Python 3.10+ already on the
-            # machine. Reached when there is no uv, or when uv could not find a
-            # suitable interpreter (it is not allowed to download one). The venv
-            # inherits the host interpreter, so cognee's floor (3.10-3.14) must
-            # hold for it; the hooks run on any 3.9+, so probe explicitly rather
-            # than build a venv cognee could never install into.
-            host_python = _find_host_python()
-            if not host_python:
-                _refuse_fallback_venv()
-                return False
-            try:
-                subprocess.run(
-                    [host_python, "-m", "venv", str(_VENV_DIR)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-                subprocess.run(
-                    [
-                        str(_VENV_PYTHON),
-                        "-m",
-                        "pip",
-                        "install",
-                        "--upgrade",
-                        _cognee_install_spec(),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-            except Exception as exc:
-                hook_log("cognee_install_failed", _install_failure("venv_pip", exc))
-
-        version = _venv_cognee_version()
-        if not version:
-            hook_log("cognee_venv_unusable", {"venv_python": str(_VENV_PYTHON)})
-            return False
-        _write_venv_ready(version)
-        hook_log("cognee_install_ready", {"version": version, "extras": required_extras})
-        return True
-    finally:
-        if acquired:
-            try:
-                _VENV_INSTALL_LOCK.unlink()
-            except Exception as exc:
-                hook_log("venv_install_lock_release_failed", {"error": str(exc)[:200]})
+    current = _venv_cognee_version()
+    if not current:
+        _refuse_local_runtime(
+            "Cognee is not installed in ~/.cognee-plugin/venv.", {"installed": ""}
+        )
+        return False
+    if _version_tuple(current) < _version_tuple(_PINNED_COGNEE_VERSION):
+        _refuse_local_runtime(
+            f"Installed cognee {current} is older than {_PINNED_COGNEE_VERSION}.",
+            {"installed": current},
+        )
+        return False
+    required_extras = _detect_required_extras()
+    missing_extras = _venv_missing_extras(required_extras)
+    if missing_extras:
+        _refuse_local_runtime(
+            "Your configured providers need driver extras that are not installed: "
+            + ", ".join(missing_extras)
+            + ".",
+            {"installed": current, "missing_extras": missing_extras},
+        )
+        return False
+    _write_venv_ready(current)
+    hook_log("cognee_runtime_ready", {"version": current, "extras": required_extras})
+    return True
 
 
 def _parse_host_port(url: str) -> tuple[str, int]:
@@ -763,19 +535,11 @@ def _ensure_local_server_running(
             "COGNEE_MANAGED_ENDPOINT forbids booting a local fallback server"
         )
 
-    # The server is positively absent and we're at a boot point: ensure the
-    # venv holds the latest cognee BEFORE booting, so the server's lifespan
-    # migrations run on the upgraded code. Single-flighted on its own (long)
-    # lock, separate from the short boot lock below, since a cold install can
-    # take minutes.
+    # The server is positively absent and we're at a boot point: check that the
+    # user-built venv holds a usable cognee BEFORE booting. Nothing is installed
+    # (SDK-1411); an unusable venv is reported with the command that fixes it.
     if not ensure_cognee_installed():
-        raise RuntimeError("cognee runtime unavailable (install/upgrade failed)")
-
-    # A cold install can take minutes — long enough for the world to change.
-    # Re-verify the premise before proceeding to the boot lock.
-    if _require_absent("post_install"):
-        _ready()
-        return
+        raise RuntimeError("cognee runtime unavailable (install cognee, see the session message)")
 
     owner = f"session-start:{os.getpid()}"
     acquired = False
@@ -2015,148 +1779,6 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
-def _band_draws_this_session(session_id: str) -> bool:
-    """Whether the hooks module draws this session's status row above the prompt.
-
-    The module writes ``band/<session>.json`` at its own session start, which
-    runs before this hook, so the marker is already there when the module
-    loaded for this session. It is absent where the module cannot load (a
-    Claude Code older than the mods API, ``--safe-mode``, an organisation that
-    allows only its own mods) and where the band is switched off in ``/config``.
-    """
-    if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
-        return False
-    marker = Path.home() / ".cognee-plugin" / "claude-code" / "band" / f"{session_id}.json"
-    try:
-        return marker.is_file()
-    except OSError:
-        return False
-
-
-def _ensure_statusline_configured(session_id: str = "") -> None:
-    """Write the statusLine entry to ~/.claude/settings.json when safe.
-
-    One row, whichever can be drawn: where the hooks module draws the row above
-    the prompt for this session, the plugin's own entry is removed (Claude Code
-    keeps a status-line row reserved as long as the entry exists, even when the
-    renderer prints nothing for the session, which leaves a blank row under the
-    prompt); where it does not, the line below the prompt is installed, or
-    refreshed when the plugin moved. Claude Code hot-reloads settings.json, so
-    either change lands on the next status refresh without a restart. An entry
-    the user wrote is never touched either way.
-    """
-    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
-        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
-        return
-    if _band_draws_this_session(session_id):
-        _evict_own_statusline(reason="band_draws_row")
-        return
-
-    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
-    if plugin_root:
-        statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
-    else:
-        statusline_sh = Path(__file__).resolve().parent / "cognee-statusline.sh"
-
-    if not statusline_sh.exists():
-        hook_log(
-            "statusline_setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
-        )
-        return
-
-    settings_path = Path.home() / ".claude" / "settings.json"
-    # Guard on the script's existence at run time. Claude Code does not remove
-    # this statusLine entry when the plugin is uninstalled, and the command runs
-    # through a shell — so if the plugin's files are later purged from the cache,
-    # a bare path would fail on every refresh. The `[ -x ] && exec … || true`
-    # guard degrades to a clean, empty status line instead. (When the files
-    # linger but the plugin is disabled, the renderer self-evicts this entry.)
-    guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
-    desired = {"type": "command", "command": guarded_command}
-    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
-    # to Claude's event-driven updates, so the connection glyph reflects a change
-    # (e.g. a bad key detected at SessionStart, or the server dying) while the
-    # session is idle — event triggers go quiet when idle, and settings changes
-    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
-    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
-    try:
-        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
-    except ValueError:
-        _interval = 2
-    if _interval >= 1:
-        desired["refreshInterval"] = _interval
-
-    try:
-        settings: dict = {}
-        if settings_path.exists():
-            text = settings_path.read_text(encoding="utf-8").strip()
-            if text:
-                settings = json.loads(text)
-
-        existing = settings.get("statusLine")
-        if existing == desired:
-            return
-
-        existing_command = existing.get("command") if isinstance(existing, dict) else None
-        is_cognee_owned = (
-            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
-        )
-        if existing and not is_cognee_owned:
-            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
-            return
-
-        settings["statusLine"] = desired
-        _write_settings(settings_path, settings)
-        hook_log("statusline_configured", {"path": str(statusline_sh)})
-    except Exception as exc:
-        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
-
-
-def _write_settings(settings_path: Path, settings: dict) -> None:
-    """Replace ~/.claude/settings.json atomically (never a torn file)."""
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, settings_path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _evict_own_statusline(reason: str) -> None:
-    """Remove the plugin's own ``statusLine`` entry from ~/.claude/settings.json.
-
-    Only an entry that runs ``cognee-statusline.sh`` is ours; a line the user
-    set themselves (a chain script of their own included) is left alone, with
-    a log line saying so. Best-effort: a settings file that cannot be read or
-    written is left as it is.
-    """
-    settings_path = Path.home() / ".claude" / "settings.json"
-    try:
-        if not settings_path.exists():
-            return
-        text = settings_path.read_text(encoding="utf-8").strip()
-        settings = json.loads(text) if text else {}
-        existing = settings.get("statusLine")
-        if not existing:
-            return
-        existing_command = existing.get("command") if isinstance(existing, dict) else None
-        if not (isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command):
-            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
-            return
-        settings.pop("statusLine", None)
-        _write_settings(settings_path, settings)
-        hook_log("statusline_evicted", {"reason": reason})
-    except Exception as exc:
-        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
-
-
 _MEMORY_PREFERENCE_STEER = (
     "Use cognee-search for memory and cognee-remember to save it. "
     "Before searching, say 'Searching Cognee…' in progress text. "
@@ -2191,51 +1813,6 @@ def _apply_memory_preference(output: dict) -> dict:
     return result
 
 
-def _apply_update_nudge(output: dict) -> dict:
-    """Append a one-time 'update available' systemMessage (once per new version).
-
-    The version comparison + marker are produced by the background check in the
-    idle watcher; here we only READ the marker (no network). The status line
-    surfaces the same info ambiently on every refresh — this message is the
-    actionable, one-shot nudge. Shown once per newly-detected version (tracked
-    via ``notified_version``) so it never nags, and auto-stops once updated.
-    """
-    try:
-        from _plugin_common import installed_plugin_id, mark_update_notified, read_update_status
-
-        status = read_update_status()
-    except Exception:
-        return output
-    if not status:
-        return output
-    installed = str(status.get("installed_version") or "")
-    latest = str(status.get("latest_version") or "")
-    if not (installed and latest) or status.get("notified_version") == latest:
-        return output
-
-    # The id must match the marketplace the user installed from, or the
-    # suggested command fails with "plugin not found".
-    try:
-        plugin_id = installed_plugin_id()
-    except Exception:
-        plugin_id = "cognee-memory@cognee"
-    message = (
-        f"Cognee update available {installed} → {latest} — run "
-        f"`/plugin update {plugin_id}` (or enable marketplace auto-update)."
-    )
-    result = dict(output or {})
-    hso = dict(result.get("hookSpecificOutput") or {})
-    hso.setdefault("hookEventName", "SessionStart")
-    existing = str(hso.get("systemMessage") or "").strip()
-    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
-    result["hookSpecificOutput"] = hso
-    try:
-        mark_update_notified(latest)
-    except Exception:
-        pass
-    return result
-
-
 async def _start(payload: dict | None = None) -> dict:
     """Session start (:func:`_start_session`).
 
@@ -2256,7 +1833,6 @@ async def _start(payload: dict | None = None) -> dict:
 async def _start_session(payload: dict | None, setup: dict) -> dict:
     config = load_config()
     payload = payload or {}
-    _ensure_statusline_configured(str(payload.get("session_id") or ""))
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
     # The service URL is the sole router (api_key is optional auth, with a
     # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided
@@ -2822,12 +2398,12 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     try:
-        from _auto_memory import sync as sync_auto_memory
+        from _auto_memory import advice as auto_memory_advice
         from _cloud_worker import enabled as cloud_enabled
 
-        # Native memory is only taken over in cloud mode; anywhere else, give back
-        # a setting we changed earlier.
-        notice = sync_auto_memory(cloud_enabled())
+        # Claude Code's own settings are never written (SDK-1411): at most a
+        # one-time note on how to turn its auto-memory off, or back on.
+        notice = auto_memory_advice(cloud_enabled())
         if notice:
             hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
             hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
@@ -2891,7 +2467,7 @@ def main():
             # A missing, busy or malformed cache must never cost the startup output.
             hook_log("context_digest_inject_failed", {"error": str(exc)[:200]})
     output = _apply_sync_notice(output, payload)
-    output = _apply_update_nudge(output)
+    _flag_missing_local_runtime()
     output = _apply_host_python_warning(output)
     output = _apply_key_limit_warning(output)
     if coding:

@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[3] / "claude-code/skills/cognee-report/scripts"
+# Out of the plugin since 1.9.0 (SDK-1411): a developer tool, not shipped.
+SCRIPTS = Path(__file__).resolve().parents[2] / "claude_outcome_eval"
 spec = importlib.util.spec_from_file_location("outcome_eval", SCRIPTS / "outcome_eval.py")
 oe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oe)

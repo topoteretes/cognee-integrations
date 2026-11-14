@@ -76,17 +76,6 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
-def _run_update_check() -> None:
-    """Fire the background, interval-guarded plugin update check (best-effort)."""
-    try:
-        sys.path.insert(0, os.path.dirname(__file__))
-        from _plugin_common import maybe_check_for_update  # type: ignore
-
-        maybe_check_for_update()
-    except Exception as exc:
-        _log("update_check_error", error=str(exc)[:200])
-
-
 def _check_llm_key(config: dict) -> None:
     """Provider-agnostic LLM-key validation for the status line (local mode).
 
@@ -244,9 +233,6 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         user_id=config.get("user_id", ""),
         poll=POLL_SECONDS,
     )
-    # Runs once per watcher launch (≈ once per session); the check itself is
-    # internally rate-limited to ≤ once per COGNEE_UPDATE_CHECK_INTERVAL.
-    _run_update_check()
     # Validate the LLM key once at session start (background, provider-agnostic).
     _check_llm_key(config)
     exit_reason = "loop_complete"

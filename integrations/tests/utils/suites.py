@@ -135,6 +135,13 @@ class Suite:
     #: plugin options (CLAUDE_PLUGIN_OPTION_*, which the host exports to hooks)
     #: and ignores them in the shell and ~/.cognee/.env. Claude Code only.
     keys_from_plugin_options: bool = False
+    #: Capability: session start installs cognee from PyPI into the shared venv
+    #: (uv or pip, with the interpreter fallback). The Claude Code plugin does
+    #: not (directory policy, SDK-1411): the user builds the venv.
+    installs_cognee: bool = True
+    #: Capability: a background check of the published plugin version and the
+    #: update nudge on the status line / at session start. Claude Code: none.
+    checks_for_updates: bool = True
 
 
 CLAUDE = Suite(
@@ -162,6 +169,8 @@ CLAUDE = Suite(
     has_cloud_worker=True,
     has_plugin_identity=False,
     keys_from_plugin_options=True,
+    installs_cognee=False,
+    checks_for_updates=False,
 )
 
 CODEX = Suite(

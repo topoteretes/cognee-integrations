@@ -22,9 +22,9 @@ Decision (``resolve_observer``), in order:
 * cloud mode → off (the remote server owns its LLM key).
 * ``COGNEE_MANAGED_ENDPOINT=true`` → off (the external deployment owns its LLM).
 * ``auto`` (default) and an ``LLM_API_KEY`` or an explicit ``LLM_PROVIDER`` is
-  configured → off: the user chose a provider, respect it. That includes one in
-  the ``.env`` the server itself loads (``server_dotenv_path``), which overrides
-  anything this process exports.
+  configured → off: the user chose a provider, respect it. A key in a ``.env``
+  that cognee itself loads is not looked for (the plugin reads no key file,
+  SDK-1411); cognee still prefers that key at runtime.
 * no ``claude`` executable reachable → off (``true`` surfaces this as an error).
 * otherwise → on.
 
@@ -274,48 +274,6 @@ def llm_key_configured() -> bool:
     return bool(key) and not _is_observer_key(key)
 
 
-def server_dotenv_path() -> Path | None:
-    """The ``.env`` the local cognee server will load, if any.
-
-    ``import cognee`` runs ``dotenv.load_dotenv(override=True)``, whose
-    ``find_dotenv`` walks up from the cognee package directory and takes the
-    first ``.env`` it finds: inside the venv, then ``~/.cognee-plugin``, ``~``,
-    and so on to the root. Because of ``override=True`` its values beat the
-    environment the server was spawned with, so a key there is the one the
-    server uses even though this process never sees it.
-    """
-    start = _SERVER_VENV
-    for pattern in ("lib/python*/site-packages/cognee", "Lib/site-packages/cognee"):
-        found = sorted(_SERVER_VENV.glob(pattern))
-        if found:
-            start = found[-1]
-            break
-    try:
-        current = start.resolve()
-    except OSError:
-        current = start
-    for directory in (current, *current.parents):
-        candidate = directory / ".env"
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            continue
-    return None
-
-
-def server_dotenv_values() -> dict:
-    path = server_dotenv_path()
-    if path is None:
-        return {}
-    try:
-        from _env_file import parse_env_file
-
-        return parse_env_file(path)
-    except Exception:
-        return {}
-
-
 def _is_local_url(url: str) -> bool:
     host = (urllib.parse.urlparse(url).hostname or "").lower()
     return host in ("localhost", "::1", "0.0.0.0") or host.startswith("127.")
@@ -384,14 +342,6 @@ def resolve_observer(config: dict | None = None) -> dict:
                 return result
             if llm_provider_configured():
                 result["reason"] = "llm_provider_configured"
-                return result
-            dotenv = server_dotenv_values()
-            dotenv_key = str(dotenv.get("LLM_API_KEY") or "").strip()
-            if (dotenv_key and not _is_observer_key(dotenv_key)) or str(
-                dotenv.get("LLM_PROVIDER") or ""
-            ).strip():
-                result["reason"] = "server_dotenv_configured"
-                result["dotenv"] = str(server_dotenv_path() or "")
                 return result
     warning = model_warning()
     if warning:
@@ -618,9 +568,6 @@ def describe(decision: dict | None = None) -> str:
         "managed_endpoint": "off (COGNEE_MANAGED_ENDPOINT: the deployment owns its LLM key)",
         "llm_key_configured": "off (LLM_API_KEY is configured)",
         "llm_provider_configured": "off (LLM_PROVIDER is configured)",
-        "server_dotenv_configured": (
-            f"off (the server's {decision.get('dotenv') or '.env'} configures its LLM)"
-        ),
         "claude_cli_missing": "unavailable (no `claude` executable found)",
     }
     return reasons.get(str(decision.get("reason") or ""), "off")

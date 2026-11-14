@@ -37,8 +37,10 @@ Explain the paths relevant to the question:
   is cleared or compacted.
 - Local logs and markers live in `~/.cognee-plugin/claude-code/`. Server memory stays
   until explicitly deleted. `cognee-report` measures observed outcomes.
-- Cloud setup manages native auto-memory only when there is no explicit user choice;
-  `COGNEE_DISABLE_AUTO_MEMORY=false` restores the plugin-owned setting.
+- The plugin never writes Claude Code's settings. In Cloud mode it says once that
+  Claude auto-memory is on alongside Cognee and how to turn it off
+  (`autoMemoryEnabled: false` in `~/.claude/settings.json`); it
+  installs no packages and adds no status line.
 
 Distinguish an accepted capture, a landed graph improve, and recalled context.
 Consult the installed README for background retries/cache behavior before claiming

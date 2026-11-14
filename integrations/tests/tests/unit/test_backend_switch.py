@@ -17,6 +17,7 @@ of silently falling back to local.
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -130,10 +131,11 @@ def test_keys_in_the_file_or_shell_are_ignored(suite, isolated_modules, tmp_path
     assert os.environ["COGNEE_API_KEY"] == "ck_option"
 
 
-def test_url_option_wins_and_is_recorded_for_processes_without_options(
-    suite, isolated_modules, tmp_path, monkeypatch
+def test_url_option_wins_and_is_read_from_settings_without_options(
+    suite, isolated_modules, temp_home, tmp_path, monkeypatch
 ):
-    """A hook records the URL option; the status line and skills read it back."""
+    """Hooks get the URL option exported; the status line and skills read it
+    where Claude Code saves non-secret options (``pluginConfigs``)."""
     if not suite.keys_from_plugin_options:
         pytest.skip(f"{suite.name}: has no plugin options")
     ef = isolated_modules(suite, "_env_file")
@@ -148,8 +150,6 @@ def test_url_option_wins_and_is_recorded_for_processes_without_options(
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
     assert os.environ["COGNEE_BASE_URL"] == option_url
-    assert ef._URL_OPTION_RECORD.is_file()
-    assert "option.cognee.ai" in ef._URL_OPTION_RECORD.read_text(encoding="utf-8")
 
     # The status line / a Bash-run skill: no options, no CLAUDE_PLUGIN_ROOT.
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT")
@@ -157,15 +157,25 @@ def test_url_option_wins_and_is_recorded_for_processes_without_options(
     monkeypatch.delenv("COGNEE_BASE_URL")
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
-    assert os.environ["COGNEE_BASE_URL"] == option_url
+    assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL  # no option saved: the file's URL
 
-    # The option cleared: the next hook removes the record.
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path))
+    settings = temp_home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "pluginConfigs": {
+                    "other-plugin@x": {"options": {"cognee_base_url": "https://wrong"}},
+                    "cognee-memory@cognee": {"options": {"cognee_base_url": option_url}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.delenv("COGNEE_BASE_URL")
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
-    assert not ef._URL_OPTION_RECORD.exists()
-    assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL
+    assert os.environ["COGNEE_BASE_URL"] == option_url
 
 
 def test_forced_cloud_scrubs_nothing(env_file, monkeypatch):

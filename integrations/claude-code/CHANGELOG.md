@@ -12,9 +12,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.9.0]
 
-Changes to meet Anthropic's plugin directory policy. Since 1.7.0 every version has
-been held by that policy, and since Nov 4 the listed 1.6.6 no longer meets its
-credential rule. This release removes what the held versions were flagged for.
+A conservative release to meet Anthropic's plugin directory policy (SDK-1411). Since
+1.7.0 every version has been held by that policy, and since Nov 4 the listed 1.6.6 no
+longer meets its credential rule. The plugin now reads no credential from the
+machine, stores none, writes nothing into Claude Code's settings, installs nothing
+and sends nothing anywhere but the Cognee server. **Existing users: enter your keys
+once in the plugin's options; in local mode, install Cognee with the command session
+start prints.**
 
 ### Changed
 
@@ -23,15 +27,33 @@ credential rule. This release removes what the held versions were flagged for.
   (`userConfig`: `cognee_base_url`, `cognee_api_key`, `llm_api_key`), and keeps the two
   keys in its secure credential store. The plugin reads `COGNEE_API_KEY` and
   `LLM_API_KEY` only from those options: a value in the shell or in `~/.cognee/.env` is
-  ignored. `COGNEE_BASE_URL` still works from either, and the option wins when set.
-  **Existing users enter their keys once in the plugin's options.**
+  ignored. `COGNEE_BASE_URL` still works from either; the option wins when set. The
+  status line and Bash-run skills, which get no options, read the URL option where
+  Claude Code saves it (`pluginConfigs` in `~/.claude/settings.json`).
 - **No key is stored on disk.** `~/.cognee-plugin/api_key.json` and
   `~/.cognee-plugin/claude-code/agent_key.json` are no longer read or written. In local
   mode the plugin looks up its own server's owner key by logging in as the server's
   default user, once per process.
 - **Plugin identity is off.** Every request runs as the user's own key: no per-machine
   agent key is minted, so there is no shared agent memory role and no agent key limit.
-  `COGNEE_PLUGIN_IDENTITY` is ignored.
+  `COGNEE_PLUGIN_IDENTITY` is ignored. Registration still says `type: claude_code`.
+- **Local mode needs a Cognee you install.** Session start no longer installs Cognee
+  (no uv, no pip, no interpreter fallback). It uses `~/.cognee-plugin/venv` when that
+  holds cognee 1.6.6 or newer with the driver extras your providers need; otherwise it
+  prints the exact install command and local mode stays off.
+- **The status line is no longer installed.** Session start does not write a
+  `statusLine` entry into `~/.claude/settings.json`, and nothing removes or updates one.
+  An entry an earlier version wrote keeps working until a plugin update moves its
+  script path; `doctor.py` shows the connection state instead.
+- **Claude auto-memory is advised about, not changed.** In Cloud mode session start says
+  once that Claude Code's auto-memory is on alongside Cognee and how to turn it off; it
+  no longer sets `autoMemoryEnabled`. If an earlier version turned it off, it says so
+  once. `COGNEE_DISABLE_AUTO_MEMORY` no longer applies.
+- **The Claude observer passes no credential.** The `claude -p` child it runs gets only
+  an allowlisted environment (path, home, config dir, locale, proxy and certificate
+  settings). A login that lives only in `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
+  can no longer run the observer; set the LLM API key option instead. The observer no
+  longer opens the local server's `.env` to decide whether to start.
 
 ### Removed
 
@@ -39,16 +61,25 @@ credential rule. This release removes what the held versions were flagged for.
   the prompt with its dataset picker and `see fix` dialog, activity after the spinner, the
   first-run tour (`/cognee-tour`), `/cognee-dataset`, and the direct tools
   `mcp__cognee-memory__search` / `mcp__cognee-memory__remember`, with their options
-  (`icon`, `band`, `spinner`, `tools`, `tour`). The settings status line, the skills and
-  `cognee-switch-datasets` remain.
+  (`icon`, `band`, `spinner`, `tools`, `tour`), and the helper that wrote a pasted key
+  into `~/.cognee/.env`. The skills and `cognee-switch-datasets` remain.
 - **The `cognee-keys` skill** and `scripts/plugin-keys.py`: there are no agent keys left
-  to list or revoke.
+  to list or revoke. Keys minted by earlier versions can be revoked from the Cognee
+  Cloud dashboard.
+- **The update check:** no daily request for the published version, and no update
+  notice on the status line or at session start. Claude Code's plugin updates cover it.
+- **From `cognee-report`:** the `--server` check, the Notion export
+  (`--export-notion`, which read `NOTION_TOKEN`) and the `outcomes` command. The outcome
+  harness moved to `integrations/tests/claude_outcome_eval/` in the repository and no
+  longer ships with the plugin.
 
 ### Known limitations
 
 - Claude Code passes plugin options only to hook processes. Skills that call the server
-  through the Bash tool (search, remember, forget, index, the doctor's auth check) cannot
+  through the Bash tool (search, remember, forget, code indexing, the recaps, the
+  dataset switch's listing, the doctor's auth check, the `cognee-recall` agent) cannot
   authenticate in Cloud mode. Automatic recall and capture work in both modes.
+- Local mode logs in to its own server once per hook process, adding a little latency.
 
 ## [1.8.1] - 2026-11-14
 
@@ -905,7 +936,7 @@ credential rule. This release removes what the held versions were flagged for.
 - **Local mode no longer downloads anything but the pinned `cognee` package.** The
   Claude Code plugin directory admits only code that is in the reviewed repository or a
   package pinned to an exact version, and the bootstrap broke that rule twice: when uv
-  was missing it ran `curl https://astral.sh/uv/install.sh | sh`, and it let uv fetch a
+  was missing it downloaded and ran uv's installer script, and it let uv fetch a
   standalone Python 3.12 from GitHub when none was installed. Both are gone.
   `session-start.py` now builds the runtime venv only from tooling already on the
   machine: an existing uv (invoked with `UV_PYTHON_DOWNLOADS=never` and a `>=3.10,<3.15`
@@ -967,7 +998,7 @@ credential rule. This release removes what the held versions were flagged for.
   cache itself. New hook event `readable_datasets_refresh_deferred`.
 
 ### Removed
-- `_install_uv()` and the `https://astral.sh/uv/install.sh` constant. uv found under
+- `_install_uv()` and the URL of uv's installer script. uv found under
   `~/.cognee-plugin/uv` from an earlier plugin version, or on PATH, is still used.
 
 ## [1.6.4]

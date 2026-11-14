@@ -220,45 +220,71 @@ def classify_failure(text: str) -> int:
     return 502
 
 
-#: Variables that tie a process to the Claude Code session that launched it. A
-#: child inheriting them may refuse to start ("cannot run inside Claude Code"),
-#: attach to the parent's session or resolve the parent's plugin root.
-_PARENT_SESSION_ENV = frozenset(
+#: The only variables the ``claude`` child gets (an allowlist, SDK-1411): what a
+#: process needs to find its executables, home and config, locale, temp dir,
+#: proxy and certificate settings, and the platform basics on Windows and
+#: Linux. No token, key or other credential variable is ever passed on: the
+#: child authenticates with the subscription login Claude Code keeps in its own
+#: store (the keychain, or ``.credentials.json`` under ``CLAUDE_CONFIG_DIR``).
+#: A ``claude setup-token`` login that lives only in ``CLAUDE_CODE_OAUTH_TOKEN``
+#: therefore cannot run the observer; that user sets the plugin's LLM API key
+#: option instead. Variables tying the child to the parent session
+#: (``CLAUDECODE``, ``CLAUDE_PLUGIN_ROOT``, ...) are not on the list either, so
+#: it never refuses to start or attaches to the parent's session.
+_CHILD_ENV_ALLOWLIST = frozenset(
     {
-        "CLAUDECODE",
-        "CLAUDE_PID",
-        "CLAUDE_EFFORT",
-        "CLAUDE_ENV_FILE",
-        "CLAUDE_PROJECT_DIR",
-        "CLAUDE_PLUGIN_ROOT",
-        "CLAUDE_PLUGIN_DATA",
-        "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_CODE_EXECPATH",
-        "CLAUDE_CODE_SSE_PORT",
-        "CLAUDE_CODE_CHILD_SESSION",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LANGUAGE",
+        "TZ",
+        "TERM",
+        "CLAUDE_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "NODE_EXTRA_CA_CERTS",
+        # Windows
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "USERNAME",
     }
 )
-_PARENT_SESSION_PREFIXES = ("CLAUDE_CODE_SESSION_", "CLAUDE_CODE_MESSAGING_")
-#: Would make the child bill an API key instead of the subscription the
-#: observer promises.
-_BILLING_ENV = frozenset({"ANTHROPIC_API_KEY"})
+_CHILD_ENV_PREFIXES = ("LC_",)
 
 
 def child_env() -> dict:
-    """Environment for the ``claude`` child: no trace of the parent Claude session.
-
-    Only the parent-session variables are dropped. Everything else Claude Code
-    needs to authenticate stays: ``CLAUDE_CONFIG_DIR`` (where the credentials
-    live), ``CLAUDE_CODE_OAUTH_TOKEN`` (``claude setup-token`` logins) and the
-    Bedrock/Vertex switches. ``ANTHROPIC_API_KEY`` is dropped so a key in the
-    user's shell cannot quietly move the bill off the subscription.
-    """
+    """Environment for the ``claude`` child: the allowlist and the observer flag."""
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in _PARENT_SESSION_ENV
-        and key not in _BILLING_ENV
-        and not key.startswith(_PARENT_SESSION_PREFIXES)
+        if key in _CHILD_ENV_ALLOWLIST or key.startswith(_CHILD_ENV_PREFIXES)
     }
     env[_observer.CHILD_ENV_FLAG] = "1"
     return env

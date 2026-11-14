@@ -216,8 +216,15 @@ def test_status_missing_file(env_file_env):
 # ── the fix dialog's write: COGNEE_ENV_FILE honoured, owner-only ────────────
 
 
+def _needs_env_append(ef) -> None:
+    # The Claude Code plugin writes no key anywhere (SDK-1411), so it has no append.
+    if not hasattr(ef, "append_env_value"):
+        pytest.skip("this plugin never writes a value to the env file")
+
+
 def test_append_creates_the_file_owner_only_where_the_hooks_read(env_file_env, monkeypatch):
     ef, fresh = env_file_env
+    _needs_env_append(ef)
     path = fresh(None, name="custom.env")  # COGNEE_ENV_FILE points here; file absent
     written = ef.append_env_value("COGNEE_API_KEY", "ck_live_123")
     assert written == path
@@ -228,6 +235,7 @@ def test_append_creates_the_file_owner_only_where_the_hooks_read(env_file_env, m
 
 def test_append_keeps_existing_lines_and_ends_them(env_file_env):
     ef, fresh = env_file_env
+    _needs_env_append(ef)
     path = fresh('COGNEE_BASE_URL="https://x"')  # no trailing newline
     ef.append_env_value("COGNEE_API_KEY", "k")
     assert path.read_text(encoding="utf-8") == 'COGNEE_BASE_URL="https://x"\nCOGNEE_API_KEY="k"\n'
@@ -236,6 +244,7 @@ def test_append_keeps_existing_lines_and_ends_them(env_file_env):
 @pytest.mark.parametrize("name, value", [("bad name", "v"), ("COGNEE_API_KEY", "two\nlines")])
 def test_append_refuses_a_bad_name_or_a_multiline_value(env_file_env, name, value):
     ef, fresh = env_file_env
+    _needs_env_append(ef)
     path = fresh(None)
     with pytest.raises(ValueError):
         ef.append_env_value(name, value)

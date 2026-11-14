@@ -60,10 +60,12 @@ _DERIVED_SECRETS = ("COGNEE_PRINCIPAL_API_KEY",)
 _PLUGIN_OPTION_BASE_URL = "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL"
 # Claude Code exports the options to hook processes only (and their children);
 # CLAUDE_PLUGIN_ROOT marks those. The status line and the Bash-run skills get
-# neither, so a hook records the URL option here for them. Only the URL: the
-# keys are never written anywhere.
+# no options, so they read the URL option where Claude Code keeps non-secret
+# option values: ``pluginConfigs["cognee-memory@<marketplace>"].options`` in the
+# user settings. The keys are secrets and are never readable there.
 _HOOK_PROCESS_MARKER = "CLAUDE_PLUGIN_ROOT"
-_URL_OPTION_RECORD = Path.home() / ".cognee-plugin" / "claude-code" / "cloud_url_option.json"
+_PLUGIN_ID_PREFIX = "cognee-memory@"
+_URL_OPTION_NAME = "cognee_base_url"
 
 # Explicit per-terminal mode switch. The shared name flips every Cognee plugin
 # in the terminal; the plugin-specific name beats it when both are set. The
@@ -160,40 +162,36 @@ def _apply_plugin_options() -> None:
             os.environ.pop(var, None)
     if os.environ.get(_HOOK_PROCESS_MARKER, "").strip():
         base_url = os.environ.get(_PLUGIN_OPTION_BASE_URL, "").strip()
-        _record_url_option(base_url)
     else:
-        base_url = _recorded_url_option()
+        base_url = _url_option_from_settings()
     if base_url:
         os.environ["COGNEE_BASE_URL"] = base_url
 
 
-def _recorded_url_option() -> str:
-    """The URL option a hook last recorded, for processes that get no options."""
+def _url_option_from_settings() -> str:
+    """The URL option as Claude Code saved it, for processes that get no options.
+
+    Read from the user settings (``CLAUDE_CONFIG_DIR`` or ``~/.claude``), the
+    only scope Claude Code reads ``pluginConfigs`` from besides managed settings.
+    Never raises; "" when the plugin has no URL option set.
+    """
     try:
         import json
 
-        data = json.loads(_URL_OPTION_RECORD.read_text(encoding="utf-8"))
-        return str(data.get("base_url") or "").strip() if isinstance(data, dict) else ""
-    except Exception:
-        return ""
-
-
-def _record_url_option(base_url: str) -> None:
-    """Keep the record in step with the option (removed when it is empty). Never raises."""
-    try:
-        if not base_url:
-            _URL_OPTION_RECORD.unlink(missing_ok=True)
-            return
-        if _recorded_url_option() == base_url:
-            return
-        import json
-
-        _URL_OPTION_RECORD.parent.mkdir(parents=True, exist_ok=True)
-        temporary = _URL_OPTION_RECORD.with_name(f"{_URL_OPTION_RECORD.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps({"base_url": base_url}), encoding="utf-8")
-        os.replace(temporary, _URL_OPTION_RECORD)
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+        root = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
+        settings = json.loads((root / "settings.json").read_text(encoding="utf-8"))
+        configs = settings.get("pluginConfigs") if isinstance(settings, dict) else None
+        for plugin_id, entry in (configs or {}).items():
+            if not str(plugin_id).startswith(_PLUGIN_ID_PREFIX) or not isinstance(entry, dict):
+                continue
+            options = entry.get("options")
+            value = options.get(_URL_OPTION_NAME) if isinstance(options, dict) else None
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     except Exception:
         pass
+    return ""
 
 
 def parse_env_file(path: Path) -> dict:
@@ -412,36 +410,9 @@ def env_file_status() -> dict:
     return info
 
 
-def append_env_value(name: str, value: str) -> Path:
-    """Append ``NAME="value"`` to the env file (``COGNEE_ENV_FILE`` honoured),
-    creating it owner-only. One line; the value may not hold a newline."""
-    if not name or not all(c.isalnum() or c == "_" for c in name):
-        raise ValueError("not a variable name")
-    if "\n" in value or "\r" in value:
-        raise ValueError("one line only")
-    path = env_file_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-    head = existing if not existing or existing.endswith("\n") else existing + "\n"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    with os.fdopen(os.open(path, flags, 0o600), "w", encoding="utf-8") as handle:
-        handle.write(f'{head}{name}="{value}"\n')
-    _tighten_permissions(path)
-    return path
-
-
 if __name__ == "__main__":
     import json
 
-    if len(sys.argv) >= 3 and sys.argv[1] == "--append":
-        # The value comes on stdin, never on the command line (ps would show it).
-        try:
-            written = append_env_value(sys.argv[2], sys.stdin.read().strip())
-        except Exception as exc:
-            print(str(exc), file=sys.stderr)
-            sys.exit(1)
-        print(written)
-        sys.exit(0)
     load_env_file()
     json.dump(env_file_status(), sys.stdout, indent=2)
     print()

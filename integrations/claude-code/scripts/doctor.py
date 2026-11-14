@@ -297,8 +297,6 @@ def _resolve_llm() -> str:
         provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
         return f"Configured provider ({provider}, model {model})"
-    if reason == "server_dotenv_configured":
-        return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
     if reason == "claude_cli_missing":
         return "None — no LLM_API_KEY and no `claude` executable for the observer"
     if reason == "disabled":

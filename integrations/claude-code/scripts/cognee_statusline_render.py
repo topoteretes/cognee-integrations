@@ -127,14 +127,12 @@ def _credits_age_hint(age_seconds: float) -> str:
     return f"{hours // 24}d ago"
 
 
-# Self-eviction: when the plugin is uninstalled/disabled but its files still
-# linger in the version cache (Claude Code does not remove the statusLine key we
-# wrote into ~/.claude/settings.json, and may keep the cached script on disk),
-# this renderer would otherwise keep drawing a status line for a plugin that is
-# no longer active. On each run we check whether the plugin is still enabled in
-# any settings scope; if not, we remove our own statusLine entry and render
-# nothing. SessionStart re-adds it whenever the plugin is genuinely active, so a
-# transient mismatch self-heals on the next launch.
+# Disabled plugin: when the plugin is uninstalled/disabled but its files still
+# linger in the version cache (Claude Code does not remove a statusLine key the
+# user, or an earlier plugin version, wrote into ~/.claude/settings.json), this
+# renderer would otherwise keep drawing a status line for a plugin that is no
+# longer active. On each run we check whether the plugin is still enabled in
+# any settings scope; if not, we render nothing. Settings are only read.
 #
 # The enabledPlugins key is ``<plugin>@<marketplace>``, and the marketplace half
 # depends on where the user installed from: ``cognee-memory@cognee`` from this
@@ -436,46 +434,12 @@ def _health_prefix(session_id: str = "") -> str:
 
 
 def _update_segment() -> str:
-    """Amber 'update available' segment, or '' — read purely from the marker.
+    """No update segment: the plugin no longer checks for updates (SDK-1411).
 
-    The background idle watcher writes the marker; this stays network-free and
-    plugin-runtime-free (no ``_plugin_common`` import), consistent with the
-    renderer's pure-local design. Uses `\\033[1;33m` (bold + amber); terminals
-    that ignore bold still apply the amber, and the trailing reset prevents
-    color bleed into the rest of the bar.
+    Claude Code's own plugin updates cover directory and marketplace installs; a
+    marker an earlier version left behind is ignored.
     """
-    if os.environ.get("COGNEE_UPDATE_CHECK", "").strip().lower() in ("0", "false", "no", "off"):
-        return ""
-    try:
-        marker = json.loads(_UPDATE_CHECK_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    if not (isinstance(marker, dict) and marker.get("update_available")):
-        return ""
-    installed = str(marker.get("installed_version") or "")
-    latest = str(marker.get("latest_version") or "")
-    if not (installed and latest):
-        return ""
-    # Marker staleness guard, mirroring _plugin_common.read_update_status: the
-    # marker is a snapshot from the last background check, so after an update it
-    # keeps claiming an update is available until the next one runs. Since this
-    # renders every refresh, comparing against the running version clears the
-    # segment within one refresh instead of within an hour.
-    running = _running_plugin_version()
-    if running and running != installed:
-        return ""
-    # Mid-session update guard: `/plugin update` installs the new version into
-    # its own version-pinned cache dir, but settings.json keeps pointing the
-    # status line at THIS (old) copy until the next SessionStart — so the
-    # running-version check above never trips in the session where the update
-    # happened. Claude Code does rewrite installed_plugins.json immediately,
-    # so a recorded install at or past `latest` means the user already
-    # updated: clear the nudge on this refresh instead of after a restart.
-    recorded = _parse_semver(_recorded_install_version())
-    published = _parse_semver(latest)
-    if recorded and published and recorded >= published:
-        return ""
-    return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
+    return ""
 
 
 def _running_plugin_version() -> str:
@@ -581,29 +545,6 @@ def _plugin_enabled(cwd: str) -> bool:
         except Exception:
             pass
     return any(_enabled_in(p) is True for p in paths)
-
-
-def _evict_own_statusline() -> None:
-    """Remove our statusLine entry from user settings (best-effort, never raises).
-
-    Only removes it when the entry is recognizably ours, so a status line the
-    user set themselves is never touched. Atomic replace to avoid a torn file.
-    """
-    try:
-        from _auto_memory import restore as restore_auto_memory
-
-        restore_auto_memory()
-        settings = _read_json(_USER_SETTINGS)
-        sl = settings.get("statusLine")
-        cmd = sl.get("command", "") if isinstance(sl, dict) else ""
-        if _OWNED_STATUSLINE_MARKER not in str(cmd):
-            return  # not ours (or already gone) — leave it alone
-        settings.pop("statusLine", None)
-        tmp = _USER_SETTINGS.with_name(f".settings-{os.getpid()}.json.tmp")
-        tmp.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, _USER_SETTINGS)
-    except Exception:
-        pass
 
 
 def _llm_prefix(session_id: str = "") -> str:
@@ -1337,9 +1278,9 @@ def main() -> None:
                 # report rather than evict (the settings entry is the bar's, not ours).
                 sys.stdout.write(json.dumps(_snapshot(session_id, enabled=False)))
                 return
-            # Plugin uninstalled/disabled but files linger: drop our own statusLine
-            # entry and render nothing so the line disappears.
-            _evict_own_statusline()
+            # Plugin uninstalled/disabled but files linger: render nothing. The
+            # settings entry is the user's to remove; the plugin never writes
+            # Claude Code's settings (SDK-1411).
             return
         if as_json:
             sys.stdout.write(json.dumps(_snapshot(session_id, enabled=True)))

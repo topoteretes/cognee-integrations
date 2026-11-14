@@ -114,27 +114,6 @@ def test_local_base_url_is_not_cloud(observer, fake_claude, url):
     assert observer.resolve_observer({"base_url": url})["active"] is True
 
 
-def test_auto_yields_to_a_key_in_the_servers_dotenv(observer, fake_claude, temp_home):
-    """cognee's load_dotenv(override=True) makes that key the server's, unseen here."""
-    (temp_home / ".cognee-plugin" / "venv").mkdir(parents=True, exist_ok=True)
-    dotenv = temp_home / ".cognee-plugin" / ".env"
-    dotenv.write_text('LLM_API_KEY="sk-in-dotenv"\n', encoding="utf-8")
-    decision = observer.resolve_observer({})
-    assert decision["active"] is False
-    assert decision["reason"] == "server_dotenv_configured"
-    assert decision["dotenv"] == str(dotenv.resolve())
-    assert "server's" in observer.describe(decision)
-
-
-def test_server_dotenv_with_our_own_key_does_not_count(observer, fake_claude, temp_home):
-    (temp_home / ".cognee-plugin" / "venv").mkdir(parents=True, exist_ok=True)
-    token = observer.observer_token()
-    (temp_home / ".cognee-plugin" / ".env").write_text(
-        f"LLM_API_KEY={token}\nEMBEDDING_PROVIDER=fastembed\n", encoding="utf-8"
-    )
-    assert observer.resolve_observer({})["active"] is True
-
-
 def test_token_is_created_once_and_private(observer):
     token = observer.observer_token()
     assert len(token) >= 32
@@ -456,17 +435,24 @@ def test_child_env_drops_the_parent_claude_session(shim, observer, monkeypatch):
     assert env["PATH"] == "/usr/bin"
 
 
-def test_child_env_keeps_auth_and_drops_the_api_key(shim, monkeypatch):
-    """Token logins and Bedrock/Vertex must work; an API key must not move the bill."""
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-x")
-    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api-x")
+def test_child_env_passes_no_credential(shim, monkeypatch):
+    """Only the allowlist reaches the child: no token, key or option (SDK-1411)."""
+    for key in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "AWS_SECRET_ACCESS_KEY",
+        "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY",
+        "LLM_API_KEY",
+        "COGNEE_API_KEY",
+    ):
+        monkeypatch.setenv(key, "secret")
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
     env = shim.child_env()
-    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat-x"
-    assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-    assert env["CLAUDE_CODE_USE_VERTEX"] == "1"
-    assert "ANTHROPIC_API_KEY" not in env
+    assert "secret" not in env.values()
+    assert env["LC_ALL"] == "en_US.UTF-8"
+    assert env["HTTPS_PROXY"] == "http://proxy:3128"
 
 
 def test_complete_returns_structured_output_as_content(shim, monkeypatch):

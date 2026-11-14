@@ -167,7 +167,7 @@ def test_boot_point_proceeds_when_positively_absent(session_start, closed_port_u
     monkeypatch.setattr(
         session_start, "ensure_cognee_installed", lambda *a, **k: installs.append(1) or False
     )
-    with pytest.raises(RuntimeError, match="install/upgrade failed"):
+    with pytest.raises(RuntimeError, match="cognee runtime unavailable"):
         session_start._ensure_local_server_running(
             {"base_url": closed_port_url}, health_timeout=1.0
         )
@@ -249,13 +249,15 @@ def test_install_is_skipped_when_venv_already_holds_the_pin(session_start, monke
         raise AssertionError(f"install ran although the venv is already at {pin}: {a[0]}")
 
     monkeypatch.setattr(session_start.subprocess, "run", no_install)
-    monkeypatch.setattr(session_start, "_find_uv", no_install)
+    monkeypatch.setattr(session_start, "_find_uv", no_install, raising=False)
     assert session_start.ensure_cognee_installed() is True
     marker = json.loads(session_start._VENV_READY_MARKER.read_text(encoding="utf-8"))
     assert marker["cognee_version"] == pin
 
 
-def test_install_runs_when_venv_holds_another_version(session_start, monkeypatch):
+def test_install_runs_when_venv_holds_another_version(session_start, suite, monkeypatch):
+    if not suite.installs_cognee:
+        pytest.skip(f"{suite.name}: installs nothing (SDK-1411)")
     pin = session_start._PINNED_COGNEE_VERSION
     versions = iter(["1.0.0", pin])  # before the install / after it
     monkeypatch.setattr(session_start, "_venv_cognee_version", lambda: next(versions))
@@ -269,6 +271,31 @@ def test_install_runs_when_venv_holds_another_version(session_start, monkeypatch
     monkeypatch.setattr(session_start.subprocess, "run", record)
     assert session_start.ensure_cognee_installed() is True
     assert any(f"cognee=={pin}" in " ".join(argv) for argv in runs), runs
+
+
+@pytest.mark.parametrize(
+    "installed, usable", [("", False), ("1.6.5", False), ("1.6.6", True), ("1.7.0", True)]
+)
+def test_manual_install_floor_and_command(session_start, suite, monkeypatch, installed, usable):
+    """No install (SDK-1411): 1.6.6 or newer is used, anything else is refused
+    with the command that fixes it, and nothing is run but the version probe."""
+    if suite.installs_cognee:
+        pytest.skip(f"{suite.name}: installs cognee itself")
+    monkeypatch.setattr(session_start, "_venv_cognee_version", lambda: installed)
+    monkeypatch.setattr(session_start, "_detect_required_extras", lambda: [])
+
+    def no_run(*a, **k):
+        raise AssertionError(f"ran {a[0]}")
+
+    monkeypatch.setattr(session_start.subprocess, "run", no_run)
+    assert session_start.ensure_cognee_installed() is usable
+    marker = session_start._COGNEE_INSTALL_MARKER
+    if usable:
+        assert not marker.exists()
+    else:
+        message = marker.read_text(encoding="utf-8")
+        assert "pip install" in message and "cognee==" in message
+        assert "does not download or install" in message
 
 
 def test_boot_failure_message_carries_the_console_tail(session_start, closed_port_url, monkeypatch):
