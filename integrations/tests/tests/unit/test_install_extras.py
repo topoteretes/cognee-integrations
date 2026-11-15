@@ -96,6 +96,49 @@ def test_provider_values_are_case_insensitive(ss, monkeypatch, database_extras):
     assert "postgres-binary" in ss._detect_required_extras()
 
 
+@pytest.fixture
+def option_llm_providers(suite):
+    """Hosts that take the LLM provider from a plugin option and no longer
+    install cognee: the extras check is the only gate between an LLM provider
+    whose SDK the base install lacks and a server whose every LLM call fails."""
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: installs cognee itself")
+
+
+@pytest.mark.parametrize(
+    ("provider", "extra"),
+    [("anthropic", "anthropic"), ("Anthropic", "anthropic"), ("mistral", "mistral")],
+)
+def test_llm_provider_sdk_extra_detected(ss, monkeypatch, option_llm_providers, provider, extra):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    assert ss._detect_required_extras() == [extra]
+    assert ss._cognee_install_spec() == f"cognee[{extra}]=={ss._PINNED_COGNEE_VERSION}"
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+def test_llm_providers_on_litellm_need_no_extra(ss, monkeypatch, option_llm_providers, provider):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    assert ss._detect_required_extras() == []
+
+
+def test_venv_without_the_llm_sdk_is_refused(ss, monkeypatch, option_llm_providers):
+    """A venv at the pin but without the provider's SDK is refused, and the
+    refusal names the extra, instead of booting a server that fails on every
+    LLM call."""
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setattr(ss, "_venv_cognee_version", lambda: ss._PINNED_COGNEE_VERSION)
+    monkeypatch.setattr(ss, "_venv_missing_extras", lambda extras: list(extras))
+    refusals = []
+    monkeypatch.setattr(
+        ss, "_refuse_local_runtime", lambda reason, detail: refusals.append((reason, detail))
+    )
+    assert ss.ensure_cognee_installed() is False
+    assert len(refusals) == 1
+    reason, detail = refusals[0]
+    assert "anthropic" in reason
+    assert detail["missing_extras"] == ["anthropic"]
+
+
 def test_unrecognized_provider_value_is_ignored_not_an_error(ss, monkeypatch):
     monkeypatch.setenv("DB_PROVIDER", "sqlite")  # cognee's default — needs no extra
     assert ss._detect_required_extras() == []

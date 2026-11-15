@@ -117,7 +117,9 @@ py -3.12 -m venv "%USERPROFILE%\.cognee-plugin\venv" && "%USERPROFILE%\.cognee-p
 If `python3` is older than 3.10, use a newer one by name (for example `python3.12`).
 With fastembed embeddings (the embedding provider option, also what the
 [Claude observer](#claude-observer-local-mode-on-your-claude-subscription) uses) the
-requirement gains that extra: `cognee[fastembed]==1.6.6`. Session start prints the
+requirement gains that extra: `cognee[fastembed]==1.6.6`. The `anthropic` and
+`mistral` LLM providers need their SDK the same way: `cognee[anthropic]==1.6.6` or
+`cognee[mistral]==1.6.6`. Session start prints the
 command for your settings, so copying it from there is the easy way. Then start a new
 session.
 

@@ -129,10 +129,16 @@ _PINNED_COGNEE_VERSION = "1.6.6"
 # stores (SQLite, LanceDB, Kuzu) with an allowlisted environment (see
 # _server_env), so a database provider in the shell never reaches it and must
 # not block the start for a driver it would not use; a local Ollama LLM is not
-# supported in this version (no endpoint option). The value sits in os.environ
-# by now: the embedding provider comes from the plugin options (_env_file.py),
-# applied at process start.
-_PROVIDER_EXTRAS = (("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),)
+# supported in this version (no endpoint option). LLM providers whose cognee
+# adapter imports an SDK the base install lacks need their extra too:
+# `anthropic` imports `anthropic`, `mistral` imports `mistralai` (openai and
+# gemini run on litellm, which the base install has). The values sit in
+# os.environ by now: both providers come from the plugin options
+# (_env_file.py), applied at process start.
+_PROVIDER_EXTRAS = (
+    ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
+    ("LLM_PROVIDER", {"anthropic": "anthropic", "mistral": "mistral"}),
+)
 
 
 def _detect_required_extras() -> list:
@@ -247,6 +253,8 @@ def _venv_cognee_version() -> str:
 # exists to avoid.
 _EXTRA_SENTINEL_DISTS = {
     "fastembed": "fastembed",
+    "anthropic": "anthropic",
+    "mistral": "mistralai",
 }
 
 

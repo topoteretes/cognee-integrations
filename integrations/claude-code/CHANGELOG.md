@@ -56,8 +56,10 @@ install Cognee with the command session start prints.**
   its stores under `~/.cognee`: `DATA_ROOT_DIRECTORY`, `SYSTEM_ROOT_DIRECTORY` and
   database provider settings in the shell or in `~/.cognee/.env` are ignored, and
   session start says so once when it finds any (data stored elsewhere is untouched but
-  not used). Cognee's `TELEMETRY_DISABLED` opt-out is passed through. Only the
-  `fastembed` driver extra is checked for.
+  not used). Cognee's `TELEMETRY_DISABLED` opt-out is passed through. The driver
+  extras checked for are `fastembed` (embedding provider) and, for the LLM provider
+  option, `anthropic` and `mistral`, whose SDKs the base cognee install lacks: a venv
+  without them is refused and the printed command includes the extra.
 - **Ollama and custom LLM endpoints are not supported in this version.** There is no
   endpoint option and `LLM_ENDPOINT` is ignored, so a local Ollama, Azure or other
   OpenAI-compatible endpoint cannot be configured. This is the most restrictive version
