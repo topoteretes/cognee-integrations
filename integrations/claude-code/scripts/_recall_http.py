@@ -246,6 +246,7 @@ def do_recall(
     *,
     opener=None,
     timeout=120.0,
+    node_name=None,
 ):
     """Query the server. Return results (list), an error envelope (dict), or ``UNREACHABLE``.
 
@@ -297,6 +298,11 @@ def do_recall(
         body.update(fields)
     if context_profile:
         body["context_profile"] = context_profile
+    # A category filter (node sets), for a graph search only.
+    node_names = [str(n).strip() for n in (node_name or []) if str(n).strip()]
+    if node_names and "graph" in body["scope"]:
+        body["node_name"] = node_names
+        body["node_name_filter_operator"] = "OR"
     headers = {"Content-Type": "application/json"}
     # Always attach the key when present: cognee >=1.2.2 enforces auth on its
     # API routes even on localhost (the local key is auto-minted at bootstrap),

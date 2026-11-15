@@ -299,8 +299,13 @@ def test_apply_points_cognee_at_the_shim(observer, fake_claude, monkeypatch):
     assert os.environ["LLM_PROVIDER"] == "custom"
     assert os.environ["LLM_MODEL"] == observer.COGNEE_MODEL == "openai/" + observer.MODEL_ALIAS
     assert os.environ["LLM_ENDPOINT"] == "http://127.0.0.1:8123/v1"
-    # cognee's LLM_API_KEY is the shim's bearer token, not a guessable constant.
-    assert os.environ["LLM_API_KEY"] == observer.observer_token(create=False) != ""
+    # The shim's bearer token is not put in this process's environment: it
+    # goes to the server's environment alone, and is not a guessable constant.
+    assert "LLM_API_KEY" not in os.environ
+    assert "LLM_API_KEY" not in applied
+    secret = observer.server_secret_env()
+    assert secret == {"LLM_API_KEY": observer.observer_token(create=False)}
+    assert secret["LLM_API_KEY"] not in ("", observer.PLACEHOLDER_KEY)
     assert os.environ[observer.ACTIVE_ENV_FLAG] == "1"
     # Embeddings default to a local model — the observer cannot embed.
     assert os.environ["EMBEDDING_PROVIDER"] == "fastembed"
@@ -310,10 +315,14 @@ def test_apply_points_cognee_at_the_shim(observer, fake_claude, monkeypatch):
         "LLM_PROVIDER",
         "LLM_MODEL",
         "LLM_ENDPOINT",
-        "LLM_API_KEY",
         "EMBEDDING_PROVIDER",
     }
     assert observer.is_active()
+
+
+def test_no_observer_token_for_the_server_when_the_observer_is_off(observer, monkeypatch):
+    monkeypatch.delenv(observer.ACTIVE_ENV_FLAG, raising=False)
+    assert observer.server_secret_env() == {}
 
 
 def test_apply_keeps_a_user_embedder(observer, fake_claude, monkeypatch):
@@ -775,7 +784,7 @@ def test_running_keyed_server_is_not_claimed(session_start, fake_claude, monkeyp
 def test_running_observer_server_is_followed_even_with_a_key(
     session_start, fake_claude, monkeypatch
 ):
-    monkeypatch.setenv("LLM_API_KEY", "sk-real")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
     decision = _decide(session_start, monkeypatch, running=True, stamp=True)
     assert decision["active"] is True and decision["wanted"] is False
     note = session_start._observer_note(decision)

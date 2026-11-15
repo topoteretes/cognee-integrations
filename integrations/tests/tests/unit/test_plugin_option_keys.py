@@ -162,7 +162,7 @@ def test_a_local_url_gets_the_owner_key_not_the_option_key(
 ):
     pc = isolated_modules(suite, "_plugin_common")
     owner = mock_server.identity.seed_owner_key("default_user@example.com")
-    monkeypatch.setenv("COGNEE_API_KEY", "ck_cloud_option")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck_cloud_option")
     assert pc._api_key_with_source(mock_server.url) == (owner, "local_owner_key")
     assert pc._api_key_with_source("https://tenant.cognee.ai") == (
         "ck_cloud_option",

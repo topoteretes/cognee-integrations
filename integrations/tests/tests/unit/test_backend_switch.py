@@ -64,24 +64,41 @@ def env_file(suite, isolated_modules, tmp_path, monkeypatch):
     return ef, _load
 
 
+def _cloud_key(suite, ef) -> str:
+    """The Cloud key this process would send. The Claude Code plugin reads it
+    from its option on demand and never copies it into ``COGNEE_API_KEY``."""
+    if suite.keys_from_plugin_options:
+        assert "COGNEE_API_KEY" not in os.environ
+        return ef.cloud_key()
+    return os.environ.get("COGNEE_API_KEY", "")
+
+
+def _llm_key(suite, ef) -> str:
+    """The LLM key the local server would be started with."""
+    if suite.keys_from_plugin_options:
+        assert "LLM_API_KEY" not in os.environ
+        return ef.server_secret_env().get("LLM_API_KEY", "")
+    return os.environ.get("LLM_API_KEY", "")
+
+
 # ── environment layer (_env_file) ──────────────────────────────────────────
 
 
-def test_no_switch_cloud_vars_win(env_file):
+def test_no_switch_cloud_vars_win(env_file, suite):
     ef, load = env_file
     load(CLOUD_ENV_FILE)
     assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL
-    assert os.environ["COGNEE_API_KEY"] == "ck_from_file"
+    assert _cloud_key(suite, ef) == "ck_from_file"
 
 
-def test_forced_local_scrubs_cloud_vars_from_environ(env_file, monkeypatch):
+def test_forced_local_scrubs_cloud_vars_from_environ(env_file, suite, monkeypatch):
     ef, load = env_file
     monkeypatch.setenv("COGNEE_BACKEND", "local")
     load(CLOUD_ENV_FILE)
     assert os.environ["COGNEE_BASE_URL"] == ""
-    assert os.environ["COGNEE_API_KEY"] == ""
+    assert _cloud_key(suite, ef) == ""
     # Local-mode vars from the same file are untouched.
-    assert os.environ["LLM_API_KEY"] == "sk_from_file"
+    assert _llm_key(suite, ef) == "sk_from_file"
 
 
 def test_forced_local_beats_a_real_shell_export(env_file, monkeypatch):
@@ -133,18 +150,25 @@ def test_keys_in_the_file_or_shell_are_ignored(suite, isolated_modules, tmp_path
     assert "COGNEE_PRINCIPAL_API_KEY" not in os.environ
     assert "LLM_API_KEY" not in os.environ
 
+    assert ef.cloud_key() == ""
+    assert ef.server_secret_env() == {}
+
     # The key option alone means local mode: the key is for no local server,
-    # so it is not exported at all.
+    # so nothing would send it.
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck_option")
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
     assert "COGNEE_API_KEY" not in os.environ
+    assert ef.cloud_key() == ""
 
+    # With the URL option it is the key for that server, read from the option
+    # and still never copied into another variable.
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "https://tenant.cognee.ai")
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
-    assert os.environ["COGNEE_API_KEY"] == "ck_option"
+    assert "COGNEE_API_KEY" not in os.environ
+    assert ef.cloud_key() == "ck_option"
 
 
 def test_url_option_wins_and_is_read_from_settings_without_options(
@@ -193,12 +217,12 @@ def test_url_option_wins_and_is_read_from_settings_without_options(
     assert os.environ["COGNEE_BASE_URL"] == option_url
 
 
-def test_forced_cloud_scrubs_nothing(env_file, monkeypatch):
+def test_forced_cloud_scrubs_nothing(env_file, suite, monkeypatch):
     ef, load = env_file
     monkeypatch.setenv("COGNEE_BACKEND", "cloud")
     load(CLOUD_ENV_FILE)
     assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL
-    assert os.environ["COGNEE_API_KEY"] == "ck_from_file"
+    assert _cloud_key(suite, ef) == "ck_from_file"
 
 
 def test_plugin_var_beats_the_shared_var(env_file, suite, monkeypatch):
@@ -260,7 +284,7 @@ def test_config_no_switch_cloud_wins(config_mod, monkeypatch):
     assert config_mod.is_cloud_mode(cfg)
 
 
-def test_config_forced_local_despite_cloud_vars(config_mod, monkeypatch):
+def test_config_forced_local_despite_cloud_vars(config_mod, suite, monkeypatch):
     monkeypatch.setenv("COGNEE_BASE_URL", CLOUD_URL)
     monkeypatch.setenv("COGNEE_API_KEY", "ck")
     monkeypatch.setenv("LLM_API_KEY", "sk")
@@ -269,7 +293,12 @@ def test_config_forced_local_despite_cloud_vars(config_mod, monkeypatch):
     assert not config_mod.is_cloud_mode(cfg)
     assert cfg["base_url"] == ""
     assert cfg["api_key"] == ""
-    assert cfg["llm_api_key"] == "sk"
+    if suite.keys_from_plugin_options:
+        # The Claude Code plugin's config carries no LLM key: the server it
+        # starts gets the key straight from the plugin option.
+        assert "llm_api_key" not in cfg
+    else:
+        assert cfg["llm_api_key"] == "sk"
 
 
 def test_config_forced_cloud_is_pinned_without_a_url(config_mod, monkeypatch):

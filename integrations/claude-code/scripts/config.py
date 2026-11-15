@@ -25,7 +25,7 @@ line reports what is wrong instead of silently falling back to local.
 Two modes, both over HTTP — the hooks never import cognee in-process:
   - Local: the plugin boots a Cognee server on localhost and talks to it
   - Cloud: connect to a remote Cognee server via the Cloud URL and API key
-    options (COGNEE_BASE_URL + COGNEE_API_KEY in the environment)
+    options (the key is read from its option, never from another variable)
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from _env_file import load_env_file
+from _env_file import cloud_key, load_env_file
 from _logfiles import append_line as _append_log_line
 from event_names import event_fields
 
@@ -66,7 +66,6 @@ _DEFAULTS = {
     "base_url": "",
     "api_key": "",
     # Local mode
-    "llm_api_key": "",
     "llm_model": "",
     # Memory steering: assert Cognee as the preferred memory over Claude Code's
     # built-in auto memory (MEMORY.md). Opt out with COGNEE_PREFER_MEMORY=false.
@@ -127,11 +126,9 @@ _ENV_MAP = {
     "COGNEE_SESSION_STRATEGY": "session_strategy",
     "COGNEE_SESSION_PREFIX": "session_prefix",
     "COGNEE_BASE_URL": "base_url",
-    "COGNEE_API_KEY": "api_key",
     # base_url is an externally managed deployment: never boot a local fallback
     # server on its port; fail loudly when it is unreachable.
     "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",
-    "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
     "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
@@ -172,6 +169,9 @@ def load_config() -> dict:
         val = os.environ.get(env_key, "")
         if val:
             config[config_key] = val
+    # The Cloud key comes from its plugin option alone, and only for a server
+    # it is the key for (never this machine's own server).
+    config["api_key"] = cloud_key()
 
     raw_dataset = str(config.get("dataset") or "")
     if raw_dataset.strip().lower() == "auto":

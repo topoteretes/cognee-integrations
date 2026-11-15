@@ -2552,7 +2552,7 @@ def load_cached_api_key(service_url: str = "") -> str:
     """The principal key not taken from the options: the local owner key, or "".
 
     Nothing is read from disk. A remote server has no fallback: its key is
-    the plugin option, already in the environment.
+    the plugin option (see ``_api_key_with_source``).
     """
     url = _normalize_service_url(service_url or _local_api_url())
     if not url or not takes_owner_key(url):
@@ -2675,8 +2675,7 @@ def principal_key_for_control_plane(service_url: str = "") -> str:
     service_url = _normalize_service_url(service_url or _local_api_url())
     agent_key = load_cached_agent_key(service_url)
     for candidate in (
-        os.environ.get("COGNEE_PRINCIPAL_API_KEY", ""),
-        os.environ.get("COGNEE_API_KEY", ""),
+        _api_key_with_source(service_url)[0],
         load_cached_api_key(service_url),
     ):
         candidate = str(candidate or "").strip()
@@ -3357,9 +3356,9 @@ def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
         return (local, "local_owner_key") if local else ("", "missing")
     from _env_file import option
 
-    # The option itself where this process has it; the environment otherwise
-    # (set from the option by ``_env_file`` only when the Cloud key applies).
-    key = option("cognee_api_key") or str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
+    # The option itself, read here: the key is never copied into another
+    # environment variable, so a process Claude Code gave no options has none.
+    key = option("cognee_api_key")
     return (key, "env_api_key") if key else ("", "missing")
 
 
@@ -3390,17 +3389,13 @@ def resolved_http_endpoint_auth() -> tuple[str, str]:
     """Return (service_url, api_key) for runtime HTTP calls.
 
     Service URL always falls back to localhost. API key is the single principal
-    key: env first, then the single cached key.
+    key: the Cloud key option for a remote server, the local server's own
+    owner key otherwise. It is returned, never put in the environment.
     """
     service_url = _normalize_service_url(_local_api_url())
     api_key = _api_key().strip()
     if service_url:
         os.environ["COGNEE_BASE_URL"] = service_url
-    if api_key:
-        previous = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
-        if previous and previous != api_key:
-            os.environ["COGNEE_PRINCIPAL_API_KEY"] = previous
-        os.environ["COGNEE_API_KEY"] = api_key
     return service_url, api_key
 
 
@@ -4532,8 +4527,6 @@ def resolve_runtime_mode() -> dict:
     api_key, key_source = _api_key_with_source(service_url)
     if service_url:
         os.environ["COGNEE_BASE_URL"] = service_url
-    if api_key:
-        os.environ["COGNEE_API_KEY"] = api_key
     return {
         "mode": "http",
         "base_url": service_url,

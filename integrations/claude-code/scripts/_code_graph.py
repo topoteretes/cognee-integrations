@@ -945,11 +945,31 @@ def autoindex_on_session_start(
         return {"error": str(exc)[:200]}
 
 
+def _resolved_auth(service_url: str) -> str:
+    """What authorizes a request to ``service_url``, or "" when nothing does."""
+    # The opt-out keeps _plugin_common from re-execing this command into the
+    # plugin venv: nothing here needs it.
+    previous = os.environ.get("COGNEE_PLUGIN_IN_VENV")
+    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
+    try:
+        import _plugin_common
+
+        return _plugin_common._api_key_with_source(service_url)[0]
+    except Exception:
+        return ""
+    finally:
+        if previous is None:
+            os.environ.pop("COGNEE_PLUGIN_IN_VENV", None)
+        else:
+            os.environ["COGNEE_PLUGIN_IN_VENV"] = previous
+
+
 def main(argv):
     """CLI: ``index <repo-path-or-url> [dataset]`` or ``dataset <path>``.
 
     argv mirrors the sibling scripts: service_url, api_key, command, spec,
-    dataset, index_vectors, wait_seconds. The ``dataset`` command prints the
+    dataset, index_vectors, wait_seconds. An empty ``api_key`` (how
+    cognee-index-repo.sh calls this) is resolved here. The ``dataset`` command prints the
     code dataset covering a path (empty line when that path is not indexed) —
     dataset names carry a path digest, so callers resolve the name from the
     checkout instead of reconstructing it.
@@ -980,6 +1000,11 @@ def main(argv):
             )
         )
         return
+    if not api_key:
+        # Run from a shell (cognee-index-repo.sh): the request is authorized
+        # here, in this process, the way every plugin script is, so nothing
+        # is passed on the command line.
+        api_key = _resolved_auth(service_url)
     result = index_repo(
         service_url,
         api_key,

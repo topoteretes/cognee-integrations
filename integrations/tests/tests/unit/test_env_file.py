@@ -393,7 +393,9 @@ def test_a_shell_url_and_keys_are_replaced_by_the_options(options_only, env_file
     assert "COGNEE_PRINCIPAL_API_KEY" not in os.environ
     assert "COGNEE_USER_PASSWORD" not in os.environ
     assert "LLM_ENDPOINT" not in os.environ
-    assert os.environ["LLM_API_KEY"] == "option-llm"
+    # The key stays in its option: only the server this plugin starts gets it.
+    assert "LLM_API_KEY" not in os.environ
+    assert ef.server_secret_env() == {"LLM_API_KEY": "option-llm"}
     assert os.environ["LLM_MODEL"] == "openai/gpt-4o-mini"
     assert os.environ["EMBEDDING_DIMENSIONS"] == "3072"
 
@@ -407,21 +409,26 @@ def test_url_and_key_options_select_cloud(options_only, env_file_env, monkeypatc
     monkeypatch.setenv("COGNEE_BASE_URL", "https://shell.example")
     ef.load_env_file()
     assert os.environ["COGNEE_BASE_URL"] == "https://tenant.cognee.ai"
-    assert os.environ["COGNEE_API_KEY"] == "ck_option"
+    assert "COGNEE_API_KEY" not in os.environ
+    assert ef.cloud_key() == "ck_option"
 
 
 def test_a_child_keeps_what_its_parent_applied(options_only, env_file_env, monkeypatch):
-    """The observer's LLM settings, applied by SessionStart, reach its workers."""
+    """The observer's non-secret LLM settings, applied by SessionStart, reach
+    its workers. A key does not: whatever put one in a key variable (a shell
+    export next to the applied flag, an older parent), it is dropped."""
     ef, fresh = env_file_env
     fresh(None)
     monkeypatch.setenv(ef._LLM_ENV_APPLIED, "1")
     monkeypatch.setenv("LLM_PROVIDER", "custom")
     monkeypatch.setenv("LLM_API_KEY", "observer-token")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "parent-embedding-key")
     monkeypatch.setenv("COGNEE_API_KEY", "parent-owner-key")
     ef.load_env_file()
     assert os.environ["LLM_PROVIDER"] == "custom"
-    assert os.environ["LLM_API_KEY"] == "observer-token"
     # A key is never handed down through the environment.
+    assert "LLM_API_KEY" not in os.environ
+    assert "EMBEDDING_API_KEY" not in os.environ
     assert "COGNEE_API_KEY" not in os.environ
 
 

@@ -3,11 +3,14 @@
 Every credential and connection setting comes from the plugin's options
 (``userConfig`` in .claude-plugin/plugin.json). Claude Code keeps the sensitive
 ones in its secure store and hands all of them to hook processes as
-``CLAUDE_PLUGIN_OPTION_<KEY>``; ``_apply_plugin_options`` maps them onto the
-variables the plugin and its local server read (``COGNEE_API_KEY``,
-``LLM_API_KEY``, ``LLM_PROVIDER``, ``EMBEDDING_*`` ...). A value for one of those
-in the shell is replaced by the option's value, or removed when the option is
-empty, so a credential never reaches the plugin except through Claude Code.
+``CLAUDE_PLUGIN_OPTION_<KEY>``. A key is read from its option where it is used
+(``cloud_key``, ``server_secret_env``) and is never copied into another
+environment variable of a plugin process: the plugin reads no credential from
+the environment except the options themselves. ``_apply_plugin_options`` maps
+the non-secret settings onto the variables the local server reads
+(``LLM_PROVIDER``, ``LLM_MODEL``, ``EMBEDDING_*``). A value for any of those
+names in the shell, keys included, is removed, so a credential never reaches
+the plugin except through Claude Code.
 
 ``~/.cognee/.env`` (the durable cognee home shared with the Codex plugin) still
 supplies the plugin's own non-secret ``COGNEE_*`` tuning settings, injected into
@@ -50,11 +53,13 @@ from _net import is_loopback_host, is_loopback_url  # noqa: F401  (re-exported)
 _COGNEE_HOME = Path.home() / ".cognee"
 _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 
-# The plugin options, by their userConfig name, and the variable each becomes.
-# The sensitive ones are kept by Claude Code in its secure store.
+# The plugin options the local server is configured from, by their userConfig
+# name, and the name the server reads each one by. The Cloud key option
+# (``cognee_api_key``) has no entry: it is read where a request needs it
+# (``cloud_key``) and never becomes a variable. The sensitive ones are kept by
+# Claude Code in its secure store.
 OPTION_PREFIX = "CLAUDE_PLUGIN_OPTION_"
 OPTION_VARS = {
-    "cognee_api_key": "COGNEE_API_KEY",
     "llm_api_key": "LLM_API_KEY",
     "llm_provider": "LLM_PROVIDER",
     "llm_model": "LLM_MODEL",
@@ -71,9 +76,18 @@ LLM_OPTIONS = tuple(name for name in OPTION_VARS if name.startswith(("llm_", "em
 _REFUSED_EXACT = frozenset({"COGNEE_BASE_URL", "COGNEE_API_KEY", "COGNEE_PRINCIPAL_API_KEY"})
 _REFUSED_PREFIXES = ("COGNEE_USER_", "LLM_", "EMBEDDING_")
 _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH")
-# The login the plugin used to take from the environment; always the default
-# user now (config.py), so an inherited value is dropped.
-_SHELL_DROPPED = ("COGNEE_PRINCIPAL_API_KEY", "COGNEE_USER_EMAIL", "COGNEE_USER_PASSWORD")
+# Dropped from the environment of every plugin process, whatever put them
+# there: the Cloud, LLM and embedding keys (each read from its option, never
+# from a variable) and the login the plugin used to take from the environment
+# (always the default user now, config.py).
+_SHELL_DROPPED = (
+    "COGNEE_API_KEY",
+    "COGNEE_PRINCIPAL_API_KEY",
+    "LLM_API_KEY",
+    "EMBEDDING_API_KEY",
+    "COGNEE_USER_EMAIL",
+    "COGNEE_USER_PASSWORD",
+)
 # Where the plugin's local server keeps its stores: always the built-in
 # location under ~/.cognee (set by ``_plugin_common.apply_cognee_env``), never
 # a value from the shell or the file.
@@ -288,6 +302,26 @@ def option(name: str) -> str:
     return os.environ.get(OPTION_PREFIX + name.upper(), "").strip()
 
 
+def cloud_key(service_url: str = "") -> str:
+    """The Cloud key option when it is the key for ``service_url`` (default:
+    the server requests go to), else "". Read from the option on every call."""
+    key = option("cognee_api_key")
+    if key and cloud_key_applies(service_url or resolved_service_url()):
+        return key
+    return ""
+
+
+def server_secret_env() -> dict:
+    """The LLM and embedding key options, under the names the local server
+    reads them by. For the environment of the server this plugin starts only:
+    they are never put in a plugin process's own environment."""
+    return {
+        OPTION_VARS[name]: option(name)
+        for name in SENSITIVE_OPTIONS
+        if name in LLM_OPTIONS and option(name)
+    }
+
+
 def is_hook_process() -> bool:
     return bool(os.environ.get(_HOOK_PROCESS_MARKER, "").strip())
 
@@ -302,10 +336,11 @@ def url_option() -> str:
 def _apply_plugin_options() -> None:
     """Take every credential and connection setting from the plugin options.
 
-    Runs once per process, before the env file. The Cloud key and URL are
-    derived again in every process, so a key never travels to a child through
-    the environment. The ``LLM_*`` / ``EMBEDDING_*`` values are replaced only in
-    the first plugin process of a chain (see ``_LLM_ENV_APPLIED``).
+    Runs once per process, before the env file. The Cloud URL is derived again
+    in every process; the keys are not put in the environment at all (see
+    ``cloud_key`` and ``server_secret_env``). The non-secret ``LLM_*`` /
+    ``EMBEDDING_*`` values are replaced only in the first plugin process of a
+    chain (see ``_LLM_ENV_APPLIED``).
     """
     for var in _SHELL_DROPPED:
         os.environ.pop(var, None)
@@ -333,6 +368,8 @@ def _apply_plugin_options() -> None:
                 os.environ.pop(var, None)
         for name, var in OPTION_VARS.items():
             value = option(name)
+            if name in SENSITIVE_OPTIONS:
+                continue
             if value and var.startswith(("LLM_", "EMBEDDING_")):
                 os.environ[var] = value
         os.environ[_LLM_ENV_APPLIED] = "1"
@@ -340,22 +377,16 @@ def _apply_plugin_options() -> None:
 
 
 def _apply_connection_options() -> None:
-    """The Cloud key and URL, from the options in every process.
+    """The Cloud URL, from the option in every process.
 
-    The key is exported only for a server it is the key for (see
-    ``cloud_key_applies``): with a local server it is not put in the
-    environment at all, so nothing can send it there by reading the variable.
+    The Cloud key is not exported: ``cloud_key`` reads the option where a
+    request needs it, and only for a server it is the key for.
     """
     base_url = url_option()
     if base_url:
         os.environ["COGNEE_BASE_URL"] = base_url
     else:
         os.environ.pop("COGNEE_BASE_URL", None)
-    key = option("cognee_api_key")
-    if key and cloud_key_applies(resolved_service_url()):
-        os.environ["COGNEE_API_KEY"] = key
-    else:
-        os.environ.pop("COGNEE_API_KEY", None)
 
 
 def _url_option_from_settings() -> str:
@@ -517,8 +548,7 @@ def load_env_file() -> None:
                     _injected[key] = value
     except Exception:
         pass
-    # The file may have set the local URL or the backend switch: decide again
-    # whether the Cloud key belongs in this process's environment.
+    # The file may have set the local URL or the backend switch.
     _apply_connection_options()
     _apply_backend_switch()
     if plugin_disabled():
@@ -581,7 +611,7 @@ def refresh_env_file() -> None:
             os.environ[key] = value
             _injected[key] = value
     # A lifted backend switch left the connection empty, and a changed local
-    # URL or switch changes which server the Cloud key is for: take both from
+    # URL or switch changes which server requests go to: take the URL from
     # the options again (the switch, if still set, empties them once more).
     _apply_connection_options()
     _apply_backend_switch()
@@ -622,10 +652,8 @@ def _apply_backend_switch() -> None:
     if forced_backend() != "local":
         return
     os.environ["COGNEE_BASE_URL"] = ""
-    os.environ["COGNEE_API_KEY"] = ""
     # The loader's doing, so a refresh may undo it when the switch is lifted.
     _injected["COGNEE_BASE_URL"] = ""
-    _injected["COGNEE_API_KEY"] = ""
 
 
 def _tighten_permissions(path: Path) -> None:

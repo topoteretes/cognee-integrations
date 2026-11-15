@@ -60,9 +60,10 @@ def _spawn_sync(
     *,
     session_key: str = "",
     agent_session_name: str = "",
-    api_key: str = "",
     service_url: str = "",
 ) -> None:
+    # No key is handed over: the sync process resolves its own, from the
+    # plugin options or the local server (see _env_file).
     try:
         env = os.environ.copy()
         env.setdefault("COGNEE_SYNC_START_DELAY", str(_SYNC_START_DELAY))
@@ -75,8 +76,6 @@ def _spawn_sync(
             env["COGNEE_SESSION_KEY"] = session_key
         if agent_session_name:
             env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
-        if api_key:
-            env["COGNEE_API_KEY"] = api_key
         if service_url:
             env["COGNEE_BASE_URL"] = service_url
         subprocess.Popen(
@@ -276,9 +275,6 @@ def main() -> None:
         dataset,
         session_key=session_key,
         agent_session_name=agent_session_name,
-        # No key is handed over: the sync process resolves its own, from the
-        # plugin options or the local server (see _env_file).
-        api_key="",
         service_url=service_url,
     )
 

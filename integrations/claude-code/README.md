@@ -208,9 +208,10 @@ Every request runs as that key.
 
 - *Cloud mode.* The Cognee Cloud API key option (`cognee_api_key`). Claude Code
   keeps it in its secure credential store and passes it to the plugin's hook
-  processes as `CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY`; the plugin uses it as
-  `COGNEE_API_KEY` inside that process only, and sends it only to a remote server.
-  A `COGNEE_API_KEY` exported in the shell or set in `~/.cognee/.env` is ignored.
+  processes as `CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY`; the plugin reads it from that
+  option where a request needs it, never copies it into another environment variable,
+  and sends it only to a remote server. A `COGNEE_API_KEY` exported in the shell or
+  set in `~/.cognee/.env` is ignored, and removed from the plugin's own processes.
 - *Local mode.* The owner key of the server on this machine, never the Cloud key
   option. Each process logs in as the local default user to look it up (about 40 ms
   against an idle server) and keeps a found key for its lifetime; a failed lookup is
@@ -228,7 +229,7 @@ writes them (the Codex plugin may still use `api_key.json`).
 Claude Code passes plugin options only to hook processes, not to commands Claude runs
 with the Bash tool (nor to the status line command). So in Cloud mode the scripts
 behind the skills get no key: search, remember, forget, code indexing, the recaps and
-the dataset switch, doctor's auth check, and the `curl` of the `cognee-recall` agent.
+the dataset switch, doctor's auth check, and the search of the `cognee-recall` agent.
 They stop before any request with "no API key", and exit with status 2.
 The Cloud URL is not a secret, so the status line and these scripts read the URL
 option where Claude Code saves it: `pluginConfigs["cognee-memory@<marketplace>"].options.cognee_base_url`
@@ -270,7 +271,7 @@ At startup (`SessionStart`):
 - otherwise the Cloud URL option set → `managed_endpoint`, either local, or on Cognee Cloud (API key needed in cloud case)
 - otherwise → `integration_local` (local API bootstrap)
 
-A forced-local switch also scrubs `COGNEE_BASE_URL`/`COGNEE_API_KEY` from the process environment, so the per-prompt recall/remember calls and every spawned worker resolve the same local endpoint — not just `SessionStart`. A forced-cloud switch with no URL configured never boots the local server; the connection attempt fails visibly instead (status line + doctor).
+A forced-local switch also scrubs `COGNEE_BASE_URL` from the process environment (the Cloud key is never in it), so the per-prompt recall/remember calls and every spawned worker resolve the same local endpoint — not just `SessionStart`. A forced-cloud switch with no URL configured never boots the local server; the connection attempt fails visibly instead (status line + doctor).
 
 **Self-hosted deployments on loopback:** when the configured URL is a loopback address (`127.0.0.1`, `localhost`) and the server is down at session start, the plugin normally boots its embedded local server on that port. If the URL actually belongs to an externally managed deployment (docker compose stack, systemd service), set `COGNEE_MANAGED_ENDPOINT=true`: an outage then makes `SessionStart` report **Cognee Memory OFFLINE** loudly instead of silently booting an unrelated fallback instance over the deployment's port.
 
@@ -811,10 +812,13 @@ Q&A turns whose answers cited the deleted graph elements (plus guidance derived 
 them; agent trace entries are not matched). All server access goes through
 `scripts/cognee-forget.sh`, which looks up the local server's owner key like the other
 wrappers and always authenticates; it refuses to run without a key rather than send
-requests that can only 401. In Cloud mode it has no key (see [Auth](#auth)), so delete
+requests that can only 401. It never prints the key or exports it to the shell: a
+whole dataset (`forget-dataset`) or its memory only (`forget-memory`) is deleted by a
+helper command taking exactly one dataset id, and all of a user's data by
+`forget-everything --confirm-delete-all`, which runs only with that literal argument. In Cloud mode it has no key (see [Auth](#auth)), so delete
 the data from the Cognee Cloud dashboard instead. Deletion is
-irreversible; dataset-wide or delete-everything scopes require an explicit, unambiguous
-user request.
+irreversible; the dataset-wide and delete-everything commands require an explicit, unambiguous
+user request, and the skill confirms with the user before running one.
 
 ## Claude observer: local mode on your Claude subscription
 
@@ -858,7 +862,8 @@ through **Claude Code itself** instead of asking for a key:
 
 The shim listens on loopback only and requires a bearer token on every route but
 `/health`: `~/.cognee-plugin/observer/token` (created once, mode 0600), which cognee
-receives as its `LLM_API_KEY`. Requests carrying an `Origin` header are refused, so a
+receives as its `LLM_API_KEY` (set in the server's environment only, never in the
+plugin's own processes). Requests carrying an `Origin` header are refused, so a
 web page cannot drive it.
 
 A running server keeps the LLM config it booted with. The server's pidfile records
@@ -1212,7 +1217,7 @@ session start. Claude Code's own plugin updates handle that (see above). An
 **Recall returns empty but data was ingested**
 - Recall is auto (the server picks the best-matching dataset, or searches every readable one when it cannot narrow; routing needs a cognee 1.6.6 server, and an older one always searches every readable dataset) unless you restricted it to one by picking or pinning a dataset or by setting `COGNEE_PLUGIN_RECALL_MODE=pinned`; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
-- To verify, call the recall API directly without a dataset filter: `curl -X POST "<server URL>/api/v1/recall" -d '{"query":"..."}'`
+- To verify, search without a dataset restriction: `scripts/cognee-search.sh "<query>" 10 --graph` after `switch-dataset.py auto`.
 
 **Session not resolving / wrong session shown**
 - Check `~/.cognee-plugin/claude-code/sessions/<host_session_id>.json` — this is the map file for your terminal.
