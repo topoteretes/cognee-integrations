@@ -566,10 +566,12 @@ def _server_env() -> dict:
     Holds the platform basics, the plugin's own server settings and tuning
     names, the LLM / embedding settings (the plugin options, or the observer's
     shim settings, which are the only ``LLM_*`` / ``EMBEDDING_*`` values left in
-    this process), the default-user login, ``COGNEE_ENV_FILE`` and
-    ``HASH_API_KEY=false`` (the owner-key lookup needs the stored key back).
+    this process), the LLM and embedding key options (read from the options
+    here and placed in this environment only), the default-user login,
+    ``COGNEE_ENV_FILE`` and ``HASH_API_KEY=false`` (the owner-key lookup needs
+    the stored key back).
     """
-    from _env_file import _TUNING_NAMES
+    from _env_file import _TUNING_NAMES, server_secret_env
 
     env: dict = {}
     for name, value in os.environ.items():
@@ -582,6 +584,11 @@ def _server_env() -> dict:
             or name.startswith(("LLM_", "EMBEDDING_"))
         ):
             env[name] = value
+    # The user's LLM and embedding keys, straight from the options. The
+    # observer's own shim token, when the observer is this server's LLM, is
+    # already there and stays.
+    for name, value in server_secret_env().items():
+        env.setdefault(name, value)
     # The server calls this machine too (the observer shim, with its bearer
     # token and the full prompt). With a proxy copied over, exempt loopback in
     # both spellings so those calls never reach the proxy host, keeping the
@@ -943,9 +950,7 @@ def _resolve_agent_name(config: dict, cwd: str) -> str:
 async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
     """Resolve the one key every request runs as.
 
-    Remote: the user's key from the plugin option (``COGNEE_API_KEY`` in the
-    environment, put there by ``_env_file`` from
-    ``CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY``). Local: never the option key, but
+    Remote: the user's key, read from the plugin option. Local: never the option key, but
     the server's own owner key, looked up from that server and checked once;
     minted there on a fresh install, or when the listed key is rejected (a key
     stored hashed by an earlier ``HASH_API_KEY=true`` server). Nothing is
@@ -996,7 +1001,6 @@ async def _ensure_agent_credentials_and_register(
     if not api_key:
         return "", "", "", False
 
-    os.environ["COGNEE_API_KEY"] = api_key
     config["api_key"] = api_key
     # No agent, so no shared-memory role: the launch goes by dataset name.
     set_launch_dataset_ids(session_key, "", [])
@@ -1240,10 +1244,9 @@ def _spawn_exit_watcher(
         log_fh = subprocess.DEVNULL
 
     try:
+        # No key is handed over: the watcher reads the Cloud key option it
+        # inherits, or looks the local owner key up from the server itself.
         env = os.environ.copy()
-        # Credentials must not be serialized into process arguments.
-        if api_key:
-            env["COGNEE_API_KEY"] = api_key
         if session_key:
             env["COGNEE_SESSION_KEY"] = session_key
         subprocess.Popen(
@@ -2027,7 +2030,6 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     # _ensure_local_server_running), so connecting to an already-running server
     # never claims ownership of its teardown.
     configured_url = _with_scheme(str(config.get("base_url", "") or "").strip())
-    api_key = str(config.get("api_key", "") or "").strip()
     # Forced cloud (backend switch) with no URL configured: there is nothing to
     # boot and nothing to fall back to — keep the target empty so no local
     # server is spawned, let the connection attempt fail, and let the status
@@ -2036,8 +2038,6 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     target_url = configured_url or ("" if forced_cloud_unconfigured else _LOCAL_SERVICE_URL)
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
-    if api_key:
-        os.environ["COGNEE_API_KEY"] = api_key
 
     # Claude observer: local mode with no LLM key of its own runs the server's
     # LLM calls through Claude Code (`claude -p --safe-mode`) behind a loopback

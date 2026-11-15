@@ -1,4 +1,4 @@
-"""A detached watcher receives credentials through its environment, never argv."""
+"""A detached watcher never receives a key in argv. Claude Code: nor in a key variable."""
 
 import json
 from unittest.mock import Mock
@@ -30,7 +30,14 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
     assert "api_key" not in bootstrap
     assert "watcher-test-key" not in " ".join(argv)
     assert "inherited-test-key" not in " ".join(argv)
-    assert popen.call_args.kwargs["env"]["COGNEE_API_KEY"] == (explicit_key or "inherited-test-key")
+    env = popen.call_args.kwargs["env"]
+    if suite.keys_from_plugin_options:
+        # Claude Code: no key is handed over. The watcher inherits the plugin
+        # options and reads the Cloud key from there, or looks the local owner
+        # key up itself; a resolved key is never written to a key variable.
+        assert explicit_key not in env.values() or not explicit_key
+    else:
+        assert env["COGNEE_API_KEY"] == (explicit_key or "inherited-test-key")
 
 
 def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, monkeypatch):

@@ -75,8 +75,6 @@ def _spawn_sync(
             env["COGNEE_SESSION_KEY"] = session_key
         if agent_session_name:
             env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
-        if api_key:
-            env["COGNEE_API_KEY"] = api_key
         if service_url:
             env["COGNEE_BASE_URL"] = service_url
         subprocess.Popen(

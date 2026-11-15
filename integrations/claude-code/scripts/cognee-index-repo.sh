@@ -60,7 +60,7 @@ try:
 except Exception:
     pass
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
-api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
+api_key = ""
 
 # No key is stored on disk: against the plugin local server its owner key is
 # looked up from that server. A Cloud key reaches hooks only. The opt-out keeps
@@ -71,9 +71,9 @@ try:
     import _plugin_common
 except Exception:
     _plugin_common = None
-if not api_key and _plugin_common is not None:
+if _plugin_common is not None:
     try:
-        api_key = _plugin_common.load_cached_api_key(service_url)
+        api_key = _plugin_common._api_key_with_source(service_url)[0]
     except Exception:
         pass
 guard = getattr(_plugin_common, "require_shell_auth", None)

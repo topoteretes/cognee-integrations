@@ -27,7 +27,7 @@ Forgetting is a four-step process against the **running Cognee server**: sync th
 
 Deleting a document removes its raw data, its derived graph knowledge, and — best-effort — the session memory *contaminated* by it: Q&A turns whose answers actually cited the deleted graph elements, plus the feedback and distilled guidance that descend from those turns. This is **targeted, not whole-session**: a turn that merely discussed the topic without citing the deleted elements survives, and agent **trace** entries are not matched at all. So deleting the documents is what makes forgetting durable — say that plainly when confirming, and don't promise the session cache is now free of the topic.
 
-All server access goes through the `cognee-forget.sh` helper. It resolves the server URL from the plugin's options and the key from the plugin's own local server (local mode). In Cloud mode the key reaches the plugin's hooks only, so the helper exits 2 with an explanation. It **always** sends `X-Api-Key` — in cloud and local mode alike, since the server enforces auth even on localhost. Do not bypass it with raw `curl`: in local mode the key is never exported to your shell, so raw requests 401.
+All server access goes through the `cognee-forget.sh` helper. It resolves the server URL from the plugin's options and the key from the plugin's own local server (local mode). In Cloud mode the key reaches the plugin's hooks only, so the helper exits 2 with an explanation. It **always** sends `X-Api-Key` — in cloud and local mode alike, since the server enforces auth even on localhost. Do not bypass it with raw `curl`: the key is never printed or exported to your shell, so raw requests 401.
 
 Every helper API command prints the JSON response followed by a final `HTTP <status>` line — always check it. The underlying endpoints are documented in the server's Swagger UI at `$COGNEE_BASE_URL/docs` (local: `http://localhost:8011/docs`) — consult it if a response shape doesn't match your server version.
 
@@ -92,21 +92,19 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 
 ## Broader deletions — explicit user request only
 
-The `/api/v1/forget` endpoint can also delete more than a single document (see `$COGNEE_BASE_URL/docs`). The helper deliberately supports only single-document deletion; for a broader scope, resolve credentials with the helper's `env` command and call the endpoint directly **in the same shell invocation** (exports do not persist across separate Bash calls):
+The helper has one command for each broader scope. Each takes the dataset id from step 2 and prints the response followed by an `HTTP <status>` line, like the other commands:
 
 ```bash
-creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
-curl -sS -X POST "${COGNEE_BASE_URL}/api/v1/forget" \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY}" \
-  -d '<payload>'
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-memory <dataset_id>
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-dataset <dataset_id>
 ```
 
-| Payload | Effect |
+| Command | Effect |
 |---------|--------|
-| `{"datasetId": "...", "dataId": "..."}` | Forget one document (the default for this skill — use the helper) |
-| `{"datasetId": "..."}` | Delete the **entire dataset** |
-| `{"datasetId": "...", "memoryOnly": true}` | Clear the dataset's memory (graph + vector) but keep raw data |
-| `{"everything": true}` | Delete **all** user data |
+| `forget <dataset_id> <data_id>` | Forget one document (the default for this skill) |
+| `forget-memory <dataset_id>` | Clear the dataset's memory (graph + vector) but keep raw data |
+| `forget-dataset <dataset_id>` | Delete the **entire dataset** |
+
+Deleting **all** of a user's data is not something this helper does. If the user asks for it, tell them to do it themselves from the server's API docs (`<server URL>/docs`, the `/api/v1/forget` endpoint) or the Cognee Cloud dashboard. The key is never printed or exported to the shell, so do not try to call the endpoint by hand.
 
 Never use the dataset-wide or `everything` forms unless the user explicitly and unambiguously asked for that scope, and confirm first either way.

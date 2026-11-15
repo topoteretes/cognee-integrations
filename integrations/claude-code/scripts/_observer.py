@@ -280,13 +280,11 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _is_observer_key(key: str) -> bool:
-    return key == PLACEHOLDER_KEY or (bool(key) and key == observer_token(create=False))
-
-
 def llm_key_configured() -> bool:
-    key = os.environ.get("LLM_API_KEY", "").strip()
-    return bool(key) and not _is_observer_key(key)
+    """Whether the user set an LLM key: the plugin option, the only source."""
+    from _env_file import option
+
+    return bool(option("llm_api_key"))
 
 
 def _is_local_url(url: str) -> bool:

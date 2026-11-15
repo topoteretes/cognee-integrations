@@ -10,6 +10,50 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.3]
+
+1.8.2 was still held by the plugin directory with the same findings as 1.8.1 (*Uses a
+credential from the user's machine*, *Update adds credential forward*). This release
+removes what a check of the plugin's files can still read as "a credential taken from
+the environment and sent to a server" (SDK-1411). Nothing changes for users, except
+that the forget skill can no longer delete all of a user's data.
+
+### Changed
+
+- **No key is copied into an environment variable.** 1.8.2 took every key from the
+  plugin options but then copied each one into `COGNEE_API_KEY`, `LLM_API_KEY` or
+  `EMBEDDING_API_KEY` and read it back from there in a dozen scripts, which looks the
+  same as reading the shell. The Cloud key is now read from its option
+  (`CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY`) where a request needs it; the resolvers return
+  it and no longer write it, or the local server's owner key, into the environment. No
+  key is handed to a detached watcher or sync process: each reads the option it
+  inherits, or looks the local owner key up itself. `COGNEE_API_KEY` and
+  `COGNEE_PRINCIPAL_API_KEY` from the shell are removed from every plugin process.
+- **The LLM and embedding keys reach only the server the plugin starts.** They are read
+  from their options when the server's environment is built and are no longer placed in
+  the plugin's own processes. The Claude observer's shim token keeps priority there.
+  The observer decides "an LLM key is configured" from the option, not from a variable.
+- **Skill and agent texts no longer resolve a key into the shell.** The `cognee-search`
+  and `cognee-forget` skills and the `cognee-recall` agent used
+  `creds="$(cognee-forget.sh env)" && eval "$creds" && curl …` for a category search, a
+  ground-truth check and the broader deletions. The helper's `env` command, which
+  printed the key as shell exports, is removed. No shipped shell block evals, runs
+  `curl`, or names a key variable.
+
+### Added
+
+- **`cognee-search.sh --category <user_context|project_docs|agent_actions>`** filters a
+  graph search to one category (the server's `node_name` filter), replacing the
+  hand-written `curl`.
+- **`cognee-forget.sh forget-memory <dataset_id>` and `forget-dataset <dataset_id>`**
+  clear a dataset's graph and vectors, or delete the whole dataset. Each takes one
+  validated dataset id and keeps the key inside the helper.
+
+### Removed
+
+- **Deleting all of a user's data from the forget skill** (`{"everything": true}`). The
+  skill points the user to the server's API docs or the Cognee Cloud dashboard.
+
 ## [1.8.2]
 
 A conservative release to meet Anthropic's plugin directory policy (SDK-1411). Since

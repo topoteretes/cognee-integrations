@@ -393,7 +393,9 @@ def test_a_shell_url_and_keys_are_replaced_by_the_options(options_only, env_file
     assert "COGNEE_PRINCIPAL_API_KEY" not in os.environ
     assert "COGNEE_USER_PASSWORD" not in os.environ
     assert "LLM_ENDPOINT" not in os.environ
-    assert os.environ["LLM_API_KEY"] == "option-llm"
+    # The key stays in its option: only the server this plugin starts gets it.
+    assert "LLM_API_KEY" not in os.environ
+    assert ef.server_secret_env() == {"LLM_API_KEY": "option-llm"}
     assert os.environ["LLM_MODEL"] == "openai/gpt-4o-mini"
     assert os.environ["EMBEDDING_DIMENSIONS"] == "3072"
 
@@ -407,7 +409,8 @@ def test_url_and_key_options_select_cloud(options_only, env_file_env, monkeypatc
     monkeypatch.setenv("COGNEE_BASE_URL", "https://shell.example")
     ef.load_env_file()
     assert os.environ["COGNEE_BASE_URL"] == "https://tenant.cognee.ai"
-    assert os.environ["COGNEE_API_KEY"] == "ck_option"
+    assert "COGNEE_API_KEY" not in os.environ
+    assert ef.cloud_key() == "ck_option"
 
 
 def test_a_child_keeps_what_its_parent_applied(options_only, env_file_env, monkeypatch):

@@ -13,7 +13,8 @@
 #   cognee-forget.sh data <dataset_id>               List the data items in a dataset
 #   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
 #   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-#   cognee-forget.sh env                             Print eval-able COGNEE_BASE_URL/COGNEE_API_KEY exports
+#   cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep raw data (IRREVERSIBLE)
+#   cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
 #
 # Every API command prints the response body followed by a final
 # "HTTP <status>" line — callers must check it (curl without -f exits 0 on
@@ -55,23 +56,22 @@ except Exception:
     # use them. (No apostrophes in this heredoc: bash 3.2 parses them.)
     print(json.dumps({"service_url": "", "api_key": ""}))
     raise SystemExit(0)
-# After the loader these hold plugin settings only: the URL option (or a
-# loopback COGNEE_LOCAL_API_URL), and the Cloud key only in a process Claude
-# Code gave it to. A shell export of either was dropped.
+# After the loader this holds a plugin setting only: the URL option (or a
+# loopback COGNEE_LOCAL_API_URL). A shell export of it was dropped.
 service_url = (os.environ.get("COGNEE_LOCAL_API_URL") or os.environ.get("COGNEE_BASE_URL") or "http://localhost:8011").strip()
-api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
-if not api_key:
-    # No key is stored on disk: against the plugin local server its owner
-    # key is looked up from that server. A Cloud key reaches hooks only.
-    # The opt-out keeps _plugin_common from re-execing this heredoc into the
-    # plugin venv (stdin is the script): nothing here needs it.
-    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
-    try:
-        from _plugin_common import load_cached_api_key
-        api_key = load_cached_api_key(service_url)
-    except Exception:
-        pass
+# No key is stored on disk or taken from the shell: against the plugin local
+# server its owner key is looked up from that server. A Cloud key is a plugin
+# option that reaches hooks only. The opt-out keeps _plugin_common from
+# re-execing this heredoc into the plugin venv (stdin is the script): nothing
+# here needs it.
+api_key = ""
+os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
+try:
+    from _plugin_common import _api_key_with_source
+    api_key = _api_key_with_source(service_url)[0]
+except Exception:
+    pass
 
 try:
     from _net import is_loopback_url
@@ -109,8 +109,7 @@ except Exception:
 PY
 )"
 # Never fall back to the shell's COGNEE_BASE_URL: it is not the plugin's
-# setting, and with a shell COGNEE_API_KEY next to it a request would carry
-# that key to that server.
+# setting.
 if [ -z "$SERVICE_URL" ]; then
     echo "Error: could not resolve the Cognee server URL from the plugin's settings (is python3 available?)." >&2
     exit 1
@@ -125,7 +124,8 @@ Usage:
   cognee-forget.sh data <dataset_id>               List the data items in a dataset
   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-  cognee-forget.sh env                             Print eval-able COGNEE_BASE_URL/COGNEE_API_KEY exports
+  cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep raw data (IRREVERSIBLE)
+  cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
 EOF
 }
 
@@ -180,7 +180,7 @@ case "$CMD" in
         validate_uuid "$3"
         # Body built with json.dumps, not string interpolation, and the values
         # passed through the environment so they never touch argv or the
-        # Python source. Belt and braces with validate_uuid above: this helper
+        # Python source. Belt and braces with validate_uuid above: this command
         # must only ever be able to express a single-document delete.
         payload="$(FORGET_DATASET_ID="$2" FORGET_DATA_ID="$3" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "dataId": os.environ["FORGET_DATA_ID"]}))')"
         server_curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
@@ -189,18 +189,23 @@ case "$CMD" in
             -d "$payload" \
             -w '\nHTTP %{http_code}\n'
         ;;
-    env)
-        # For manual/broader calls only (see SKILL.md) — eval in the same shell
-        # as the curl that uses it; exports do not persist across Bash calls.
-        printf 'export COGNEE_BASE_URL=%q\nexport COGNEE_API_KEY=%q\n' "$SERVICE_URL" "$API_KEY"
-        # A curl to a local server must not go through a proxy: exempt this
-        # machine for the shell that evals these lines, keeping the user's own
-        # entries. (curl reads no_proxy; Python reads either spelling.)
-        if [ -n "$LOOPBACK" ]; then
-            no_proxy_value="${no_proxy:-${NO_PROXY:-}}"
-            no_proxy_value="${no_proxy_value:+${no_proxy_value},}127.0.0.1,localhost,::1"
-            printf 'export NO_PROXY=%q no_proxy=%q\n' "$no_proxy_value" "$no_proxy_value"
+    forget-memory|forget-dataset)
+        # The broader deletions, each its own command taking one validated
+        # dataset id. The key stays inside this helper: it is never printed
+        # or exported to the calling shell. Deleting all of a user's data is
+        # deliberately not expressible here.
+        [ -n "${2:-}" ] || { echo "Error: $CMD requires <dataset_id>" >&2; usage; exit 1; }
+        validate_uuid "$2"
+        if [ "$CMD" = "forget-memory" ]; then
+            payload="$(FORGET_DATASET_ID="$2" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "memoryOnly": True}))')"
+        else
+            payload="$(FORGET_DATASET_ID="$2" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"]}))')"
         fi
+        server_curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
+            -H "Content-Type: application/json" \
+            -H "X-Api-Key: ${API_KEY}" \
+            -d "$payload" \
+            -w '\nHTTP %{http_code}\n'
         ;;
     *)
         echo "Error: unknown command '${CMD}'" >&2

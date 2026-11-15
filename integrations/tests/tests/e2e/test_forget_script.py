@@ -168,10 +168,51 @@ def test_env_prints_exports_without_calling_server(
     suite, temp_home, mock_server, assert_clean_real_home
 ):
     result = run_forget(suite, "env", home=temp_home, service_url=mock_server.url, api_key="k-env")
+    if suite.keys_from_plugin_options:
+        # Claude Code: the helper never prints or exports a key, so there is
+        # no ``env`` command for a shell to eval.
+        assert result.returncode == 1
+        assert "unknown command" in result.stderr
+        assert "k-env" not in result.stdout + result.stderr
+        assert "export" not in result.stdout
+        assert mock_server.calls == []
+        return
     assert result.returncode == 0, result.stderr
     assert f"export COGNEE_BASE_URL={mock_server.url}" in result.stdout
     assert "export COGNEE_API_KEY=k-env" in result.stdout
     assert mock_server.calls == []
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        ("forget-dataset", {"datasetId": DEFAULT_DATASET_ID}),
+        ("forget-memory", {"datasetId": DEFAULT_DATASET_ID, "memoryOnly": True}),
+    ],
+)
+def test_the_broader_deletions_are_helper_commands(
+    suite, temp_home, mock_server, assert_clean_real_home, command, expected
+):
+    """Claude Code: a whole dataset, or its memory only, is deleted by a helper
+    command taking one validated id, with the key kept inside the helper."""
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: broader deletions go through the env command")
+    result = run_forget(
+        suite, command, DEFAULT_DATASET_ID, home=temp_home, service_url=mock_server.url, api_key="k"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.rstrip().endswith("HTTP 200")
+    posted = [c for c in mock_server.calls if c["path"] == "/api/v1/forget"]
+    assert len(posted) == 1
+    assert posted[0]["json"] == expected
+    assert posted[0]["headers"].get("X-Api-Key") == "k"
+
+    refused = run_forget(
+        suite, command, "not-a-uuid", home=temp_home, service_url=mock_server.url, api_key="k"
+    )
+    assert refused.returncode == 1
+    assert "invalid id" in refused.stderr
+    assert len([c for c in mock_server.calls if c["path"] == "/api/v1/forget"]) == 1
 
 
 def test_unknown_command_exits_1_with_usage(suite, temp_home, mock_server, assert_clean_real_home):

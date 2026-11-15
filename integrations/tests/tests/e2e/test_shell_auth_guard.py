@@ -233,12 +233,11 @@ def test_every_script_the_skills_name_is_guarded_or_makes_no_keyed_call(claude_o
     assert sorted(named - _GUARDED_SCRIPTS - _NO_KEYED_CALL_SCRIPTS) == []
 
 
-# ── the shipped curl blocks stop when the helper fails ────────────────────
+# ── no shipped shell block handles a key ──────────────────────────────────
 
 
-def _shipped_curl_blocks(plugin) -> list[tuple[str, str]]:
-    """Every ```bash block in the skill and agent texts that resolves its key
-    with ``cognee-forget.sh env``, as ``(where, shell code)``."""
+def _shipped_bash_blocks(plugin) -> list[tuple[str, str]]:
+    """Every ```bash block in the skill and agent texts, as ``(where, shell code)``."""
     import re
 
     blocks = []
@@ -247,37 +246,30 @@ def _shipped_curl_blocks(plugin) -> list[tuple[str, str]]:
     ):
         text = path.read_text(encoding="utf-8")
         for index, code in enumerate(re.findall(r"```bash\n(.*?)```", text, flags=re.S)):
-            if "cognee-forget.sh" in code and " env)" in code:
-                blocks.append((f"{path.relative_to(plugin)}#{index}", code))
+            blocks.append((f"{path.relative_to(plugin)}#{index}", code))
     return blocks
 
 
-def test_the_shipped_curl_blocks_send_nothing_when_the_helper_fails(
-    claude_only, temp_home, mock_server, assert_clean_real_home
-):
-    """Cloud mode from a shell: the helper prints nothing and exits 2. Each
-    shipped block must stop there. With the earlier ``eval "$(… env)" && curl``
-    form, ``eval ""`` returned 0 and the curl ran with the shell's own
-    ``COGNEE_BASE_URL``/``COGNEE_API_KEY`` (a 1.8.x user still exports both),
-    sending that key to that URL."""
-    if BASH is None:
-        pytest.skip("requires a working POSIX bash")
+def test_no_shipped_shell_block_resolves_or_sends_a_key(claude_only):
+    """The skill and agent texts used to resolve the key into the shell
+    (``eval "$(cognee-forget.sh env)"``) and send it with a hand-written
+    ``curl``. Every request now goes through a plugin script that keeps the
+    key to itself: no block evals, curls, or names a key variable, and the
+    helper has no command that prints one."""
+    import re
+
     plugin = claude_only.scripts_dir.parent
-    blocks = _shipped_curl_blocks(plugin)
-    assert len(blocks) >= 4, blocks
-    _with_url_option(temp_home, _remote_alias(mock_server.url))
-    env = _shell_env(claude_only, temp_home)
-    # What an upgraded user's shell still exports: it points at the mock, so a
-    # curl that runs is seen.
-    env["COGNEE_BASE_URL"] = mock_server.url
-    env["COGNEE_API_KEY"] = "ck-shell-legacy"
-    for where, code in blocks:
-        # Claude Code substitutes the plugin root into the skill text; the
-        # Bash tool's environment does not have the variable.
-        script = code.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin))
-        result = _run([BASH, "-c", script], env, temp_home)
-        assert result.returncode == 2, (where, result.stdout, result.stderr)
-        assert mock_server.calls == [], (where, mock_server.calls)
+    blocks = _shipped_bash_blocks(plugin)
+    assert blocks, "no bash block found in the skill texts"
+    offenders = [
+        where
+        for where, code in blocks
+        if re.search(r"\beval\b|\bcurl\b|\bwget\b|_API_KEY|X-Api-Key|Authorization:", code)
+    ]
+    assert offenders == []
+    helper = (claude_only.scripts_dir / "cognee-forget.sh").read_text(encoding="utf-8")
+    assert "export COGNEE_API_KEY" not in helper
+    assert not re.search(r"^\s*env\)", helper, flags=re.M)
 
 
 def test_the_remote_alias_reaches_the_server_when_a_key_is_set(

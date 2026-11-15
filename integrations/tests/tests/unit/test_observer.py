@@ -775,7 +775,7 @@ def test_running_keyed_server_is_not_claimed(session_start, fake_claude, monkeyp
 def test_running_observer_server_is_followed_even_with_a_key(
     session_start, fake_claude, monkeypatch
 ):
-    monkeypatch.setenv("LLM_API_KEY", "sk-real")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
     decision = _decide(session_start, monkeypatch, running=True, stamp=True)
     assert decision["active"] is True and decision["wanted"] is False
     note = session_start._observer_note(decision)

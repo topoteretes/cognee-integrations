@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 import sys
 
-from _env_file import load_env_file
+from _env_file import cloud_key, load_env_file
 
 # One-time config from ~/.cognee/.env (shell exports still win).
 load_env_file()
@@ -51,7 +51,7 @@ def _runtime() -> dict:
         or os.environ.get("COGNEE_LOCAL_API_URL")
         or "http://localhost:8011"
     ).strip()
-    api_key = (os.environ.get("COGNEE_API_KEY") or "").strip() or _cached_api_key(service_url)
+    api_key = cloud_key(service_url) or _cached_api_key(service_url)
     dataset = _configured_dataset()
     dataset_id = ""
     # The launch record wins (dataset chosen with switch-dataset.py, its
