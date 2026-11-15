@@ -156,7 +156,7 @@ Claude Code keeps the keys in its secure credential store and passes the options
 
 **Storage location is fixed.** The plugin's local server always keeps its stores under `~/.cognee`. `DATA_ROOT_DIRECTORY`, `SYSTEM_ROOT_DIRECTORY` and database provider settings (`DB_PROVIDER`, `GRAPH_DATABASE_PROVIDER`, `VECTOR_DB_PROVIDER`) in your shell or in `~/.cognee/.env` are ignored; session start says so once when it finds any. Data you stored elsewhere with an earlier version is untouched but not used. Cognee's own `TELEMETRY_DISABLED` opt-out in your shell is passed to the local server.
 
-**Ollama and custom LLM endpoints are not supported in this version.** There is no endpoint option, and `LLM_ENDPOINT` in the shell or in `~/.cognee/.env` is ignored, so a local Ollama, Azure or other OpenAI-compatible endpoint cannot be configured (Ollama embeddings included). This is deliberate: 1.9.0 is the most restrictive version of the plugin, built to pass Anthropic's plugin directory review. They will be added back shortly if the directory accepts this version. Until then, local mode uses a hosted provider through the LLM options, or the Claude observer.
+**Ollama and custom LLM endpoints are not supported in this version.** There is no endpoint option, and `LLM_ENDPOINT` in the shell or in `~/.cognee/.env` is ignored, so a local Ollama, Azure or other OpenAI-compatible endpoint cannot be configured (Ollama embeddings included). This is deliberate: 1.8.2 is the most restrictive version of the plugin, built to pass Anthropic's plugin directory review. They will be added back shortly if the directory accepts this version. Until then, local mode uses a hosted provider through the LLM options, or the Claude observer.
 
 > The plugin is an HTTP client in both modes; the hooks never import cognee in-process. Cloud mode needs no local Cognee runtime. The virtualenv (`~/.cognee-plugin/venv`) is needed only in local mode, where it runs the local Cognee server the hooks talk to; you build it yourself.
 >
@@ -910,7 +910,7 @@ event. Irrelevant background recall does not require an announcement.
 
 ## Status line
 
-> **Where it is drawn.** Since 1.9.0 the plugin no longer installs its status line:
+> **Where it is drawn.** Since 1.8.2 the plugin no longer installs its status line:
 > it never writes Claude Code's settings. A `statusLine` entry an earlier version
 > wrote keeps drawing the line below the prompt while its script path exists (each
 > plugin update moves that path). Without it, use `doctor.py` or the

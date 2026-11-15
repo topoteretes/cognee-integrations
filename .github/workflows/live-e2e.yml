@@ -78,7 +78,7 @@ jobs:
           enable-cache: true
 
       # The Codex plugin builds its venv (uv + a pinned cognee) on first
-      # SessionStart, which takes minutes; the Claude Code plugin (1.9.0+) never
+      # SessionStart, which takes minutes; the Claude Code plugin (1.8.2+) never
       # installs anything and needs the venv to exist. Locally the harness
       # symlinks the developer's; in CI there is none, so cache it across runs
       # and build it explicitly when the cache has no venv at the pinned

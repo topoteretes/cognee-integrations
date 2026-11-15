@@ -65,7 +65,7 @@ _SWEEP_LEGACY_DIRS = ("statusline", "improve-locks")
 #: Files likewise. recall-breaker.json: cognee-search.sh used to redirect the
 #: circuit breaker into this dir, splitting it from the one the hooks use.
 #: credits.json / credits.lock: the status line's cloud credits marker, removed
-#: with the credits fetch in 1.9.0 (SDK-1411).
+#: with the credits fetch in 1.8.2 (SDK-1411).
 _SWEEP_LEGACY_FILES = ("recall-breaker.json", "credits.json", "credits.lock")
 
 
