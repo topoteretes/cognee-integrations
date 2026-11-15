@@ -307,6 +307,11 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
     """
     from _capture_policy import allow_tool, capture_enabled, sanitize
 
+    # The privacy controls (COGNEE_CAPTURE, redaction, tool filters) live in
+    # ~/.cognee/.env and can change while this long-lived worker runs: read
+    # them again before deciding what may leave the machine. The refresh loads
+    # only allowlisted non-secret tuning names, never a key or the Cloud URL.
+    _refresh_tuning()
     now = time.time() if now is None else now
     capturing = capture_enabled()
     deadline = time.monotonic() + 20
@@ -842,6 +847,17 @@ def maintain_sessions() -> None:
                         atomic_json(path, current)
 
 
+def _refresh_tuning() -> None:
+    """Pick up edits of ~/.cognee/.env's non-secret tuning settings. Never raises.
+
+    Credentials stay options-only: ``refresh_env_file`` drops every key and the
+    Cloud URL, so this cannot change the connection the worker sends with.
+    """
+    from _env_file import refresh_env_file
+
+    refresh_env_file()
+
+
 def _target_changed(desired: dict) -> bool:
     """True when the last hook's published target is not this worker's own."""
     wanted = desired.get("target")
@@ -919,6 +935,9 @@ def run() -> None:
             )
 
         while True:
+            # Every pass sees the current tuning (capture switch, filters,
+            # intervals), not the values the worker was started with.
+            _refresh_tuning()
             if not has_pending_work():
                 # Nothing queued and no session active for IDLE_EXIT_SECONDS.
                 log("cloud_worker_idle_exit")

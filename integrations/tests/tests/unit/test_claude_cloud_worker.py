@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -693,8 +692,8 @@ def test_a_worker_keeps_running_while_the_hook_target_matches(worker, monkeypatc
 
 
 def test_target_reads_no_env_file(suite, isolated_modules, monkeypatch, tmp_path):
-    """The target comes from the process's own options, never a re-read of a
-    key file (SDK-1411)."""
+    """The target comes from the process's own options: the worker's tuning
+    refresh never takes the Cloud URL or a key from the file (SDK-1411)."""
     if suite.name != "claude-code":
         pytest.skip("Cloud worker")
     import importlib
@@ -702,10 +701,54 @@ def test_target_reads_no_env_file(suite, isolated_modules, monkeypatch, tmp_path
     worker = isolated_modules(suite, "_cloud_worker")
     importlib.import_module("_plugin_common")  # applies the options at import
     monkeypatch.setattr(worker, "ensure_worker", lambda: None)
+    # The worker inherits the spawning hook's environment, options included.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
     for var in ("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "COGNEE_BASE_URL"):
         monkeypatch.setenv(var, "https://tenant-a.aws.cognee.ai")
     env_file = tmp_path / "cognee.env"
     monkeypatch.setenv("COGNEE_ENV_FILE", str(env_file))
-    env_file.write_text('COGNEE_BASE_URL="https://tenant-b.aws.cognee.ai"\n', encoding="utf-8")
-    assert worker.target()["base_url"] == "https://tenant-a.aws.cognee.ai"
-    assert "refresh_env_file" not in Path(worker.__file__).read_text(encoding="utf-8")
+    env_file.write_text(
+        'COGNEE_BASE_URL="https://tenant-b.aws.cognee.ai"\nCOGNEE_API_KEY="file-key"\n',
+        encoding="utf-8",
+    )
+    before = worker.target()
+    assert before["base_url"] == "https://tenant-a.aws.cognee.ai"
+    worker._refresh_tuning()
+    assert worker.target() == before
+
+
+def test_disabling_capture_stops_a_running_worker_from_sending_queued_items(
+    suite, isolated_modules, monkeypatch, tmp_path
+):
+    """A long-lived worker re-reads the non-secret tuning before each pass:
+    turning capture off in ~/.cognee/.env stops queued items from leaving,
+    and turning it back on resumes them, without a restart or a target change."""
+    if suite.name != "claude-code":
+        pytest.skip("Cloud worker")
+    import importlib
+
+    worker = isolated_modules(suite, "_cloud_worker")
+    importlib.import_module("_plugin_common")  # loads the env file at import
+    env_file = tmp_path / "cognee.env"
+    env_file.write_text("COGNEE_CAPTURE=true\n", encoding="utf-8")
+    monkeypatch.setenv("COGNEE_ENV_FILE", str(env_file))
+    monkeypatch.delenv("COGNEE_CAPTURE", raising=False)
+    monkeypatch.setenv("COGNEE_SESSION_KEY", "host-a")
+    monkeypatch.setattr(
+        worker, "target", lambda: {"base_url": "https://cloud.example", "principal": "key"}
+    )
+    monkeypatch.setattr(worker, "ensure_worker", lambda: None)
+    monkeypatch.setattr(worker, "log", lambda *a, **kw: None)
+
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "queued"}, "answer")
+    # The user turns capture off while the worker is running; mtime_ns and
+    # size change, so the refresh re-reads the file.
+    env_file.write_text("COGNEE_CAPTURE=false\n", encoding="utf-8")
+    assert not worker._target_changed({"target": worker.target()})
+    assert worker.drain(lambda _: pytest.fail("sent after capture was disabled")) == 0
+    assert path.exists()
+
+    env_file.write_text("COGNEE_CAPTURE=on\n", encoding="utf-8")
+    sent = []
+    assert worker.drain(lambda item: sent.append(item) or {"entry_id": "saved"}) == 1
+    assert len(sent) == 1 and not path.exists()
