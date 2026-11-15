@@ -43,8 +43,6 @@ _PY_READS = (
 #: A shell expansion of one, in a script, a hook command or a skill text.
 _SHELL_READ = re.compile(r"\$\{?(%s)\b" % _NAME)
 _TEXT_SUFFIXES = {".py", ".sh", ".md", ".json", ".yaml", ".yml", ".txt", ""}
-#: The release history quotes old variable names in prose.
-_SKIPPED_FILES = {"CHANGELOG.md"}
 
 
 @pytest.fixture
@@ -76,7 +74,9 @@ def _credential_reads(path) -> list[str]:
 
 def _shipped_files(plugin):
     for path in sorted(plugin.rglob("*")):
-        if not path.is_file() or path.name in _SKIPPED_FILES:
+        # No file is exempt: the plugin directory reads the release history
+        # like any other file, so it names old variables in prose only.
+        if not path.is_file():
             continue
         if {"node_modules", "__pycache__", ".git"} & set(path.parts):
             continue
@@ -206,9 +206,28 @@ def test_the_observer_token_keeps_priority_over_the_key_option(claude, hook_modu
     """Observer forced on with a key option set: the server must be given the
     shim's token, or its calls to the shim are refused."""
     start = hook_module(claude, "session-start.py")
+    observer = importlib.import_module("_observer")
     _load_options(monkeypatch, llm_api_key="sk-option-llm")
-    monkeypatch.setenv("LLM_API_KEY", "shim-token")  # what apply_observer_env wrote
+    # What apply_observer_env leaves in the process: the flag, not the token.
+    monkeypatch.setenv(observer.ACTIVE_ENV_FLAG, "1")
+    monkeypatch.setattr(observer, "observer_token", lambda create=True: "shim-token")
     assert start._server_env()["LLM_API_KEY"] == "shim-token"
+    assert "LLM_API_KEY" not in os.environ
+
+
+def test_a_key_left_in_the_process_never_reaches_the_server(claude, hook_module, monkeypatch):
+    """A key-named variable still in this process (an older plugin version's
+    ancestor, a shell export that survived) is not copied to the server: the
+    server's keys come from the options or the observer only."""
+    start = hook_module(claude, "session-start.py")
+    observer = importlib.import_module("_observer")
+    _load_options(monkeypatch, llm_api_key="sk-option-llm")
+    monkeypatch.delenv(observer.ACTIVE_ENV_FLAG, raising=False)
+    monkeypatch.setenv("LLM_API_KEY", "sk-stale")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "sk-stale-embed")
+    env = start._server_env()
+    assert env["LLM_API_KEY"] == "sk-option-llm"
+    assert "EMBEDDING_API_KEY" not in env
 
 
 def test_without_a_key_option_the_server_gets_none(claude, hook_module, monkeypatch):

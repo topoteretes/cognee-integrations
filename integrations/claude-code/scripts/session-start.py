@@ -564,18 +564,30 @@ def _server_env() -> dict:
     """The local server's environment, built from allowlists. Never copies os.environ.
 
     Holds the platform basics, the plugin's own server settings and tuning
-    names, the LLM / embedding settings (the plugin options, or the observer's
-    shim settings, which are the only ``LLM_*`` / ``EMBEDDING_*`` values left in
-    this process), the LLM and embedding key options (read from the options
-    here and placed in this environment only), the default-user login,
+    names, the non-secret LLM / embedding settings (the plugin options, or the
+    observer's shim settings, which are the only ``LLM_*`` / ``EMBEDDING_*``
+    values left in this process), the keys (the observer's shim token or the
+    LLM and embedding key options, read here and placed in this environment
+    only, never taken from this process's own), the default-user login,
     ``COGNEE_ENV_FILE`` and ``HASH_API_KEY=false`` (the owner-key lookup needs
     the stored key back).
     """
-    from _env_file import _TUNING_NAMES, server_secret_env
+    from _env_file import (
+        _TUNING_NAMES,
+        LLM_OPTIONS,
+        OPTION_VARS,
+        SENSITIVE_OPTIONS,
+        server_secret_env,
+    )
+    from _observer import server_secret_env as observer_secret_env
 
+    key_names = {OPTION_VARS[name] for name in SENSITIVE_OPTIONS if name in LLM_OPTIONS}
     env: dict = {}
     for name, value in os.environ.items():
         upper = name.upper()
+        if upper in key_names:
+            # A key comes from the two sources below only.
+            continue
         if (
             upper in _SERVER_ENV_BASE
             or upper.startswith("LC_")
@@ -584,9 +596,11 @@ def _server_env() -> dict:
             or name.startswith(("LLM_", "EMBEDDING_"))
         ):
             env[name] = value
-    # The user's LLM and embedding keys, straight from the options. The
-    # observer's own shim token, when the observer is this server's LLM, is
-    # already there and stays.
+    # The observer's own shim token, when the observer is this server's LLM,
+    # then the user's LLM and embedding keys, straight from the options. The
+    # token keeps priority: without it the server's calls to the shim are
+    # refused.
+    env.update(observer_secret_env())
     for name, value in server_secret_env().items():
         env.setdefault(name, value)
     # The server calls this machine too (the observer shim, with its bearer

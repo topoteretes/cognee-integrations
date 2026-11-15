@@ -15,6 +15,8 @@
 #   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
 #   cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep raw data (IRREVERSIBLE)
 #   cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
+#   cognee-forget.sh forget-everything --confirm-delete-all
+#                                                    Delete ALL of the user's data (IRREVERSIBLE)
 #
 # Every API command prints the response body followed by a final
 # "HTTP <status>" line — callers must check it (curl without -f exits 0 on
@@ -126,6 +128,8 @@ Usage:
   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
   cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep raw data (IRREVERSIBLE)
   cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
+  cognee-forget.sh forget-everything --confirm-delete-all
+                                                   Delete ALL of the user's data (IRREVERSIBLE)
 EOF
 }
 
@@ -190,11 +194,12 @@ case "$CMD" in
             -w '\nHTTP %{http_code}\n'
         ;;
     forget-memory|forget-dataset)
-        # The broader deletions, each its own command taking one validated
-        # dataset id. The key stays inside this helper: it is never printed
-        # or exported to the calling shell. Deleting all of a user's data is
-        # deliberately not expressible here.
-        [ -n "${2:-}" ] || { echo "Error: $CMD requires <dataset_id>" >&2; usage; exit 1; }
+        # The broader deletions, each its own command taking exactly one
+        # validated dataset id. Anything after the id is refused: a second id
+        # is a single-document delete typed under the wrong command, and
+        # ignoring it would delete the whole dataset. The key stays inside
+        # this helper: it is never printed or exported to the calling shell.
+        [ "$#" -eq 2 ] || { echo "Error: $CMD takes exactly one <dataset_id>" >&2; usage; exit 1; }
         validate_uuid "$2"
         if [ "$CMD" = "forget-memory" ]; then
             payload="$(FORGET_DATASET_ID="$2" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "memoryOnly": True}))')"
@@ -205,6 +210,21 @@ case "$CMD" in
             -H "Content-Type: application/json" \
             -H "X-Api-Key: ${API_KEY}" \
             -d "$payload" \
+            -w '\nHTTP %{http_code}\n'
+        ;;
+    forget-everything)
+        # Deletes every dataset the user owns. It names no target, so it runs
+        # only with this one literal argument and nothing else: a bare
+        # command, a typo or an extra argument sends no request.
+        if [ "$#" -ne 2 ] || [ "${2:-}" != "--confirm-delete-all" ]; then
+            echo "Error: forget-everything deletes ALL of the user's data and runs only as: cognee-forget.sh forget-everything --confirm-delete-all" >&2
+            usage
+            exit 1
+        fi
+        server_curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
+            -H "Content-Type: application/json" \
+            -H "X-Api-Key: ${API_KEY}" \
+            -d '{"everything": true}' \
             -w '\nHTTP %{http_code}\n'
         ;;
     *)

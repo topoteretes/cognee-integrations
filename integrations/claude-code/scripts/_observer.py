@@ -375,10 +375,15 @@ def apply_observer_env(decision: dict) -> dict:
 
     Called in the SessionStart process BEFORE the cognee install and server
     boot: ``_detect_required_extras`` reads ``EMBEDDING_PROVIDER`` to add the
-    fastembed extra, and the server inherits ``os.environ`` at spawn. The LLM
-    variables are overwritten — an ``LLM_MODEL`` left in the env file without
-    a key would not work anyway — while the embedding ones are ``setdefault``,
-    so a user who configured their own (say Ollama) embedder keeps it.
+    fastembed extra, and the server's environment is built from these at
+    spawn. The LLM variables are overwritten — an ``LLM_MODEL`` left in the env
+    file without a key would not work anyway — while the embedding ones are
+    ``setdefault``, so a user who configured their own (say Ollama) embedder
+    keeps it.
+
+    Only non-secret settings are written. The shim's bearer token is not put
+    in this process's environment: ``server_secret_env`` hands it to the
+    server's environment alone.
     """
     if not decision.get("active"):
         return {}
@@ -386,8 +391,6 @@ def apply_observer_env(decision: dict) -> dict:
         "LLM_PROVIDER": "custom",
         "LLM_MODEL": COGNEE_MODEL,
         "LLM_ENDPOINT": decision.get("endpoint") or (base_url() + "/v1"),
-        # The shim's bearer token: litellm sends it as ``Authorization: Bearer``.
-        "LLM_API_KEY": observer_token() or PLACEHOLDER_KEY,
         ACTIVE_ENV_FLAG: "1",
     }
     for key, value in applied.items():
@@ -401,6 +404,21 @@ def apply_observer_env(decision: dict) -> dict:
             os.environ[key] = value
             applied[key] = value
     return applied
+
+
+def server_secret_env() -> dict:
+    """The shim's bearer token, under the name the local server reads it by.
+
+    For the environment of the server this plugin starts only (see
+    ``session-start._server_env``): litellm sends it to the shim as
+    ``Authorization: Bearer``. Empty unless ``apply_observer_env`` made the
+    observer this launch's LLM. The token is read from its file here, so a
+    worker that inherited the active flag gets it without the token ever
+    being in a plugin process's environment.
+    """
+    if os.environ.get(ACTIVE_ENV_FLAG, "") != "1":
+        return {}
+    return {"LLM_API_KEY": observer_token() or PLACEHOLDER_KEY}
 
 
 def is_active() -> bool:

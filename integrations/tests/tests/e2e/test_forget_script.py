@@ -215,6 +215,79 @@ def test_the_broader_deletions_are_helper_commands(
     assert len([c for c in mock_server.calls if c["path"] == "/api/v1/forget"]) == 1
 
 
+@pytest.mark.parametrize(
+    "command, extra",
+    [
+        ("forget-dataset", DEFAULT_DATA_ID),
+        ("forget-memory", DEFAULT_DATA_ID),
+        ("forget-dataset", "extra"),
+        ("forget-memory", "--yes"),
+    ],
+)
+def test_the_broader_deletions_take_exactly_one_id(
+    suite, temp_home, mock_server, assert_clean_real_home, command, extra
+):
+    """Claude Code: a second id is a single-document delete typed under the
+    wrong command. Ignoring it would delete the whole dataset, so anything
+    after the dataset id is refused before any request."""
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: broader deletions go through the env command")
+    result = run_forget(
+        suite,
+        command,
+        DEFAULT_DATASET_ID,
+        extra,
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 1
+    assert f"{command} takes exactly one <dataset_id>" in result.stderr
+    assert [c for c in mock_server.calls if c["path"] == "/api/v1/forget"] == []
+
+
+def test_forget_everything_needs_its_confirmation_argument(
+    suite, temp_home, mock_server, assert_clean_real_home
+):
+    """Claude Code: deleting all of a user's data names no target, so it runs
+    only with the one literal confirmation argument."""
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: broader deletions go through the env command")
+
+    def run(*args):
+        return run_forget(
+            suite,
+            "forget-everything",
+            *args,
+            home=temp_home,
+            service_url=mock_server.url,
+            api_key="k",
+        )
+
+    def posted():
+        return [c for c in mock_server.calls if c["path"] == "/api/v1/forget"]
+
+    for args in (
+        (),
+        ("--yes",),
+        ("--confirm-delete-al",),
+        (DEFAULT_DATASET_ID,),
+        ("--confirm-delete-all", "extra"),
+        ("extra", "--confirm-delete-all"),
+    ):
+        refused = run(*args)
+        assert refused.returncode == 1, args
+        assert "runs only as" in refused.stderr
+        assert posted() == [], args
+
+    result = run("--confirm-delete-all")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.rstrip().endswith("HTTP 200")
+    assert len(posted()) == 1
+    assert posted()[0]["json"] == {"everything": True}
+    assert posted()[0]["headers"].get("X-Api-Key") == "k"
+
+
 def test_unknown_command_exits_1_with_usage(suite, temp_home, mock_server, assert_clean_real_home):
     result = run_forget(
         suite, "obliterate", home=temp_home, service_url=mock_server.url, api_key="k"

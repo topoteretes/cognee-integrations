@@ -115,8 +115,15 @@ def _command(suite, name: str, home) -> list[str]:
         ]
     if name == "forget-datasets":
         return [BASH, str(scripts / "cognee-forget.sh"), "datasets"]
-    if name == "forget-env":
-        return [BASH, str(scripts / "cognee-forget.sh"), "env"]
+    if name in ("forget-memory", "forget-dataset"):
+        return [
+            BASH,
+            str(scripts / "cognee-forget.sh"),
+            name,
+            "11111111-1111-5111-8111-111111111111",
+        ]
+    if name == "forget-everything":
+        return [BASH, str(scripts / "cognee-forget.sh"), name, "--confirm-delete-all"]
     if name == "switch-dataset-list":
         return [
             sys.executable,
@@ -157,7 +164,9 @@ def _run(cmd, env, home):
         "evidence-index",
         "evidence-details",
         "forget-datasets",
-        "forget-env",
+        "forget-memory",
+        "forget-dataset",
+        "forget-everything",
     ],
 )
 def test_remote_url_without_a_key_exits_2_before_any_request(

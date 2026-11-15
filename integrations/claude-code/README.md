@@ -814,10 +814,11 @@ them; agent trace entries are not matched). All server access goes through
 wrappers and always authenticates; it refuses to run without a key rather than send
 requests that can only 401. It never prints the key or exports it to the shell: a
 whole dataset (`forget-dataset`) or its memory only (`forget-memory`) is deleted by a
-helper command, and deleting all of a user's data is not something it can do. In Cloud mode it has no key (see [Auth](#auth)), so delete
+helper command taking exactly one dataset id, and all of a user's data by
+`forget-everything --confirm-delete-all`, which runs only with that literal argument. In Cloud mode it has no key (see [Auth](#auth)), so delete
 the data from the Cognee Cloud dashboard instead. Deletion is
-irreversible; dataset-wide or delete-everything scopes require an explicit, unambiguous
-user request.
+irreversible; the dataset-wide and delete-everything commands require an explicit, unambiguous
+user request, and the skill confirms with the user before running one.
 
 ## Claude observer: local mode on your Claude subscription
 
@@ -861,7 +862,8 @@ through **Claude Code itself** instead of asking for a key:
 
 The shim listens on loopback only and requires a bearer token on every route but
 `/health`: `~/.cognee-plugin/observer/token` (created once, mode 0600), which cognee
-receives as its `LLM_API_KEY`. Requests carrying an `Origin` header are refused, so a
+receives as its `LLM_API_KEY` (set in the server's environment only, never in the
+plugin's own processes). Requests carrying an `Origin` header are refused, so a
 web page cannot drive it.
 
 A running server keeps the LLM config it booted with. The server's pidfile records

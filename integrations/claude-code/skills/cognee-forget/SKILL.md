@@ -92,11 +92,12 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 
 ## Broader deletions — explicit user request only
 
-The helper has one command for each broader scope. Each takes the dataset id from step 2 and prints the response followed by an `HTTP <status>` line, like the other commands:
+The helper has one command for each broader scope. `forget-memory` and `forget-dataset` each take the id of the dataset **the user named**: run `cognee-forget.sh datasets`, find the row whose `name` is that dataset, and use its `id`. This is the step-2 dataset only when the user asked about the current one. Each takes exactly one id, and anything after it is refused. Every command prints the response followed by an `HTTP <status>` line, like the other commands:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-memory <dataset_id>
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-dataset <dataset_id>
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-everything --confirm-delete-all
 ```
 
 | Command | Effect |
@@ -104,7 +105,8 @@ The helper has one command for each broader scope. Each takes the dataset id fro
 | `forget <dataset_id> <data_id>` | Forget one document (the default for this skill) |
 | `forget-memory <dataset_id>` | Clear the dataset's memory (graph + vector) but keep raw data |
 | `forget-dataset <dataset_id>` | Delete the **entire dataset** |
+| `forget-everything --confirm-delete-all` | Delete **all** of the user's data, in every dataset they own |
 
-Deleting **all** of a user's data is not something this helper does. If the user asks for it, tell them to do it themselves from the server's API docs (`<server URL>/docs`, the `/api/v1/forget` endpoint) or the Cognee Cloud dashboard. The key is never printed or exported to the shell, so do not try to call the endpoint by hand.
+`forget-everything` names no dataset, so it runs only with the literal `--confirm-delete-all` argument and nothing else.
 
-Never use the dataset-wide or `everything` forms unless the user explicitly and unambiguously asked for that scope, and confirm first either way.
+Never run any of these three unless the user explicitly and unambiguously asked for that scope. Before running one, tell the user exactly what will be deleted and that it is irreversible, and get a yes: for `forget-memory` and `forget-dataset` show the dataset's name and id; for `forget-everything` say that every dataset they own is deleted. The key is never printed or exported to the shell, so do not try to call the endpoint by hand.
