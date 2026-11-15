@@ -36,6 +36,15 @@ The broader deletions of the forget skill are now helper commands, and the helpe
   it is read from its file when the server's environment is built, keeps priority
   there, and is no longer written to `LLM_API_KEY` in the plugin's processes.
   The observer decides "an LLM key is configured" from the option, not from a variable.
+  `LLM_API_KEY` and `EMBEDDING_API_KEY` are removed from every plugin process, whatever
+  put them there.
+- **The forget and index helpers send their requests from Python.** `cognee-forget.sh`
+  built each request with `curl` and passed the key on command lines; it now runs
+  `cognee_forget.py`, which resolves the server and authorizes the request in one
+  process. `cognee-index-repo.sh` no longer passes a key to `_code_graph.py`, which
+  resolves it itself. No shell script holds a key, and `curl` is no longer needed. The
+  commands, their arguments and their output (the response, then an `HTTP <status>`
+  line) are unchanged.
 - **Skill and agent texts no longer resolve a key into the shell.** The `cognee-search`
   and `cognee-forget` skills and the `cognee-recall` agent had the model take the key
   from the forget helper into its shell and send it in a hand-written request, for a

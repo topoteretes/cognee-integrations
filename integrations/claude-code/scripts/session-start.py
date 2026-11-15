@@ -1206,7 +1206,6 @@ def _spawn_exit_watcher(
     *,
     session_key: str = "",
     agent_session_name: str = "",
-    api_key: str = "",
     service_url: str = "",
 ) -> None:
     """Launch a detached watcher that syncs only after Claude exits."""
@@ -2354,7 +2353,6 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
         dataset,
         session_key=session_key,
         agent_session_name=agent_session_name,
-        api_key=agent_api_key,
         service_url=str(config.get("base_url", "") or ""),
     )
 

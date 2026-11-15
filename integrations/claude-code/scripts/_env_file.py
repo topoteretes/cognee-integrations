@@ -53,11 +53,13 @@ from _net import is_loopback_host, is_loopback_url  # noqa: F401  (re-exported)
 _COGNEE_HOME = Path.home() / ".cognee"
 _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 
-# The plugin options, by their userConfig name, and the variable each becomes.
-# The sensitive ones are kept by Claude Code in its secure store.
+# The plugin options the local server is configured from, by their userConfig
+# name, and the name the server reads each one by. The Cloud key option
+# (``cognee_api_key``) has no entry: it is read where a request needs it
+# (``cloud_key``) and never becomes a variable. The sensitive ones are kept by
+# Claude Code in its secure store.
 OPTION_PREFIX = "CLAUDE_PLUGIN_OPTION_"
 OPTION_VARS = {
-    "cognee_api_key": "COGNEE_API_KEY",
     "llm_api_key": "LLM_API_KEY",
     "llm_provider": "LLM_PROVIDER",
     "llm_model": "LLM_MODEL",
@@ -74,12 +76,15 @@ LLM_OPTIONS = tuple(name for name in OPTION_VARS if name.startswith(("llm_", "em
 _REFUSED_EXACT = frozenset({"COGNEE_BASE_URL", "COGNEE_API_KEY", "COGNEE_PRINCIPAL_API_KEY"})
 _REFUSED_PREFIXES = ("COGNEE_USER_", "LLM_", "EMBEDDING_")
 _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH")
-# Dropped from the environment of every plugin process: the Cloud key (read
-# from its option, never from a variable) and the login the plugin used to
-# take from the environment (always the default user now, config.py).
+# Dropped from the environment of every plugin process, whatever put them
+# there: the Cloud, LLM and embedding keys (each read from its option, never
+# from a variable) and the login the plugin used to take from the environment
+# (always the default user now, config.py).
 _SHELL_DROPPED = (
     "COGNEE_API_KEY",
     "COGNEE_PRINCIPAL_API_KEY",
+    "LLM_API_KEY",
+    "EMBEDDING_API_KEY",
     "COGNEE_USER_EMAIL",
     "COGNEE_USER_PASSWORD",
 )

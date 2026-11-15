@@ -22,7 +22,12 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
     popen = Mock()
     monkeypatch.setattr(start.subprocess, "Popen", popen)
 
-    start._spawn_exit_watcher("session-123", "test-dataset", api_key=explicit_key)
+    if suite.keys_from_plugin_options:
+        # Claude Code: the watcher takes no key at all.
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck_option")
+        start._spawn_exit_watcher("session-123", "test-dataset")
+    else:
+        start._spawn_exit_watcher("session-123", "test-dataset", api_key=explicit_key)
 
     popen.assert_called_once()
     argv = popen.call_args.args[0]
@@ -35,7 +40,8 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
         # Claude Code: no key is handed over. The watcher inherits the plugin
         # options and reads the Cloud key from there, or looks the local owner
         # key up itself; a resolved key is never written to a key variable.
-        assert explicit_key not in env.values() or not explicit_key
+        assert env["CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY"] == "ck_option"
+        assert "watcher-test-key" not in env.values()
     else:
         assert env["COGNEE_API_KEY"] == (explicit_key or "inherited-test-key")
 
@@ -58,6 +64,6 @@ def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, m
     if suite.keys_from_plugin_options:
         # Claude Code: no key is handed over. The sync process resolves its
         # own, from the plugin options or the local server.
-        assert sync.call_args.kwargs["api_key"] == ""
+        assert "api_key" not in sync.call_args.kwargs
     else:
         assert sync.call_args.kwargs["api_key"] == "environment-test-key"

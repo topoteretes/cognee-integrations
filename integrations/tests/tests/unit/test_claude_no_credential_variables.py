@@ -286,3 +286,42 @@ def test_a_plain_search_sends_no_category(claude, temp_home, mock_server):
     result = _search(claude, temp_home, mock_server, "deploy steps", "5")
     assert result.returncode == 0, result.stderr
     assert "node_name" not in mock_server.assert_called("POST", "/api/v1/recall")["json"]
+
+
+# ── the shell scripts: no key is held, sent or passed on a command line ────
+
+
+def test_no_shipped_shell_script_holds_or_sends_a_key(claude):
+    """Every keyed request is made by a Python script, in one process. A shell
+    script that built the header itself kept the key in a shell variable and
+    put it on a command line (``curl -H``, a ``python3`` argument), where
+    ``ps`` shows it."""
+    scripts = sorted(claude.scripts_dir.glob("*.sh"))
+    assert scripts, "no shell script found"
+    pattern = re.compile(r"X-Api-Key|Authorization:|API_KEY|\bcurl\b|\bwget\b")
+    offenders = [
+        f"{path.name}:{number}: {line.strip()[:100]}"
+        for path in scripts
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if pattern.search(line)
+    ]
+    assert offenders == []
+
+
+def test_the_code_graph_command_authorizes_its_own_request(claude, hook_module, monkeypatch):
+    """``cognee-index-repo.sh`` passes no key: an empty one is resolved in the
+    process that sends the request, and a given one is used as it is."""
+    graph = hook_module(claude, "_code_graph.py")
+    seen = []
+    monkeypatch.setattr(graph, "_resolved_auth", lambda url: f"owner-of:{url}")
+    monkeypatch.setattr(
+        graph,
+        "index_repo",
+        lambda url, key, spec, dataset, **kwargs: seen.append((url, key)) or {"ok": True},
+    )
+    graph.main(["http://localhost:8011", "", "index", "/repo"])
+    graph.main(["http://localhost:8011", "given", "index", "/repo"])
+    assert seen == [
+        ("http://localhost:8011", "owner-of:http://localhost:8011"),
+        ("http://localhost:8011", "given"),
+    ]
