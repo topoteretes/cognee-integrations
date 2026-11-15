@@ -93,6 +93,9 @@ install Cognee with the command session start prints.**
 - **Plugin identity is off.** Every request runs as the user's own key: no per-machine
   agent key is minted, so there is no shared agent memory role and no agent key limit.
   `COGNEE_PLUGIN_IDENTITY` is ignored. Registration still says `type: claude_code`.
+  The `shared_memory.json` an earlier version left is no longer read: writes go to the
+  user's own dataset by name, not to the canonical dataset UUID it recorded (which after
+  a storage change no longer exists, so every write was refused with HTTP 403).
 - **Local mode needs a Cognee you install.** Session start no longer installs Cognee
   (no uv, no pip, no interpreter fallback). It uses `~/.cognee-plugin/venv` when that
   holds cognee 1.6.6 or newer with the driver extras your providers need; otherwise it

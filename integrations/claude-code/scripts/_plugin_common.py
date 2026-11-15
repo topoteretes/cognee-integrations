@@ -2634,7 +2634,16 @@ def shared_memory_enabled(config: dict | None = None) -> bool:
 
 
 def load_shared_memory_marker(service_url: str = "") -> dict:
-    """The shared-memory marker for ``service_url`` ({} when none / other URL)."""
+    """The shared-memory marker for ``service_url`` ({} when none / other URL).
+
+    Always {} while plugin identity is disabled (always, in this plugin): with
+    no agent there is no shared wiring, and a marker an earlier version left
+    behind names that version's tenant, role and dataset UUIDs. Reading it
+    would address writes to a canonical UUID the server may no longer have
+    (403 after the store changed) instead of the user's own dataset by name.
+    """
+    if plugin_identity_mode() == "disabled":
+        return {}
     data = _load_json_file(_SHARED_MEMORY_MARKER)
     if not isinstance(data, dict):
         return {}

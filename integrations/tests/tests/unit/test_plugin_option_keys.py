@@ -72,6 +72,67 @@ def test_plugin_identity_is_always_off(suite, isolated_modules, monkeypatch):
     assert pc.plugin_identity_mode({"plugin_identity": "true"}) == "disabled"
 
 
+# ── a shared-memory marker from an earlier version is ignored ──────────────
+
+_STALE_CANONICAL = "5708f668-e272-5475-9341-caac1f6ce9f9"
+
+
+def _leave_stale_shared_marker(suite, temp_home, base_url: str) -> None:
+    """The marker an identity-era version wrote: tenant, role and the
+    canonical UUID it resolved on the store it ran against then."""
+    path = temp_home / ".cognee-plugin" / suite.state_subdir / "shared_memory.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "mode": "shared",
+                "base_url": base_url,
+                "agent_id": "f9bfc277-ce05-41f8-99ce-a0ebfd29424f",
+                "parent_user_id": "972c5918-574b-4f78-ab23-87e490040d7d",
+                "tenant_id": "f99dbb2a-8d50-4e8b-8e64-192be57de0c8",
+                "role_id": "0953f86f-e112-41c1-90ad-5eb5dd1a9f37",
+                "canonical": {"agent_sessions": _STALE_CANONICAL},
+            }
+        )
+    )
+
+
+def test_a_leftover_shared_marker_does_not_address_writes(
+    suite, isolated_modules, temp_home, monkeypatch
+):
+    """Upgraded from a version with plugin identity: its marker still maps
+    ``agent_sessions`` to a canonical UUID. That UUID may not exist on the
+    store the server runs now (a 403 on every write), so writes go by name."""
+    local = "http://localhost:8011"
+    monkeypatch.setenv("COGNEE_BASE_URL", local)
+    _leave_stale_shared_marker(suite, temp_home, local)
+    pc = isolated_modules(suite, "_plugin_common")
+    from _dataset_access import write_fields
+
+    assert pc.load_shared_memory_marker(local) == {}
+    assert pc.dataset_id_for("agent_sessions") == ""
+    dataset = "agent_sessions"
+    assert write_fields(pc.dataset_id_for(dataset) or dataset) == {"dataset_name": dataset}
+
+
+def test_a_leftover_shared_marker_adds_no_role_or_tenant_grants(
+    suite, isolated_modules, temp_home, monkeypatch
+):
+    local = "http://localhost:8011"
+    monkeypatch.setenv("COGNEE_BASE_URL", local)
+    _leave_stale_shared_marker(suite, temp_home, local)
+    pc = isolated_modules(suite, "_plugin_common")
+    asked: list = []
+
+    def fake_grants(principal_id, **kw):
+        asked.append(principal_id)
+        return {"own-dataset"}
+
+    monkeypatch.setattr(pc, "_principal_write_dataset_ids", fake_grants)
+    assert pc.effective_write_dataset_ids("user-1", service_url=local) == {"own-dataset"}
+    assert asked == ["user-1"]
+
+
 def test_session_start_registers_as_the_owner_key_and_stores_nothing(
     suite, run_hook, payloads, mock_server, temp_home
 ):
