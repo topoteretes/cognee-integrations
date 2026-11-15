@@ -170,8 +170,11 @@ def _run(cmd, env, home):
     ],
 )
 def test_remote_url_without_a_key_exits_2_before_any_request(
-    claude_only, temp_home, mock_server, isolated_modules, assert_clean_real_home, name
+    claude_only, temp_home, private_mock_server, isolated_modules, assert_clean_real_home, name
 ):
+    # A server of its own: "no request at all" is asserted below, and a detached
+    # sync left by an earlier session test reaches the suite-wide server late.
+    mock_server = private_mock_server
     cmd = _command(claude_only, name, temp_home)
     if cmd[0] is None:
         pytest.skip("requires a working POSIX bash (wrapper is not run on Windows)")
@@ -188,8 +191,9 @@ def test_remote_url_without_a_key_exits_2_before_any_request(
 
 
 def test_evidence_explain_needs_no_server_and_still_runs_in_cloud_mode(
-    claude_only, temp_home, mock_server, assert_clean_real_home
+    claude_only, temp_home, private_mock_server, assert_clean_real_home
 ):
+    mock_server = private_mock_server  # see the test above
     """``explain`` reads a local file only, so the guard leaves it alone."""
     _with_url_option(temp_home, _remote_alias(mock_server.url))
     cmd = [
