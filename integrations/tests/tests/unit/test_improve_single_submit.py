@@ -65,7 +65,7 @@ def run_detailed(pc, monkeypatch):
         monkeypatch.setattr(pc, "drain_warmup_entries", _drain)
         monkeypatch.setattr(pc, "ensure_dataset_via_http", lambda d: None)
         monkeypatch.setattr(pc, "improve_session_via_http", _improve)
-        monkeypatch.setattr(pc, "refresh_credits", lambda *a, **k: {})
+        monkeypatch.setattr(pc, "refresh_credits", lambda *a, **k: {}, raising=False)
         monkeypatch.setattr(pc, "_DRAIN_RETRY_PAUSE_SECONDS", 0.0)
         monkeypatch.setattr(
             pc.time, "sleep", lambda s: calls.__setitem__("sleep", calls["sleep"] + 1)

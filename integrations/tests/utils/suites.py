@@ -55,10 +55,9 @@ class Suite:
     #: the two happen to share a value, but one names a process and the other a
     #: session, and nothing keeps them equal.
     host_stem: str
-    #: Capability: the host runs ``async`` hooks and emits ``StopFailure``, so
-    #: credits can refresh at turn end without adding a prompt of lag. codex skips
-    #: async hooks entirely and has no StopFailure, so its entry must be a plain
-    #: sync Stop hook with a tight timeout.
+    #: Capability: the host runs ``async`` hooks, so capture at tool and turn
+    #: end adds no prompt of lag. codex skips async hooks entirely, so its
+    #: entries must be plain sync hooks with tight timeouts.
     has_async_hooks: bool
     #: Capability: renders a rich terminal status bar — the health glyphs, the
     #: recall-counts diagnostics strip, the mode word and the plugin-install
@@ -125,6 +124,27 @@ class Suite:
     #: local path's ``sync_bridge_done`` / ``final_sync_once_*`` events. codex and
     #: Antigravity still talk to the tenant from the hooks.
     has_cloud_worker: bool
+    #: Capability: a plugin identity (a minted per-machine agent key, the
+    #: shared agent memory role, ``plugin-keys.py``) and the key caches it needs
+    #: (``api_key.json``, ``agent_key.json``). The Claude Code plugin has none
+    #: (directory policy, SDK-1411): it runs as the user's key from its plugin
+    #: options and stores no key on disk.
+    has_plugin_identity: bool = True
+    #: Behaviour: the plugin reads every credential and connection setting
+    #: (the Cloud URL and key, LLM_* and EMBEDDING_*) only from its plugin
+    #: options (CLAUDE_PLUGIN_OPTION_*, which the host exports to hooks) and
+    #: ignores them in the shell and ~/.cognee/.env, which supplies only
+    #: allowlisted COGNEE_* tuning settings. The Cloud key is sent only to a
+    #: remote server; a local one gets its owner key. Its local server starts
+    #: with an allowlisted environment. Claude Code only.
+    keys_from_plugin_options: bool = False
+    #: Capability: session start installs cognee from PyPI into the shared venv
+    #: (uv or pip, with the interpreter fallback). The Claude Code plugin does
+    #: not (directory policy, SDK-1411): the user builds the venv.
+    installs_cognee: bool = True
+    #: Capability: a background check of the published plugin version and the
+    #: update nudge on the status line / at session start. Claude Code: none.
+    checks_for_updates: bool = True
 
 
 CLAUDE = Suite(
@@ -150,6 +170,10 @@ CLAUDE = Suite(
     cites_memory_by_default=True,
     injects_empty_recall=True,
     has_cloud_worker=True,
+    has_plugin_identity=False,
+    keys_from_plugin_options=True,
+    installs_cognee=False,
+    checks_for_updates=False,
 )
 
 CODEX = Suite(

@@ -64,7 +64,9 @@ _SWEEP_LOG_FILES = (
 _SWEEP_LEGACY_DIRS = ("statusline", "improve-locks")
 #: Files likewise. recall-breaker.json: cognee-search.sh used to redirect the
 #: circuit breaker into this dir, splitting it from the one the hooks use.
-_SWEEP_LEGACY_FILES = ("recall-breaker.json",)
+#: credits.json / credits.lock: the status line's cloud credits marker, removed
+#: with the credits fetch in 1.8.2 (SDK-1411).
+_SWEEP_LEGACY_FILES = ("recall-breaker.json", "credits.json", "credits.lock")
 
 
 def _sweep_remove(path: Path, counts: dict, key: str) -> None:

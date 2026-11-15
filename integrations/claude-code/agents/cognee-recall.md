@@ -25,7 +25,7 @@ Cognee organizes knowledge into three categories:
 
 ## Search command
 
-Run **one** broad search via the wrapper and answer from it. It queries the **running server** (`/api/v1/recall`, the source of truth) and falls back to `cognee-cli` only if the server is unreachable. Which datasets it reads depends on the recall mode:
+Run **one** broad search via the wrapper and answer from it. It queries the **running server** (`/api/v1/recall`, the source of truth); when the server is unreachable it prints `UNREACHABLE` and exits 1 — say the search was not run and stop. Which datasets it reads depends on the recall mode:
 - **auto** (the default): the search names no dataset and the server picks the best-matching readable dataset(s) (a cognee 1.6.6 server; an older one searches every readable dataset).
 - **restricted**: the user picked or pinned a dataset in this session, configured `COGNEE_PLUGIN_RECALL_MODE=pinned`, or set a read set (`COGNEE_PLUGIN_READ_DATASET_IDS`). The search reads the session's **active dataset** only (or that read set).
 
@@ -35,20 +35,23 @@ Run **one** broad search via the wrapper and answer from it. It queries the **ru
 
 **Do not fan out into many targeted calls.** One broad search plus the context the `UserPromptSubmit` hook already injects on every turn is enough — multiple calls just add latency and (un-allowlisted) permission prompts for the user. Memory is read from the knowledge graph (and the code graph via `--code`) only; there is no session-cache search.
 
-**Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm directly. Category filtering uses `node_name` (the CLI doesn't expose it):
+In Cloud mode the wrapper exits 2 before sending anything: the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only, so a search cannot authenticate from the shell (automatic recall still works). Report that and stop.
+
+**Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm directly. Category filtering uses `node_name` (the wrapper doesn't expose it). Resolve the URL and key with the forget helper in the **same** shell invocation — exports do not persist across Bash calls:
 ```bash
-curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
+curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
+  -H "X-Api-Key: ${COGNEE_API_KEY}" \
   -d '{"query": "<query>", "top_k": 10, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"]}'
 ```
-(For a local server `COGNEE_API_KEY` is unused; an empty value is fine.)
+In Cloud mode the helper exits 2 (the key reaches hooks only); report that and stop.
 
 ## The server is the source of truth (read this before reporting "not found")
 
-- **An empty result is only valid if it came from the server.** `cognee-cli` is a thin client over the same server and can print empty stdout even when content exists. **Never conclude "not found" from an empty/clean CLI run** — confirm with the `curl` above first.
-- **Do not re-run the same search to "retry."** One server answer is authoritative — report it and stop. (Re-running the CLI and chasing async warnings is how a confident-but-wrong "nothing found" verdict gets produced.)
-- **If the output is an `{"error": ...}` object instead of a list**, the server was reachable but rejected/failed the request (e.g. auth) — report that error and check `COGNEE_API_KEY`. It is **not** "no results", and the wrapper deliberately does **not** fall back to the local CLI in that case.
+- **An empty result is only valid if it came from the server.** `UNREACHABLE` (exit 1) means no search ran — never report it as "not found".
+- **Do not re-run the same search to "retry."** One server answer is authoritative — report it and stop.
+- **If the output is an `{"error": ...}` object instead of a list**, the server was reachable but rejected/failed the request — report that error (on HTTP 401/403, the server rejected the key). It is **not** "no results".
 
 ## Empty result: check the recall mode, then report
 

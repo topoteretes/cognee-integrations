@@ -28,6 +28,16 @@ from utils.suites import Suite, state_dir
 
 pytestmark = [pytest.mark.live, pytest.mark.local_only]
 
+
+@pytest.fixture(autouse=True)
+def _needs_plugin_identity(request):
+    # The Claude Code plugin has no plugin identity and stores no key (SDK-1411).
+    if "live_suite" in request.fixturenames:
+        suite = request.getfixturevalue("live_suite")
+        if not suite.has_plugin_identity:
+            pytest.skip(f"{suite.name}: no plugin identity")
+
+
 BOOT_DEADLINE = 900.0
 
 

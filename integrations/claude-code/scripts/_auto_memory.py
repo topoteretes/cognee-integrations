@@ -1,21 +1,26 @@
-"""Reversible ownership of Claude Code's native auto-memory setting."""
+"""Claude Code's native auto-memory alongside Cognee: read, advise, never write.
+
+Earlier versions turned ``autoMemoryEnabled`` off in ``~/.claude/settings.json``
+in Cloud mode. This plugin no longer writes Claude Code's settings (directory
+policy, SDK-1411): in Cloud mode it says once that both memories are on and how
+to turn Claude's off, and it says once when an earlier version had turned it
+off, so the user can turn it back on.
+"""
 
 from __future__ import annotations
 
 import json
 import os
-import re
-import stat
-import tempfile
 from pathlib import Path
 
-from _file_lock import file_lock
 from _injection_ledger import atomic_json
 
 
 def _paths():
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    root = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
     return (
-        Path.home() / ".claude" / "settings.json",
+        root / "settings.json",
         Path.home() / ".cognee-plugin" / "claude-code" / "auto-memory.json",
     )
 
@@ -27,102 +32,39 @@ def _read(path):
     return data
 
 
-def _write_settings(path: Path, data: dict) -> None:
-    """Rewrite the user's settings in place: follow a symlink to its target and keep
-    the file's permissions, indentation and trailing newline."""
-    target = path.resolve() if path.is_symlink() else path
+def _claude_memory_on(settings: dict) -> bool:
+    if os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "").strip():
+        return False
+    return settings.get("autoMemoryEnabled") is not False
+
+
+def advice(cloud: bool) -> str:
+    """A one-time notice about Claude Code's auto-memory, or "". Never raises.
+
+    Reads the settings, writes only the plugin's own marker.
+    """
     try:
-        original = target.read_text(encoding="utf-8")
-        mode = stat.S_IMODE(os.stat(target).st_mode)
-    except OSError:
-        original, mode = "", None
-    match = re.search(r"\n([ \t]+)\S", original)
-    indent = (match.group(1) if match else 2) if "\n" in original.strip() or not original else None
-    text = json.dumps(data, indent=indent)
-    if not original or original.endswith("\n"):
-        text += "\n"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=target.parent, prefix="." + target.name + "-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if mode is not None:
-            os.chmod(temporary, mode)
-        os.replace(temporary, target)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-
-
-def restore() -> bool:
-    settings_path, marker_path = _paths()
-    if not marker_path.exists():
-        return False  # Nothing of ours to give back; leave ~/.claude untouched.
-    with file_lock(settings_path.with_name(".cognee-settings.lock"), timeout=0.2) as acquired:
-        if not acquired:
-            return False
-        marker = _read(marker_path)
-        if not marker.get("owned"):
-            return False
-        settings = _read(settings_path)
-        # A later explicit user choice wins, even when our marker remains.
-        if settings.get("autoMemoryEnabled") is False:
-            if marker.get("previous_present"):
-                settings["autoMemoryEnabled"] = marker.get("previous_value")
-            else:
-                settings.pop("autoMemoryEnabled", None)
-            _write_settings(settings_path, settings)
-        marker_path.unlink(missing_ok=True)
-        return True
-
-
-def configure() -> str:
-    """Return a notice once; leave invalid settings and explicit user choices alone."""
-    if os.environ.get("COGNEE_DISABLE_AUTO_MEMORY", "").lower() in {"0", "false", "no", "off"}:
-        return "Cognee restored the previous auto-memory setting." if restore() else ""
-    settings_path, marker_path = _paths()
-    with file_lock(settings_path.with_name(".cognee-settings.lock"), timeout=0.2) as acquired:
-        if not acquired:
-            return ""
+        settings_path, marker_path = _paths()
         settings, marker = _read(settings_path), _read(marker_path)
-        if settings.get("autoMemoryEnabled") is True:
-            if marker.get("user_choice_reported"):
-                return ""
-            marker["user_choice_reported"] = True
-            atomic_json(marker_path, marker)
-            return "Cognee left your explicit autoMemoryEnabled=true setting unchanged."
-        if settings.get("autoMemoryEnabled") is False:
+        if marker.get("owned") and not marker.get("handback_reported"):
+            # An earlier version set autoMemoryEnabled=false; it is no longer ours to undo.
+            atomic_json(marker_path, {**marker, "owned": False, "handback_reported": True})
+            if settings.get("autoMemoryEnabled") is False:
+                return (
+                    "An earlier Cognee version turned off Claude auto-memory "
+                    "(autoMemoryEnabled=false in ~/.claude/settings.json). Cognee no longer "
+                    "changes Claude settings; remove that line to turn it back on."
+                )
             return ""
-        if marker.get("owned"):
-            # We set it and the user has since removed it: that is their choice.
-            atomic_json(marker_path, {"owned": False, "user_choice_reported": True})
-            return ""
-        if "autoMemoryEnabled" not in settings and marker.get("user_choice_reported"):
-            return ""
-        # Persist the old value before editing settings so an interrupted write is recoverable.
-        marker = {
-            "owned": True,
-            "previous_present": "autoMemoryEnabled" in settings,
-            "previous_value": settings.get("autoMemoryEnabled"),
-        }
-        atomic_json(marker_path, marker)
-        settings["autoMemoryEnabled"] = False
-        _write_settings(settings_path, settings)
-        return (
-            "Cognee disabled Claude auto-memory starting next session; "
-            "opt out with COGNEE_DISABLE_AUTO_MEMORY=false."
-        )
-
-
-def sync(cloud: bool) -> str:
-    """Take over native memory in cloud mode; anywhere else give back what we changed."""
-    if cloud:
-        return configure()
-    return "Cognee restored the previous auto-memory setting." if restore() else ""
+        if cloud and _claude_memory_on(settings) and not marker.get("advice_reported"):
+            atomic_json(marker_path, {**marker, "advice_reported": True})
+            return (
+                "Claude auto-memory is on alongside Cognee. To keep memory in Cognee only, "
+                "set autoMemoryEnabled to false in ~/.claude/settings.json."
+            )
+    except Exception:
+        pass
+    return ""
 
 
 def state() -> dict:
@@ -131,7 +73,8 @@ def state() -> dict:
         settings, marker = _read(settings_path), _read(marker_path)
         return {
             "enabled": settings.get("autoMemoryEnabled", "default"),
-            "plugin_owned": bool(marker.get("owned")),
+            "plugin_owned": False,
+            "earlier_version_disabled_it": bool(marker.get("owned")),
             "environment_override": os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY", ""),
         }
     except (OSError, ValueError) as exc:

@@ -45,13 +45,12 @@ Delete kept directories with `chmod -R u+rwX <dir>` followed by `rm -rf <dir>`.
 ## Isolation
 
 The harness gives each run a temporary HOME and passes on only an allowlist of
-environment variables plus `EVAL_*`. Exporting
-`COGNEE_CAPTURE=false COGNEE_BASE_URL=http://127.0.0.1:9` in your shell therefore
-does not reach the plugin's hooks. With nothing configured, the hooks fall back
-to `http://localhost:8011`. If a local Cognee server is running there, they
-connect to it and capture the eval prompts. If not, they install and boot one in
-the background. A loopback URL such as `127.0.0.1:9` gets the same install and
-boot.
+environment variables plus `EVAL_*`. Exporting a `COGNEE_*` setting in your
+shell therefore does not reach the plugin's hooks. With nothing configured, the
+hooks fall back to `http://localhost:8011`. If a local Cognee server is running
+there, they connect to it and recall from it. A Cognee server address is a
+plugin option, never a setting in `~/.cognee/.env`, so the env file cannot
+point the plugin somewhere unreachable.
 
 `isolate.sh` is a scaffold script that writes the run's `$HOME/.cognee/.env`
 instead. The harness only runs a scaffold that sits in the case's own directory,
@@ -60,10 +59,8 @@ already exists.
 
 | Setting | Effect |
 |---|---|
-| `COGNEE_CAPTURE=false` | Nothing is captured. |
-| `COGNEE_BASE_URL=https://cognee-eval.invalid` | A remote URL that never resolves and could never pass a TLS check. Nothing is booted and recall fails fast. `COGNEE_MANAGED_ENDPOINT` on a loopback URL would also stop the boot, but it adds a "memory offline" warning to Claude's context. |
-| `COGNEE_IDLE_DISABLED=true` | No idle watcher or cloud worker keeps running after the run. |
+| `COGNEE_PLUGIN_DISABLED=true` | The plugin is off. Every hook, command and the status line exit at once: nothing is captured or recalled, no server is contacted or started, and no background worker runs. |
 
-Claude still sees the plugin's normal SessionStart guidance, plus "recall
-skipped (server unreachable)" on each prompt. It sees no recalled memory, so the
-suite measures routing from the skill descriptions and `when_to_use` text alone.
+Claude still sees the plugin's skills and agents, but no SessionStart guidance
+and no recalled memory, so the suite measures routing from the skill
+descriptions and `when_to_use` text alone.

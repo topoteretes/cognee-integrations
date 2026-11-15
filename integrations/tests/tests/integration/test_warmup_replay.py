@@ -18,6 +18,9 @@ import pytest
 ENTRY = "/api/v1/remember/entry"
 
 
+LOCAL_OWNER_KEY = "k-local-owner"
+
+
 @pytest.fixture
 def pc(suite, isolated_modules, mock_server, tmp_path, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
@@ -27,10 +30,16 @@ def pc(suite, isolated_modules, mock_server, tmp_path, monkeypatch):
     monkeypatch.setattr(common, "_DRAIN_LOCK", tmp_path / "drain.lock")
     monkeypatch.setattr(common, "_BUFFER_LOCK", tmp_path / "buffer.lock")
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
+    if suite.keys_from_plugin_options:
+        # A local server: no request is sent to it without its owner key.
+        mock_server.identity.seed_owner_key("default_user@example.com", LOCAL_OWNER_KEY)
     return common
 
 
-def test_buffered_entries_reach_the_server_in_order(pc, mock_server):
+def test_buffered_entries_reach_the_server_in_order(suite, pc, mock_server):
+    # The mock listens on this machine, so for Claude Code it is a local server:
+    # the replay carries its owner key, never the Cloud key option (SDK-1411).
+    expected_key = LOCAL_OWNER_KEY if suite.keys_from_plugin_options else "principal-key"
     pc.append_warmup_entry("agent_sessions", "sid-1", {"type": "trace", "origin_function": "Bash"})
     pc.append_warmup_entry("agent_sessions", "sid-1", {"type": "trace", "origin_function": "Read"})
     pc.append_warmup_entry(
@@ -49,7 +58,7 @@ def test_buffered_entries_reach_the_server_in_order(pc, mock_server):
     for call in posted:
         assert call["json"]["dataset_name"] == "agent_sessions"
         assert call["json"]["session_id"] == "sid-1"
-        assert call["headers"].get("X-Api-Key") == "principal-key"
+        assert call["headers"].get("X-Api-Key") == expected_key
 
 
 def test_server_503_leaves_the_entry_buffered_and_arms_backoff(pc, mock_server):

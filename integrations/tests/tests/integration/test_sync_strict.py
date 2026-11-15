@@ -39,6 +39,9 @@ def sync_mod(suite, hook_module, mock_server, monkeypatch):
     monkeypatch.setattr(module, "load_config", lambda: {})
     monkeypatch.setattr(module, "http_api_ready", lambda: True)
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
+    if suite.keys_from_plugin_options:
+        # A local server: no request is sent to it without its owner key.
+        mock_server.identity.seed_owner_key("default_user@example.com")
     return module
 
 
@@ -153,3 +156,22 @@ def test_cloud_sync_queues_without_waiting(sync_mod, suite, monkeypatch):
     monkeypatch.setattr(sync_mod.time, "sleep", no_sleep)
     sync_mod.main()
     assert filed == [("ds", "sid", "manual")]
+
+
+def test_manual_sync_without_credentials_exits_non_zero(sync_mod, monkeypatch):
+    """A manual /cognee-sync that resolves no auth says "skipped" and fails, so
+    the caller does not report a sync that never ran (SDK-1411). The automatic
+    final sync keeps raising for its retry loop (above)."""
+    if not hasattr(sync_mod, "_NO_AUTH"):
+        pytest.skip("this tree's manual sync still exits 0 when skipped")
+    import importlib
+    import io
+    import sys
+
+    worker = importlib.import_module("_cloud_worker")
+    monkeypatch.setattr(worker, "enabled", lambda *_: False)
+    _resolve(sync_mod, monkeypatch)
+    monkeypatch.setattr(sync_mod, "http_api_ready", lambda: False)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(sys, "argv", ["sync-session-to-graph.py"])
+    assert sync_mod.main() == 1

@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import isolation
 from .hooklog import hook_events
 from .suites import Suite, state_dir
 
@@ -323,7 +324,10 @@ def build_live_env(
         env["COGNEE_API_KEY"] = api_key
     if extra:
         env.update(extra)
-    return env
+    # The Claude Code plugin ignores the plain COGNEE_BASE_URL / COGNEE_API_KEY
+    # / LLM_* variables and takes them from its plugin options: hand them over
+    # the way Claude Code does (after the CLAUDE* scrub above).
+    return isolation.with_plugin_options(suite, env)
 
 
 def server_health(base_url: str, timeout: float = 3.0) -> int | None:

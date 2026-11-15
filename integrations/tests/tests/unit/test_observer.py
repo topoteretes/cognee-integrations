@@ -82,16 +82,30 @@ def test_auto_activates_when_no_key_and_claude_present(observer, fake_claude):
     assert decision["model"] == observer.DEFAULT_CLAUDE_MODEL
 
 
-def test_auto_yields_to_a_configured_key(observer, fake_claude, monkeypatch):
+def test_auto_yields_to_a_configured_key(observer, fake_claude, suite, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "sk-real")
+    if suite.keys_from_plugin_options:
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
     decision = observer.resolve_observer({})
     assert decision["active"] is False
     assert decision["reason"] == "llm_key_configured"
     assert decision["error"] == ""
 
 
+def _set_options(monkeypatch, **options) -> None:
+    """Set plugin options and load them the way a hook process does at start."""
+    import importlib
+
+    ef = importlib.import_module("_env_file")
+    for name, value in options.items():
+        monkeypatch.setenv(f"CLAUDE_PLUGIN_OPTION_{name.upper()}", value)
+    monkeypatch.delenv(ef._LLM_ENV_APPLIED, raising=False)
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+
+
 def test_auto_yields_to_a_configured_provider(observer, fake_claude, monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    _set_options(monkeypatch, llm_provider="ollama")
     decision = observer.resolve_observer({})
     assert decision["active"] is False
     assert decision["reason"] == "llm_provider_configured"
@@ -110,27 +124,6 @@ def test_cloud_mode_never_runs_the_observer(observer, fake_claude):
 def test_local_base_url_is_not_cloud(observer, fake_claude, url):
     """SessionStart fills base_url with the local server's URL before deciding."""
     assert observer.resolve_observer({"base_url": url})["active"] is True
-
-
-def test_auto_yields_to_a_key_in_the_servers_dotenv(observer, fake_claude, temp_home):
-    """cognee's load_dotenv(override=True) makes that key the server's, unseen here."""
-    (temp_home / ".cognee-plugin" / "venv").mkdir(parents=True, exist_ok=True)
-    dotenv = temp_home / ".cognee-plugin" / ".env"
-    dotenv.write_text('LLM_API_KEY="sk-in-dotenv"\n', encoding="utf-8")
-    decision = observer.resolve_observer({})
-    assert decision["active"] is False
-    assert decision["reason"] == "server_dotenv_configured"
-    assert decision["dotenv"] == str(dotenv.resolve())
-    assert "server's" in observer.describe(decision)
-
-
-def test_server_dotenv_with_our_own_key_does_not_count(observer, fake_claude, temp_home):
-    (temp_home / ".cognee-plugin" / "venv").mkdir(parents=True, exist_ok=True)
-    token = observer.observer_token()
-    (temp_home / ".cognee-plugin" / ".env").write_text(
-        f"LLM_API_KEY={token}\nEMBEDDING_PROVIDER=fastembed\n", encoding="utf-8"
-    )
-    assert observer.resolve_observer({})["active"] is True
 
 
 def test_token_is_created_once_and_private(observer):
@@ -324,8 +317,7 @@ def test_apply_points_cognee_at_the_shim(observer, fake_claude, monkeypatch):
 
 
 def test_apply_keeps_a_user_embedder(observer, fake_claude, monkeypatch):
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "ollama")
-    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    _set_options(monkeypatch, embedding_provider="ollama", embedding_model="nomic-embed-text")
     applied = observer.apply_observer_env(observer.resolve_observer({}))
     assert os.environ["EMBEDDING_PROVIDER"] == "ollama"
     assert os.environ["EMBEDDING_MODEL"] == "nomic-embed-text"
@@ -454,17 +446,75 @@ def test_child_env_drops_the_parent_claude_session(shim, observer, monkeypatch):
     assert env["PATH"] == "/usr/bin"
 
 
-def test_child_env_keeps_auth_and_drops_the_api_key(shim, monkeypatch):
-    """Token logins and Bedrock/Vertex must work; an API key must not move the bill."""
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-x")
-    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api-x")
+def test_child_env_is_exactly_the_allowlist_and_the_constants(shim, observer, monkeypatch):
+    """From a hostile environment the child gets the allowlisted values found,
+    the observer flag and the two fixed opt-outs, and nothing else: no provider
+    routing, login token or key, and a parent's own opt-out values are
+    overridden (SDK-1411)."""
+    for key in list(os.environ):
+        monkeypatch.delenv(key)
+    allowed = {
+        "PATH": "/usr/bin",
+        "HOME": "/home/u",
+        "CLAUDE_CONFIG_DIR": "/home/u/.claude",
+        "HTTPS_PROXY": "http://proxy:3128",
+        "LC_CTYPE": "UTF-8",
+    }
+    hostile = {
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "CLAUDE_CODE_USE_FOUNDRY": "1",
+        "AWS_PROFILE": "prod",
+        "AWS_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "AKIA",
+        "AWS_SECRET_ACCESS_KEY": "secret",
+        "ANTHROPIC_VERTEX_PROJECT_ID": "proj",
+        "CLOUD_ML_REGION": "us-east5",
+        "ANTHROPIC_BASE_URL": "https://gateway.example",
+        "ANTHROPIC_API_KEY": "sk-ant",
+        "ANTHROPIC_AUTH_TOKEN": "tok",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+        "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY": "ck",
+        "LLM_API_KEY": "llm",
+        "COGNEE_API_KEY": "ck",
+        "DISABLE_TELEMETRY": "1",
+        "CLAUDECODE": "1",
+        # A parent's own opt-out values never reach the child: the constants win.
+        "DISABLE_AUTOUPDATER": "0",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0",
+    }
+    for key, value in {**allowed, **hostile}.items():
+        monkeypatch.setenv(key, value)
     env = shim.child_env()
-    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat-x"
-    assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-    assert env["CLAUDE_CODE_USE_VERTEX"] == "1"
-    assert "ANTHROPIC_API_KEY" not in env
+    if os.name == "nt":  # Windows environment keys are case-insensitive
+        env = {key.upper(): value for key, value in env.items()}
+        allowed = {key.upper(): value for key, value in allowed.items()}
+    assert env == {
+        **allowed,
+        observer.CHILD_ENV_FLAG: "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_AUTOUPDATER": "1",
+    }
+
+
+def test_child_env_passes_no_credential(shim, monkeypatch):
+    """Only the allowlist reaches the child: no token, key or option (SDK-1411)."""
+    for key in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "AWS_SECRET_ACCESS_KEY",
+        "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY",
+        "LLM_API_KEY",
+        "COGNEE_API_KEY",
+    ):
+        monkeypatch.setenv(key, "secret")
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
+    env = shim.child_env()
+    assert "secret" not in env.values()
+    assert env["LC_ALL"] == "en_US.UTF-8"
+    assert env["HTTPS_PROXY"] == "http://proxy:3128"
 
 
 def test_complete_returns_structured_output_as_content(shim, monkeypatch):
@@ -739,7 +789,7 @@ def test_running_server_of_unknown_origin_is_not_claimed(session_start, fake_cla
     assert not note.startswith("⚠ LLM: Claude Code")
 
 
-# ── the idle watcher asks the shim, not litellm ──────────────────────────────
+# ── the idle watcher asks the shim and never checks a provider key ───────────
 
 
 @pytest.fixture
@@ -755,10 +805,14 @@ def watcher_check(suite, hook_module, isolated_modules, observer, monkeypatch):
     obs = isolated_modules(suite, "_observer")
     pc = isolated_modules(suite, "_plugin_common")
     monkeypatch.setitem(sys.modules, "_observer", obs)
-    writes, events = [], []
-    monkeypatch.setattr(
-        pc, "write_llm_state", lambda state, detail="", reason="": writes.append((state, reason))
-    )
+    writes, events, details, probes = [], [], [], []
+
+    def _write(state, detail="", reason=""):
+        writes.append((state, reason))
+        details.append(detail)
+
+    monkeypatch.setattr(pc, "write_llm_state", _write)
+    monkeypatch.setattr(pc, "clear_llm_state", lambda: writes.append(("cleared", "")))
     monkeypatch.setattr(pc, "read_llm_state", lambda: {})
     monkeypatch.setattr(pc, "get_session_key", lambda: "host-1")
     # The plugin started this server: keep the live ownership probe out of it.
@@ -766,11 +820,19 @@ def watcher_check(suite, hook_module, isolated_modules, observer, monkeypatch):
     monkeypatch.setattr(watcher, "_log", lambda event, **kw: events.append(event))
     monkeypatch.setenv(obs.ACTIVE_ENV_FLAG, "1")
 
+    def _probe(**kw):
+        probes.append(kw)
+        return _run.verdict
+
     def _run(verdict):
-        monkeypatch.setattr(obs, "observer_probe", lambda **kw: verdict)
+        _run.verdict = verdict
+        monkeypatch.setattr(obs, "observer_probe", _probe)
         watcher._check_llm_key({})
         return writes, events
 
+    _run.details = details
+    _run.probes = probes
+    _run.obs = obs
     return _run
 
 
@@ -780,10 +842,30 @@ def test_watcher_marks_ok_when_claude_answers(watcher_check):
     assert "llm_key_ok" in events
 
 
-def test_watcher_names_the_login_not_a_key(watcher_check):
+def test_watcher_names_the_stored_login_not_a_key(watcher_check):
+    """An auth-failed probe says the observer needs Claude Code's stored login
+    (Bedrock, Vertex, a gateway or setup-token cannot reach the child), not
+    "log in" (SDK-1411)."""
     writes, events = watcher_check({"auth": "failed", "detail": "Not logged in", "status": 401})
-    assert writes == [("auth_failed", "claude_not_logged_in")]
+    assert writes == [("auth_failed", "observer_needs_stored_login")]
+    assert watcher_check.details == [watcher_check.obs.STORED_LOGIN_ONLY_MESSAGE]
+    assert watcher_check.obs.STORED_LOGIN_ONLY_MESSAGE == (
+        "The Claude observer can use only Claude Code's stored login (not Bedrock, "
+        "Vertex, a gateway or setup-token); set the LLM options instead."
+    )
+    assert watcher_check.obs.STORED_LOGIN_ONLY_REASON == "observer_needs_stored_login"
     assert "llm_key_auth_failed" in events
+
+
+def test_watcher_checks_no_key_without_the_observer(watcher_check, monkeypatch):
+    """Observer off: no probe, no provider call, and this session's verdict is
+    withdrawn (SDK-1411: the plugin no longer validates a user's LLM key)."""
+    monkeypatch.delenv(watcher_check.obs.ACTIVE_ENV_FLAG)
+    monkeypatch.setattr(watcher_check.obs, "is_active", lambda: False)
+    writes, events = watcher_check({"auth": "ok", "detail": "", "status": 200})
+    assert writes == [("cleared", "")]
+    assert watcher_check.probes == []
+    assert "llm_key_check_skipped" in events
 
 
 def test_watcher_leaves_marker_alone_when_shim_is_down(watcher_check):
@@ -793,7 +875,7 @@ def test_watcher_leaves_marker_alone_when_shim_is_down(watcher_check):
 
 
 def test_statusline_shows_the_specific_reason(statusline, suite, temp_home, monkeypatch):
-    """`✕ (claude_not_logged_in)` rather than the misleading `incorrect_llm_api_key`."""
+    """`✕ (observer_needs_stored_login)` rather than the misleading `incorrect_llm_api_key`."""
     if suite.name != "claude-code":
         pytest.skip(f"{suite.name}: the Claude observer is a Claude Code feature")
     import time as _time
@@ -806,12 +888,12 @@ def test_statusline_shows_the_specific_reason(statusline, suite, temp_home, monk
                 "llm_state": "auth_failed",
                 "checked_at": _time.time(),
                 "session_key": "host-1",
-                "reason": "claude_not_logged_in",
+                "reason": "observer_needs_stored_login",
             }
         ),
         encoding="utf-8",
     )
     monkeypatch.setattr(statusline, "_active_mode", lambda: "local")
     prefix = statusline._llm_prefix("host-1")
-    assert "claude_not_logged_in" in prefix
+    assert "observer_needs_stored_login" in prefix
     assert "incorrect_llm_api_key" not in prefix

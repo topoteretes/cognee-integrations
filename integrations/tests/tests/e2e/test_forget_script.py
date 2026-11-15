@@ -27,7 +27,14 @@ pytestmark = pytest.mark.skipif(
 
 def run_forget(suite, *args, home, service_url=None, api_key=None):
     script = suite.scripts_dir / "cognee-forget.sh"
-    env = build_env(suite, home, service_url=service_url, api_key=api_key)
+    extra = None
+    if suite.keys_from_plugin_options and api_key:
+        # The mock is on a loopback address, and the Claude Code plugin sends
+        # its Cloud key option to one only as the configured Cloud URL of a
+        # terminal pinned to cloud (a self-hosted server used as Cloud). Any
+        # other server on this machine gets its own owner key.
+        extra = {"COGNEE_BACKEND": "cloud"}
+    env = build_env(suite, home, service_url=service_url, api_key=api_key, extra=extra)
     return subprocess.run(
         [BASH, str(script), *args],
         env=env,
@@ -57,6 +64,11 @@ def test_api_key_falls_back_to_cached_key(suite, temp_home, mock_server, assert_
     cache_dir.mkdir(parents=True, exist_ok=True)
     (cache_dir / "api_key.json").write_text(json.dumps({"api_key": "k-cached"}))
     result = run_forget(suite, "datasets", home=temp_home, service_url=mock_server.url)
+    if not suite.has_plugin_identity:
+        # No key cache any more (SDK-1411): a leftover file is never read.
+        assert result.returncode == 2, result.stderr
+        assert all(c["path"] != "/api/v1/datasets" for c in mock_server.calls)
+        return
     assert result.returncode == 0, result.stderr
     call = mock_server.assert_called("GET", "/api/v1/datasets")
     assert call["headers"].get("X-Api-Key") == "k-cached"
@@ -68,7 +80,15 @@ def test_no_key_anywhere_exits_2_without_calling_server(
     result = run_forget(suite, "datasets", home=temp_home, service_url=mock_server.url)
     assert result.returncode == 2
     assert "no API key resolved" in result.stderr
-    assert mock_server.calls == []
+    if suite.has_plugin_identity:
+        assert mock_server.calls == []
+    else:
+        # A server on this machine is asked for its owner key (SDK-1411); with
+        # none to give, nothing else is called.
+        assert {c["path"] for c in mock_server.calls} <= {
+            "/api/v1/auth/login",
+            "/api/v1/auth/api-keys",
+        }
 
 
 def test_data_lists_dataset_items(suite, temp_home, mock_server, assert_clean_real_home):

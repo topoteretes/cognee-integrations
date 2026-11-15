@@ -37,6 +37,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from _net import is_loopback_url, open_url
+
 UNREACHABLE = "UNREACHABLE"
 
 # Transport-exception verdicts (classify_transport_exception). Only DOWN is
@@ -90,6 +92,10 @@ def _build_https_opener():
         ctx = ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         ctx = ssl.create_default_context()
+        if sys.platform == "win32":
+            # The default context already reads the Windows certificate store;
+            # there is no file bundle to look for.
+            return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
         _cert_loaded = False
         for path in filter(
             None,
@@ -115,6 +121,13 @@ def _build_https_opener():
 
 
 _HTTPS_OPENER = _build_https_opener()
+
+
+def _default_open(req, timeout):
+    """This machine is reached directly, never through a proxy (see ``_net``)."""
+    if is_loopback_url(req.full_url):
+        return open_url(req, timeout=timeout)
+    return _HTTPS_OPENER.open(req, timeout=timeout)
 
 
 def coerce_top_k(value, default=5):
@@ -294,7 +307,7 @@ def do_recall(
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
     )
-    _open = opener if opener is not None else _HTTPS_OPENER.open
+    _open = opener if opener is not None else _default_open
     try:
         with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
@@ -311,7 +324,7 @@ def do_recall(
             )
             return []
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
+            msg = "unauthorized (HTTP %s) — the server rejected the key" % e.code
         else:
             msg = "server returned HTTP %s for /api/v1/recall" % e.code
             # Name what was searched and pass the server's own reason on: the

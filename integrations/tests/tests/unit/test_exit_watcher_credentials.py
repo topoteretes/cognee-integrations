@@ -48,4 +48,9 @@ def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, m
     watcher.main()
 
     sync.assert_called_once()
-    assert sync.call_args.kwargs["api_key"] == "environment-test-key"
+    if suite.keys_from_plugin_options:
+        # Claude Code: no key is handed over. The sync process resolves its
+        # own, from the plugin options or the local server.
+        assert sync.call_args.kwargs["api_key"] == ""
+    else:
+        assert sync.call_args.kwargs["api_key"] == "environment-test-key"

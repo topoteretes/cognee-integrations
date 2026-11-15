@@ -16,6 +16,15 @@ import sys
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _needs_cognee_install(request):
+    if "suite" in request.fixturenames:
+        suite = request.getfixturevalue("suite")
+        if not suite.installs_cognee:
+            pytest.skip(f"{suite.name}: installs nothing (SDK-1411)")
+
+
 # --- 1. source-level: nothing is piped into a shell, no installer URL -----------
 
 _FORBIDDEN = (

@@ -2,8 +2,8 @@
 """Background watcher daemon.
 
 Launched detached from ``session-start.py`` (and respawned by the next prompt
-if it is not running). Runs the update check and the LLM-key check once at
-start, then refreshes shared agent memory every ``SHARED_REFRESH_SECONDS``
+if it is not running). Runs the update check and the observer LLM check once
+at start, then refreshes shared agent memory every ``SHARED_REFRESH_SECONDS``
 until stopped.
 
 Stops cleanly on:
@@ -76,45 +76,24 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
-def _run_update_check() -> None:
-    """Fire the background, interval-guarded plugin update check (best-effort)."""
-    try:
-        sys.path.insert(0, os.path.dirname(__file__))
-        from _plugin_common import maybe_check_for_update  # type: ignore
-
-        maybe_check_for_update()
-    except Exception as exc:
-        _log("update_check_error", error=str(exc)[:200])
+# Minimum seconds between two observer checks by the same session.
+_LLM_CHECK_INTERVAL_SECONDS = 300.0
 
 
 def _check_llm_key(config: dict) -> None:
-    """Provider-agnostic LLM-key validation for the status line (local mode).
+    """Observer-only LLM check for the status line (local mode).
 
-    Runs in this BACKGROUND watcher — never a hot-path hook — because it imports
-    cognee/litellm (heavy) and makes one tiny real LLM call. That real call is the
-    only way to validate a key that works across ALL providers: litellm normalizes
-    every provider's rejection into ``AuthenticationError``, so we don't hardcode
-    any provider's endpoint/auth. (recall can't be used — the plugin passes
-    only_context=True, which skips the LLM entirely.)
+    The only LLM verdict the plugin forms is about the Claude observer: it asks
+    the plugin's own loopback shim whether ``claude`` can answer. A user's own
+    LLM key is not checked here (SDK-1411): the plugin imports no cognee or
+    litellm code and calls no provider, so a bad key shows up only as failures
+    in the server's logs.
 
-    ``max_tokens=1`` is a floor on cost, not a guarantee: providers differ on whether
-    it caps reasoning tokens or only content, so a reasoning model may bill more than
-    one token (or reject the request outright — see the classifier below). That is
-    acceptable here because the call is infrequent, off the hot path, bounded by a
-    15s timeout, and its response is discarded unread.
-
-    Writes the shared llm-state marker: ``ok`` / ``auth_failed`` / ``not_set``.
-    Local mode only (LLM_API_KEY is unused against a remote server). Throttled via
-    the marker's ``checked_at``. Honors COGNEE_LLM_KEY_CHECK=off.
+    Writes the shared llm-state marker: ``ok`` / ``auth_failed`` (reason
+    ``observer_needs_stored_login``). Without an active observer it withdraws
+    this session's verdict. Throttled via the marker's ``checked_at``.
     """
     try:
-        if os.environ.get("COGNEE_LLM_KEY_CHECK", "").strip().lower() in (
-            "0",
-            "false",
-            "no",
-            "off",
-        ):
-            return
         sys.path.insert(0, os.path.dirname(__file__))
         from _plugin_common import (
             clear_llm_state,
@@ -136,102 +115,50 @@ def _check_llm_key(config: dict) -> None:
             _log("llm_key_check_skipped", reason=owner)
             return
 
+        from _observer import STORED_LOGIN_ONLY_MESSAGE, STORED_LOGIN_ONLY_REASON, observer_probe
+        from _observer import is_active as _observer_active
+
+        if not _observer_active():
+            clear_llm_state()
+            _log("llm_key_check_skipped", reason="observer_inactive")
+            return
+
         # Throttle against OUR OWN last verdict only. The marker is machine-wide, so
         # honouring another session's timestamp would let a keyless launch's verdict
         # stand in for ours and leave this session permanently unvalidated.
-        interval = float(os.environ.get("COGNEE_LLM_CHECK_INTERVAL", "") or 300.0)
         prior = read_llm_state()
         if str(prior.get("session_key") or "") == get_session_key() and (
-            time.time() - float(prior.get("checked_at", 0) or 0) < interval
+            time.time() - float(prior.get("checked_at", 0) or 0) < _LLM_CHECK_INTERVAL_SECONDS
         ):
             return
 
-        # Claude observer: the "key" is Claude Code's own login, and the shim knows
-        # whether `claude` can answer. Ask it instead of litellm — no cognee import,
-        # and a failure names the actual fix (log in to Claude Code), not a key.
-        from _observer import is_active as _observer_active
-        from _observer import observer_probe
-
-        if _observer_active():
-            verdict = observer_probe(timeout=75.0)
-            auth = verdict.get("auth")
-            if auth == "ok":
-                write_llm_state("ok")
-                _log("llm_key_ok", source="observer")
-            elif auth == "failed":
-                write_llm_state(
-                    "auth_failed",
-                    detail=str(verdict.get("detail") or "")[:200],
-                    reason="claude_not_logged_in",
-                )
-                _log(
-                    "llm_key_auth_failed",
-                    source="observer",
-                    detail=str(verdict.get("detail") or "")[:200],
-                )
-            else:
-                # The shim is down or claude failed for a non-auth reason: no key
-                # verdict either way.
-                _log(
-                    "llm_key_check_inconclusive",
-                    source="observer",
-                    status=verdict.get("status"),
-                    error=str(verdict.get("detail") or "")[:200],
-                )
-            return
-
-        from cognee.infrastructure.llm.config import get_llm_config
-
-        cfg = get_llm_config()
-        key = str(getattr(cfg, "llm_api_key", "") or "").strip()
-        if not key:
-            # Logged, not silent: this write is what puts ✕ (incorrect_llm_api_key) on the bar,
-            # and tracking down an unexplained one cost real time.
-            write_llm_state("not_set")
-            _log("llm_key_not_set")
-            return
-
-        import litellm
-
-        try:
-            litellm.completion(
-                model=cfg.llm_model,
-                messages=[{"role": "user", "content": "ping"}],
-                max_tokens=1,
-                api_key=cfg.llm_api_key,
-                api_base=getattr(cfg, "llm_endpoint", None) or None,
-                custom_llm_provider=(getattr(cfg, "llm_provider", None) or None),
-                timeout=15,
-            )
+        # The "key" is Claude Code's own stored login, and the shim knows whether
+        # `claude` can answer.
+        verdict = observer_probe(timeout=75.0)
+        auth = verdict.get("auth")
+        if auth == "ok":
             write_llm_state("ok")
-            _log("llm_key_ok")
-        except Exception as exc:
-            # Classify by the provider's HTTP status, NOT by "did a completion
-            # succeed": `max_tokens=1` legitimately 400s on reasoning models
-            # ("Could not finish the message because max_tokens or model output
-            # limit was reached" — the single token goes to reasoning, leaving no
-            # room for content), so demanding a clean 200 leaves a perfectly good
-            # key permanently unverified and an earlier "not_set" unclearable.
-            # Providers authenticate BEFORE they validate anything else, so any
-            # status other than 401/403 already proves the key was accepted.
-            status = getattr(exc, "status_code", None)
-            try:
-                status = int(status) if status is not None else None
-            except (TypeError, ValueError):
-                status = None
-            if exc.__class__.__name__ == "AuthenticationError" or status in (401, 403):
-                write_llm_state("auth_failed", detail=str(exc)[:200])
-                _log("llm_key_auth_failed")
-            elif status is not None:
-                # Reached the provider and got a non-auth rejection (400 output
-                # limit, 404 unknown model, 429, 5xx): the key itself works.
-                write_llm_state("ok")
-                _log("llm_key_ok", status=status)
-            else:
-                # No HTTP status at all → local/transport failure (timeout, DNS,
-                # bad api_base): not a key verdict either way, so leave the marker
-                # untouched rather than falsely accuse or falsely clear.
-                _log("llm_key_check_inconclusive", error=str(exc)[:200])
+            _log("llm_key_ok", source="observer")
+        elif auth == "failed":
+            write_llm_state(
+                "auth_failed",
+                detail=STORED_LOGIN_ONLY_MESSAGE,
+                reason=STORED_LOGIN_ONLY_REASON,
+            )
+            _log(
+                "llm_key_auth_failed",
+                source="observer",
+                detail=str(verdict.get("detail") or "")[:200],
+            )
+        else:
+            # The shim is down or claude failed for a non-auth reason: no verdict
+            # either way.
+            _log(
+                "llm_key_check_inconclusive",
+                source="observer",
+                status=verdict.get("status"),
+                error=str(verdict.get("detail") or "")[:200],
+            )
     except Exception as exc:
         _log("llm_key_check_error", error=str(exc)[:200])
 
@@ -244,10 +171,7 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         user_id=config.get("user_id", ""),
         poll=POLL_SECONDS,
     )
-    # Runs once per watcher launch (≈ once per session); the check itself is
-    # internally rate-limited to ≤ once per COGNEE_UPDATE_CHECK_INTERVAL.
-    _run_update_check()
-    # Validate the LLM key once at session start (background, provider-agnostic).
+    # Check the Claude observer once at session start (background).
     _check_llm_key(config)
     exit_reason = "loop_complete"
     # First shared-memory refresh one interval in: SessionStart just resolved

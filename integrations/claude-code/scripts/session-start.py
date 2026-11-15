@@ -14,12 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -28,6 +26,8 @@ import urllib.request
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+
+from _net import is_loopback_host, open_url
 
 # Add scripts dir to path for config import
 sys.path.insert(0, os.path.dirname(__file__))
@@ -44,6 +44,7 @@ from _plugin_common import (
     _VENV_READY_MARKER,
     PRESENCE_ABSENT,
     PRESENCE_READY,
+    _api_key_with_source,
     _https_context,
     _is_loopback_host,
     _reexec_into_venv,
@@ -114,73 +115,29 @@ _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() n
     "no",
 )
 
-# --- Self-managed cognee install ---------------------------------------------
-# The runtime venv is built ONLY from tooling already on the machine. The plugin
-# never downloads an installer script or an interpreter: the Claude Code plugin
-# directory admits only code that is in the reviewed repository or a package
-# pinned to an exact version, so the one thing fetched at setup is
-# ``cognee==<_PINNED_COGNEE_VERSION>`` from PyPI. uv is used when the user
-# already has it (fast resolver, and it can pick any suitable interpreter on
-# the machine); otherwise the stdlib ``venv`` + pip build from a host Python
-# 3.10+ (cognee requires 3.10-3.14). Nothing touches the user's PATH or shell
-# profile. The hooks themselves need only a stdlib python3 of 3.9+ (SDK-617):
-# the host interpreter never imports cognee, it only builds and talks to the venv.
-_UV_DIR = _GLOBAL_STATE_DIR / "uv"
-_UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
-# Where earlier plugin versions let uv store a downloaded interpreter. Still
-# handed to uv as a *discovery* location so a machine that already has one keeps
-# using it; downloads themselves are disabled (UV_PYTHON_DOWNLOADS=never).
-_UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
-# The interpreter range cognee itself supports (its ``requires-python``): both
-# the uv request and the stdlib fallback are bounded by it, so a too-new Python
-# (which cognee's wheels would refuse) is skipped the same as a too-old one.
-_FALLBACK_VENV_MIN_PYTHON = (3, 10)
-_FALLBACK_VENV_MAX_PYTHON = (3, 14)
-# A version *range*, not a single minor: lets uv pick whichever cognee-compatible
-# interpreter is already installed instead of insisting on one it would have to
-# fetch. COGNEE_PLUGIN_PYTHON overrides it (a version, a name, or a path).
-_PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or ">={}.{},<{}.{}".format(
-    *_FALLBACK_VENV_MIN_PYTHON, _FALLBACK_VENV_MAX_PYTHON[0], _FALLBACK_VENV_MAX_PYTHON[1] + 1
-)
-# Interpreter names probed on PATH for that fallback, newest first, when the
-# python3 that launched the hook is itself too old: macOS ships 3.9 as
-# /usr/bin/python3 while a Homebrew or python.org 3.12 sits beside it.
-_HOST_PYTHON_CANDIDATES = (
-    "python3.14",
-    "python3.13",
-    "python3.12",
-    "python3.11",
-    "python3.10",
-    "python3",
-    "python",
-)
-# Written when that fallback is refused; read by the next SessionStart so the
-# refusal reaches the user as a systemMessage (the worker that hits it runs
-# detached, with nothing it prints visible). Cleared once a venv is ready.
+# Written by earlier versions when they could not build the runtime venv; read
+# (and cleared once a venv is ready) so a stale refusal still reaches the user.
 _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
+# Why local mode cannot start: no user-built venv, cognee too old, or missing
+# driver extras (the plugin installs nothing, SDK-1411). Shown at SessionStart.
+_COGNEE_INSTALL_MARKER = _GLOBAL_STATE_DIR / "cognee-install-needed.json"
 _PINNED_COGNEE_VERSION = "1.6.6"
-_INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
-
-# Maps a configured backend provider env var to the cognee package "extra" that
-# provides its driver. A bare `cognee==<version>` install has none of these, so
-# the server crashes on first use of any non-default backend (#232): Postgres
-# needs psycopg2/asyncpg (via `postgres-binary`), Neo4j needs its driver, a
-# local Ollama LLM needs the `ollama` extra, and `fastembed` embeddings need
-# their own extra. The env var names are the ones cognee's own config classes
-# read (verified against 1.5.3's infrastructure/*/config.py field names, which
-# pydantic-settings matches case-insensitively; GRAPH_DATABASE_PROVIDER is even
-# explicit there). Values already sit in os.environ by the time the install
-# runs: ensure_cognee_installed() calls apply_cognee_env() first, and the
-# ~/.cognee/.env file is injected at process start (_env_file.py), so both
-# exported and file-configured providers are seen. `postgres`/`pgvector` share
-# one driver set, so VECTOR_DB_PROVIDER=pgvector maps to the same extra as
-# DB_PROVIDER=postgres rather than a separate one.
+# Maps a provider setting to the cognee package "extra" that provides its
+# driver. A bare `cognee==<version>` install has none, so the server would fail
+# on first use. Only `fastembed` embeddings (also what the Claude observer
+# applies) are left: the plugin's own server always runs on Cognee's built-in
+# stores (SQLite, LanceDB, Kuzu) with an allowlisted environment (see
+# _server_env), so a database provider in the shell never reaches it and must
+# not block the start for a driver it would not use; a local Ollama LLM is not
+# supported in this version (no endpoint option). LLM providers whose cognee
+# adapter imports an SDK the base install lacks need their extra too:
+# `anthropic` imports `anthropic`, `mistral` imports `mistralai` (openai and
+# gemini run on litellm, which the base install has). The values sit in
+# os.environ by now: both providers come from the plugin options
+# (_env_file.py), applied at process start.
 _PROVIDER_EXTRAS = (
-    ("DB_PROVIDER", {"postgres": "postgres-binary", "postgresql": "postgres-binary"}),
-    ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
-    ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
     ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
-    ("LLM_PROVIDER", {"ollama": "ollama"}),
+    ("LLM_PROVIDER", {"anthropic": "anthropic", "mistral": "mistral"}),
 )
 
 
@@ -207,106 +164,6 @@ def _cognee_install_spec() -> str:
         if extras
         else f"cognee=={_PINNED_COGNEE_VERSION}"
     )
-
-
-# Install single-flight. Distinct from the server boot lock (which is short, on
-# the assumption a boot completes in ~a minute): a cold cognee install can take
-# minutes, so concurrent sessions must NOT install into the same venv at once.
-_VENV_INSTALL_LOCK = _GLOBAL_STATE_DIR / "venv-install.lock"
-_VENV_INSTALL_LOCK_STALE_SECONDS = _INSTALL_TIMEOUT_SECONDS + 60.0
-_VENV_INSTALL_WAIT_SECONDS = _INSTALL_TIMEOUT_SECONDS + 60.0
-_VENV_INSTALL_POLL_SECONDS = 0.5
-
-
-def _find_uv() -> str:
-    """Locate a uv that is already on the machine: the copy an earlier plugin
-    version left under ~/.cognee-plugin, then anything on PATH. Never fetched."""
-    if _UV_BIN.exists():
-        return str(_UV_BIN)
-    found = shutil.which("uv")
-    return found or ""
-
-
-def _host_python_version(python: str) -> tuple:
-    """``(major, minor)`` of an interpreter on disk, or ``()`` if it cannot run."""
-    try:
-        out = subprocess.run(
-            [python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        ).stdout.strip()
-        major, minor = out.split(".")
-        return (int(major), int(minor))
-    except Exception:
-        return ()
-
-
-def _cognee_supports(version: tuple) -> bool:
-    """Whether a ``(major, minor)`` falls inside cognee's supported range."""
-    if not version:
-        return False
-    return _FALLBACK_VENV_MIN_PYTHON <= tuple(version[:2]) <= _FALLBACK_VENV_MAX_PYTHON
-
-
-def _find_host_python() -> str:
-    """A Python inside cognee's supported range (3.10-3.14) already installed on
-    this machine, or '' when there is none.
-
-    Used by the stdlib ``venv`` fallback. The interpreter running this hook is
-    tried first (no subprocess), then the versioned names on PATH, newest first.
-    Nothing is downloaded: a miss is reported by ``_refuse_fallback_venv``.
-    """
-    if _cognee_supports(tuple(sys.version_info[:2])):
-        return sys.executable
-    seen = {sys.executable}
-    for name in _HOST_PYTHON_CANDIDATES:
-        found = shutil.which(name)
-        if not found or found in seen:
-            continue
-        seen.add(found)
-        if _cognee_supports(_host_python_version(found)):
-            return found
-    return ""
-
-
-def _host_python_label() -> str:
-    """``<sys.executable> (Python X.Y.Z)`` — names the interpreter a user must replace."""
-    return "{} (Python {}.{}.{})".format(sys.executable, *sys.version_info[:3])
-
-
-def _refuse_fallback_venv() -> None:
-    """Record why no runtime venv could be built: no Python 3.10+ on the machine.
-
-    Three readers: hook.log (forensics), this process's stderr (the bootstrap
-    log when detached, the terminal when not), and the marker the next
-    SessionStart turns into a systemMessage via ``_apply_host_python_warning``.
-    """
-    message = (
-        "Cognee Memory: cannot start the local Cognee server. Cognee requires Python 3.10 or "
-        "newer (up to 3.14), and no such interpreter is installed on this machine: the hook "
-        "runs under {}, none of {} on PATH qualifies, and the plugin does not download "
-        "interpreters. Install Python 3.10+ (python.org, Homebrew, or `uv python install "
-        "3.12` if you use uv), then start a new session. Cloud mode (COGNEE_BASE_URL) has no "
-        "such requirement.".format(_host_python_label(), "/".join(_HOST_PYTHON_CANDIDATES[:5]))
-    )
-    detail = {
-        "python": sys.executable,
-        "version": "{}.{}.{}".format(*sys.version_info[:3]),
-        "required": "{}.{}".format(*_FALLBACK_VENV_MIN_PYTHON),
-        "supported": "{}.{}-{}.{}".format(*_FALLBACK_VENV_MIN_PYTHON, *_FALLBACK_VENV_MAX_PYTHON),
-    }
-    hook_log("host_python_too_old_for_venv", detail)
-    print(message, file=sys.stderr)
-    try:
-        _HOST_PYTHON_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _HOST_PYTHON_MARKER.write_text(
-            json.dumps({"message": message, "updated_at": time.time(), **detail}),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        hook_log("host_python_marker_write_failed", {"error": str(exc)[:200]})
 
 
 def _apply_key_limit_warning(output: dict) -> dict:
@@ -339,15 +196,16 @@ def _apply_host_python_warning(output: dict) -> dict:
     the broken host repeats the message until a venv is built (which clears it
     in ``_write_venv_ready``) — this is the loud failure SDK-617 asks for.
     """
-    try:
-        if not _HOST_PYTHON_MARKER.exists():
-            return output
-        message = str(
-            json.loads(_HOST_PYTHON_MARKER.read_text(encoding="utf-8")).get("message") or ""
-        )
-    except Exception as exc:
-        hook_log("host_python_marker_read_failed", {"error": str(exc)[:200]})
-        return output
+    messages = []
+    for marker in (_HOST_PYTHON_MARKER, _COGNEE_INSTALL_MARKER):
+        try:
+            if marker.exists():
+                text = str(json.loads(marker.read_text(encoding="utf-8")).get("message") or "")
+                if text:
+                    messages.append(text)
+        except Exception as exc:
+            hook_log("host_python_marker_read_failed", {"error": str(exc)[:200]})
+    message = "\n\n".join(messages)
     if not message:
         return output
     result = dict(output or {})
@@ -361,18 +219,6 @@ def _apply_host_python_warning(output: dict) -> dict:
     top = str(result.get("systemMessage") or "").strip()
     result["systemMessage"] = "{}\n\n{}".format(top, message) if top else message
     return result
-
-
-def _install_failure(via: str, exc: BaseException) -> dict:
-    """hook.log detail for a failed venv build: the exception and the tail of
-    what uv / pip said. CalledProcessError's str() is just the command and exit
-    status; the reason (no matching interpreter, disk quota, resolver error) is
-    only in stderr, and without it a failed build on a new runner image or a
-    new OS cannot be diagnosed from the log alone."""
-    stderr = getattr(exc, "stderr", "") or ""
-    if isinstance(stderr, bytes):
-        stderr = stderr.decode("utf-8", "replace")
-    return {"via": via, "error": str(exc)[:300], "stderr": str(stderr).strip()[-300:]}
 
 
 def _venv_cognee_version() -> str:
@@ -404,13 +250,11 @@ def _venv_cognee_version() -> str:
 # venv-ready.json: that marker is shared with plugins that don't know about
 # extras (codex/openclaw), whose rewrites would wipe the record and force a
 # reinstall on every cold boot after theirs — the exact churn skip-at-pin
-# exists to avoid. `asyncpg` is common to the `postgres` and `postgres-binary`
-# extras, so either variant satisfies the postgres-binary requirement.
+# exists to avoid.
 _EXTRA_SENTINEL_DISTS = {
-    "postgres-binary": "asyncpg",
-    "neo4j": "neo4j",
     "fastembed": "fastembed",
-    "ollama": "transformers",
+    "anthropic": "anthropic",
+    "mistral": "mistralai",
 }
 
 
@@ -464,33 +308,94 @@ def _write_venv_ready(version: str) -> None:
             "python": str(_VENV_PYTHON),
             "updated_at": time.time(),
         }
+        _VENV_READY_MARKER.parent.mkdir(parents=True, exist_ok=True)
         tmp = _VENV_READY_MARKER.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, _VENV_READY_MARKER)
     except Exception as exc:
         hook_log("venv_ready_write_failed", {"error": str(exc)[:200]})
     try:
-        # A usable venv exists, so the host-python refusal (if any) is moot.
+        # A usable venv exists, so an earlier refusal (if any) is moot.
         _HOST_PYTHON_MARKER.unlink(missing_ok=True)
+        _COGNEE_INSTALL_MARKER.unlink(missing_ok=True)
     except Exception as exc:
         hook_log("host_python_marker_unlink_failed", {"error": str(exc)[:200]})
 
 
-def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
-    """Ensure the plugin venv exists and holds the pinned cognee version.
+def _version_tuple(version: str) -> tuple:
+    parts = []
+    for piece in str(version or "").split(".")[:3]:
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
 
-    Called from the server-boot critical section (so it is already
-    single-flighted) and only at boot points where the server is POSITIVELY
-    absent (see server_presence) — a merely unresponsive server may be busy and
-    still holding the graph store's file lock, and upgrading the venv under it
-    corrupts the databases. Always installs the exact pinned version
-    (_PINNED_COGNEE_VERSION) so the server's FastAPI lifespan migrations run on
-    a known-good release, plus the extras the configured backend providers
-    need (_cognee_install_spec, #232).
 
-    Fails soft: if the install can't run (e.g. offline) but a usable cognee is
-    already present, returns True with whatever version is there. Returns False
-    only when no importable cognee venv exists afterwards.
+def manual_install_command() -> str:
+    """The one command that builds the local runtime the plugin no longer installs."""
+    spec = _cognee_install_spec()
+    if os.name == "nt":
+        venv = r"%USERPROFILE%\.cognee-plugin\venv"
+        return rf'py -3.12 -m venv "{venv}" && "{venv}\Scripts\python.exe" -m pip install "{spec}"'
+    return (
+        "python3 -m venv ~/.cognee-plugin/venv && "
+        f'~/.cognee-plugin/venv/bin/python -m pip install "{spec}"'
+    )
+
+
+def _refuse_local_runtime(reason: str, detail: dict) -> None:
+    """Record why local mode cannot start, with the command that fixes it.
+
+    The next SessionStart shows the marker as a systemMessage (see
+    ``_apply_host_python_warning``) until a usable runtime clears it.
+    """
+    message = (
+        "Cognee Memory: local mode needs Cognee installed by you; the plugin does not "
+        f"download or install packages. {reason} Run (with Python 3.10-3.14):\n"
+        f"  {manual_install_command()}\n"
+        "then start a new session. Cognee Cloud needs no local install."
+    )
+    hook_log("local_runtime_unavailable", {"reason": reason, **detail})
+    print(message, file=sys.stderr)
+    try:
+        _COGNEE_INSTALL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _COGNEE_INSTALL_MARKER.write_text(
+            json.dumps({"message": message, "updated_at": time.time(), **detail}),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        hook_log("cognee_install_marker_write_failed", {"error": str(exc)[:200]})
+
+
+def _flag_missing_local_runtime() -> None:
+    """Say at once when local mode has no venv at all (a file check, no probe).
+
+    A venv that exists but is too old or lacks extras is found by the boot path
+    (``ensure_cognee_installed``), which records the same marker.
+    """
+    try:
+        from _cloud_worker import enabled as cloud_enabled
+        from _plugin_common import managed_endpoint_enabled, service_url_is_local
+
+        if cloud_enabled() or managed_endpoint_enabled() or not service_url_is_local():
+            return
+        if _VENV_PYTHON.exists() or _COGNEE_INSTALL_MARKER.exists():
+            return
+        _refuse_local_runtime(
+            "Cognee is not installed in ~/.cognee-plugin/venv.", {"installed": ""}
+        )
+    except Exception as exc:
+        hook_log("local_runtime_check_failed", {"error": str(exc)[:200]})
+
+
+def ensure_cognee_installed(timeout: float = 0.0) -> bool:
+    """Whether the user-built venv holds a usable cognee. Never installs (SDK-1411).
+
+    Usable: cognee ``_PINNED_COGNEE_VERSION`` or newer (the version this plugin
+    release is tested with is the floor), with the driver extras the configured
+    providers need. Anything else is recorded with the exact install command and
+    local mode stays off; the server is never booted from an unusable venv.
     """
     apply_cognee_env()
     for directory in (_COGNEE_SYSTEM_DIR, _COGNEE_DATA_DIR, _COGNEE_CACHE_DIR):
@@ -500,167 +405,31 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
             hook_log(
                 "cognee_data_dir_mkdir_failed", {"dir": str(directory), "error": str(exc)[:200]}
             )
-
-    owner = f"install:{os.getpid()}"
-    acquired = False
-    deadline = time.monotonic() + _VENV_INSTALL_WAIT_SECONDS
-    try:
-        _VENV_INSTALL_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        while True:
-            now = time.time()
-            if _VENV_INSTALL_LOCK.exists():
-                stale = False
-                try:
-                    raw = json.loads(_VENV_INSTALL_LOCK.read_text(encoding="utf-8"))
-                    pid = int(raw.get("pid", 0) or 0)
-                    created_at = float(raw.get("created_at", 0) or 0)
-                    stale = (not _pid_alive(pid)) or (
-                        now - created_at > _VENV_INSTALL_LOCK_STALE_SECONDS
-                    )
-                except Exception:
-                    stale = True
-                if stale:
-                    try:
-                        _VENV_INSTALL_LOCK.unlink()
-                    except Exception as exc:
-                        hook_log("venv_install_lock_unlink_failed", {"error": str(exc)[:200]})
-
-            try:
-                fd = os.open(str(_VENV_INSTALL_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump({"owner": owner, "pid": os.getpid(), "created_at": now}, fh)
-                acquired = True
-                break
-            except FileExistsError:
-                # Another process owns the install. Don't install concurrently —
-                # wait for it to produce a usable venv, then reuse it. The venv
-                # must satisfy our extras too: the other installer may be an
-                # extras-unaware plugin doing a bare install, in which case we
-                # keep waiting for the lock and add the drivers ourselves.
-                if _venv_cognee_version() == _PINNED_COGNEE_VERSION and not _venv_missing_extras(
-                    _detect_required_extras()
-                ):
-                    return True
-                if time.monotonic() >= deadline:
-                    return bool(_venv_cognee_version())
-                time.sleep(_VENV_INSTALL_POLL_SECONDS)
-
-        # Already at the pin AND holding the configured providers' drivers:
-        # there is nothing to install, so do not touch the venv. The install
-        # used to run unconditionally at every cold boot; on a machine where
-        # two plugins with different pins share this venv that made each boot
-        # flip the version back and forth — and a `pip install` is a mutation
-        # window the shared runtime is better off without. The version alone
-        # is not enough, though: a provider configured after the venv was
-        # built leaves the pin satisfied with its drivers missing (#232), so
-        # extras are probed too and a miss falls through to the install.
-        # The marker is (re)written so every plugin reading it sees the truth.
-        current = _venv_cognee_version()
-        required_extras = _detect_required_extras()
-        missing_extras = _venv_missing_extras(required_extras)
-        if current == _PINNED_COGNEE_VERSION:
-            if not missing_extras:
-                _write_venv_ready(current)
-                hook_log(
-                    "cognee_install_skipped_at_pin",
-                    {"version": current, "extras": required_extras},
-                )
-                return True
-            hook_log("cognee_extras_missing_at_pin", {"missing": missing_extras})
-
-        uv = _find_uv()
-        venv_present = _VENV_PYTHON.exists()
-        installed_via_uv = False
-
-        if uv:
-            env = os.environ.copy()
-            # uv must never fetch an interpreter: the runtime is built from what
-            # is already installed (no binaries downloaded at setup). The install
-            # dir is passed only so an interpreter an earlier plugin version put
-            # there is still discovered.
-            env["UV_PYTHON_DOWNLOADS"] = "never"
-            env.setdefault("UV_PYTHON_INSTALL_DIR", str(_UV_PYTHON_DIR))
-            try:
-                if not venv_present:
-                    subprocess.run(
-                        [uv, "venv", str(_VENV_DIR), "--python", _PINNED_PYTHON],
-                        env=env,
-                        cwd=str(_GLOBAL_STATE_DIR),
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                    )
-                subprocess.run(
-                    [
-                        uv,
-                        "pip",
-                        "install",
-                        "--upgrade",
-                        "--python",
-                        str(_VENV_PYTHON),
-                        _cognee_install_spec(),
-                    ],
-                    env=env,
-                    cwd=str(_GLOBAL_STATE_DIR),
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-                installed_via_uv = True
-            except Exception as exc:
-                hook_log("cognee_install_failed", _install_failure("uv", exc))
-
-        if not installed_via_uv and not _VENV_PYTHON.exists():
-            # Fallback: stdlib venv + pip, from a Python 3.10+ already on the
-            # machine. Reached when there is no uv, or when uv could not find a
-            # suitable interpreter (it is not allowed to download one). The venv
-            # inherits the host interpreter, so cognee's floor (3.10-3.14) must
-            # hold for it; the hooks run on any 3.9+, so probe explicitly rather
-            # than build a venv cognee could never install into.
-            host_python = _find_host_python()
-            if not host_python:
-                _refuse_fallback_venv()
-                return False
-            try:
-                subprocess.run(
-                    [host_python, "-m", "venv", str(_VENV_DIR)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-                subprocess.run(
-                    [
-                        str(_VENV_PYTHON),
-                        "-m",
-                        "pip",
-                        "install",
-                        "--upgrade",
-                        _cognee_install_spec(),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-            except Exception as exc:
-                hook_log("cognee_install_failed", _install_failure("venv_pip", exc))
-
-        version = _venv_cognee_version()
-        if not version:
-            hook_log("cognee_venv_unusable", {"venv_python": str(_VENV_PYTHON)})
-            return False
-        _write_venv_ready(version)
-        hook_log("cognee_install_ready", {"version": version, "extras": required_extras})
-        return True
-    finally:
-        if acquired:
-            try:
-                _VENV_INSTALL_LOCK.unlink()
-            except Exception as exc:
-                hook_log("venv_install_lock_release_failed", {"error": str(exc)[:200]})
+    current = _venv_cognee_version()
+    if not current:
+        _refuse_local_runtime(
+            "Cognee is not installed in ~/.cognee-plugin/venv.", {"installed": ""}
+        )
+        return False
+    if _version_tuple(current) < _version_tuple(_PINNED_COGNEE_VERSION):
+        _refuse_local_runtime(
+            f"Installed cognee {current} is older than {_PINNED_COGNEE_VERSION}.",
+            {"installed": current},
+        )
+        return False
+    required_extras = _detect_required_extras()
+    missing_extras = _venv_missing_extras(required_extras)
+    if missing_extras:
+        _refuse_local_runtime(
+            "Your configured providers need driver extras that are not installed: "
+            + ", ".join(missing_extras)
+            + ".",
+            {"installed": current, "missing_extras": missing_extras},
+        )
+        return False
+    _write_venv_ready(current)
+    hook_log("cognee_runtime_ready", {"version": current, "extras": required_extras})
+    return True
 
 
 def _parse_host_port(url: str) -> tuple[str, int]:
@@ -671,7 +440,7 @@ def _parse_host_port(url: str) -> tuple[str, int]:
 def _is_local_url(url: str) -> bool:
     """True if the URL points at this machine (so we may boot a server on it)."""
     host, _ = _parse_host_port(url)
-    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+    return is_loopback_host(host)
 
 
 def _with_scheme(url: str) -> str:
@@ -688,7 +457,7 @@ def _health_url(service_url: str) -> str:
 
 def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=timeout, context=_https_context()) as response:
+        with open_url(url, timeout=timeout, context=_https_context()) as response:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -708,6 +477,143 @@ def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> 
         if time.monotonic() >= deadline:
             return False
         time.sleep(_HEALTH_POLL_SECONDS)
+
+
+# What the local server's environment may carry over from this process: the
+# platform basics (path, home, locale, temp, proxy, TLS, Windows system vars).
+# Nothing else is copied, so a provider key, database password or token in the
+# user's shell never reaches the server; its LLM and embedding settings come
+# from the plugin options (see _env_file) or the Claude observer.
+_SERVER_ENV_BASE = frozenset(
+    name.upper()
+    for name in (
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "LANG",
+        "LANGUAGE",
+        "TZ",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        # cognee's own usage-telemetry opt-out: a non-secret switch the user set.
+        "TELEMETRY_DISABLED",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+        "__CF_USER_TEXT_ENCODING",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "USERPROFILE",
+        "USERNAME",
+        "USERDOMAIN",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "COMMONPROGRAMFILES",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+        "COMPUTERNAME",
+    )
+)
+_PROXY_NAMES = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
+_LOOPBACK_NO_PROXY = ("127.0.0.1", "localhost", "::1")
+# Server settings the plugin itself puts in its environment (apply_cognee_env).
+_SERVER_ENV_PLUGIN = frozenset(
+    {
+        "SYSTEM_ROOT_DIRECTORY",
+        "DATA_ROOT_DIRECTORY",
+        "CACHE_ROOT_DIRECTORY",
+        "CACHING",
+        "AUTO_FEEDBACK",
+        "DISTILLATION_MODE",
+        "COGNEE_LLM_OBSERVER_ACTIVE",
+    }
+)
+# An empty file the plugin owns, handed to cognee as COGNEE_ENV_FILE so the
+# server loads exactly it and never searches upward from its working directory
+# for some other .env (which would override the settings above). cognee treats
+# a missing COGNEE_ENV_FILE as an error, so it is (re)created before each boot.
+_SERVER_ENV_FILE = _STATE_DIR / "server.env"
+
+
+def _server_env() -> dict:
+    """The local server's environment, built from allowlists. Never copies os.environ.
+
+    Holds the platform basics, the plugin's own server settings and tuning
+    names, the LLM / embedding settings (the plugin options, or the observer's
+    shim settings, which are the only ``LLM_*`` / ``EMBEDDING_*`` values left in
+    this process), the default-user login, ``COGNEE_ENV_FILE`` and
+    ``HASH_API_KEY=false`` (the owner-key lookup needs the stored key back).
+    """
+    from _env_file import _TUNING_NAMES
+
+    env: dict = {}
+    for name, value in os.environ.items():
+        upper = name.upper()
+        if (
+            upper in _SERVER_ENV_BASE
+            or upper.startswith("LC_")
+            or name in _SERVER_ENV_PLUGIN
+            or name in _TUNING_NAMES
+            or name.startswith(("LLM_", "EMBEDDING_"))
+        ):
+            env[name] = value
+    # The server calls this machine too (the observer shim, with its bearer
+    # token and the full prompt). With a proxy copied over, exempt loopback in
+    # both spellings so those calls never reach the proxy host, keeping the
+    # user's own entries.
+    if any(name.upper() in _PROXY_NAMES for name in env):
+        own = env.get("no_proxy") or env.get("NO_PROXY") or ""
+        entries = [e.strip() for e in own.split(",") if e.strip()]
+        for host in _LOOPBACK_NO_PROXY:
+            if host not in entries:
+                entries.append(host)
+        env["NO_PROXY"] = ",".join(entries)
+        # Windows names are case-insensitive: one spelling there.
+        if sys.platform != "win32":
+            env["no_proxy"] = env["NO_PROXY"]
+    # Run in agent mode: the server tears itself down once all registered
+    # agents disconnect.
+    env["COGNEE_AGENT_MODE"] = "true"
+    # cognee >= 1.6.0 creates the default user at startup only when
+    # DEFAULT_USER_PASSWORD is set, and never rewrites a stored password. Hand
+    # the server the well-known local credentials so a fresh install gets the
+    # same default user it always had and the owner-key lookup can log in. The
+    # server binds localhost only.
+    env["DEFAULT_USER_EMAIL"] = _LOCAL_DEFAULT_USER_EMAIL
+    env["DEFAULT_USER_PASSWORD"] = _LOCAL_DEFAULT_USER_PASSWORD
+    env["HASH_API_KEY"] = "false"
+    try:
+        _SERVER_ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SERVER_ENV_FILE.write_text("", encoding="utf-8")
+        env["COGNEE_ENV_FILE"] = str(_SERVER_ENV_FILE)
+    except OSError as exc:
+        hook_log("server_env_file_failed", {"error": str(exc)[:200]})
+    return env
 
 
 def _ensure_local_server_running(
@@ -763,19 +669,11 @@ def _ensure_local_server_running(
             "COGNEE_MANAGED_ENDPOINT forbids booting a local fallback server"
         )
 
-    # The server is positively absent and we're at a boot point: ensure the
-    # venv holds the latest cognee BEFORE booting, so the server's lifespan
-    # migrations run on the upgraded code. Single-flighted on its own (long)
-    # lock, separate from the short boot lock below, since a cold install can
-    # take minutes.
+    # The server is positively absent and we're at a boot point: check that the
+    # user-built venv holds a usable cognee BEFORE booting. Nothing is installed
+    # (SDK-1411); an unusable venv is reported with the command that fixes it.
     if not ensure_cognee_installed():
-        raise RuntimeError("cognee runtime unavailable (install/upgrade failed)")
-
-    # A cold install can take minutes — long enough for the world to change.
-    # Re-verify the premise before proceeding to the boot lock.
-    if _require_absent("post_install"):
-        _ready()
-        return
+        raise RuntimeError("cognee runtime unavailable (install cognee, see the session message)")
 
     owner = f"session-start:{os.getpid()}"
     acquired = False
@@ -823,21 +721,7 @@ def _ensure_local_server_running(
             _ready()
             return
 
-        server_env = os.environ.copy()
-        # Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
-        # so the copy carries them to the server process.
-        # Run in agent mode: the server tears itself down once all registered
-        # agents disconnect.
-        server_env["COGNEE_AGENT_MODE"] = "true"
-        # cognee >= 1.6.0 creates the default user at startup only when
-        # DEFAULT_USER_PASSWORD is set, and never rewrites a stored password. Hand
-        # the server the well-known local credentials so a fresh install gets the
-        # same default user it always had and the owner-key bootstrap below can log
-        # in. The server binds localhost only. setdefault: an operator's own
-        # DEFAULT_USER_* export wins. COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD still
-        # pick the user the plugin logs in as; a non-default user must already exist.
-        server_env.setdefault("DEFAULT_USER_EMAIL", _LOCAL_DEFAULT_USER_EMAIL)
-        server_env.setdefault("DEFAULT_USER_PASSWORD", _LOCAL_DEFAULT_USER_PASSWORD)
+        server_env = _server_env()
         # The server's console output must not inherit this worker's stdio
         # (bootstrap.log — that is how it reached gigabytes: every line the
         # server printed for as long as it ran), but it must not vanish either:
@@ -920,6 +804,14 @@ _LOCAL_DEFAULT_USER_EMAIL = "default_user@example.com"
 _LOCAL_DEFAULT_USER_PASSWORD = "default_password"
 _NO_PASSWORD_MARKER = "does not have a password"
 _BAD_CREDENTIALS_MARKER = "LOGIN_BAD_CREDENTIALS"
+# Left when the local server was found to hide its keys, so session start can
+# say so (the finding may come from the detached bootstrap worker, after this
+# session's output went out). Removed once a usable owner key resolves.
+_HIDES_KEYS_MARKER = _STATE_DIR / "local-server-hides-keys.json"
+SERVER_HIDES_KEYS_MESSAGE = (
+    "This local Cognee server hides its API keys (HASH_API_KEY=true), so the plugin "
+    "can't use it. Stop it and start a new session; the plugin starts its own server."
+)
 
 
 def _login_failure_message(status: int, body: str) -> str:
@@ -928,26 +820,40 @@ def _login_failure_message(status: int, body: str) -> str:
     cognee >= 1.6.0 creates the default user without a password unless the server
     was started with DEFAULT_USER_PASSWORD, and logging into such a user answers
     400 "does not have a password". A server this plugin boots gets the variable
-    itself, so that answer means an externally managed server, whose environment
-    the plugin cannot set.
+    itself, so that answer (or a rejected login) means a server the plugin did
+    not start, whose environment the plugin cannot set.
     """
     head = f"default-user login failed ({status}: {body[:200]})."
+    own_server = (
+        "The plugin logs in to a local server as its default user "
+        f"({_LOCAL_DEFAULT_USER_EMAIL}). To use a server you run yourself, set its "
+        "address and an API key in the plugin's options (/plugin → cognee-memory: "
+        "Cognee Cloud URL and Cognee Cloud API key), or stop it so the plugin starts its own."
+    )
     if status == 400 and _NO_PASSWORD_MARKER in body:
         return (
             f"{head} The server's default user has no password: cognee >= 1.6.0 "
             "creates none unless the server is started with DEFAULT_USER_PASSWORD set. "
-            "Start the server with DEFAULT_USER_PASSWORD set to the same value as "
-            "COGNEE_USER_PASSWORD, or set COGNEE_API_KEY to skip the login."
+            + own_server
         )
     if status == 400 and _BAD_CREDENTIALS_MARKER in body:
-        return (
-            f"{head} The server rejected COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD; point "
-            "them at a user that exists on that server, or set COGNEE_API_KEY."
-        )
-    return f"{head} Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly, or set COGNEE_API_KEY."
+        return f"{head} The server rejected the default user's password. " + own_server
+    return f"{head} " + own_server
 
 
-async def _login_default_user_for_owner_api_key(service_url: str, config: dict) -> str:
+async def _login_default_user_for_owner_api_key(
+    service_url: str, config: dict, *, mint: bool = False
+) -> str:
+    """Log in as the local server's default user and return its owner API key.
+
+    Reuses the first listed key that is a real key (not masked, not a stored
+    hash), the same one every other hook process finds; mints one when there is
+    none, or always when ``mint`` (the listed one was rejected). A server that
+    masks every key it lists is refused instead: a key minted there could not
+    reach the other hooks, since nothing is stored on disk.
+    """
+    from _plugin_common import first_usable_key, server_hides_keys
+
     base = _normalize_service_url(service_url)
     email = config.get("user_email", "")
     password = config.get("user_password", "")
@@ -965,18 +871,28 @@ async def _login_default_user_for_owner_api_key(service_url: str, config: dict) 
     if not jwt:
         raise RuntimeError("default-user login returned no access token")
 
-    status, body = _cloud_http_request(
-        f"{base}/api/v1/auth/api-keys",
-        method="GET",
-        cookies={"auth_token": jwt},
-        timeout=30.0,
-    )
-    if status == 200:
-        keys = json.loads(body) if body else []
-        if isinstance(keys, list) and keys:
-            key = str(keys[0].get("key", "") or "")
+    if not mint:
+        status, body = _cloud_http_request(
+            f"{base}/api/v1/auth/api-keys",
+            method="GET",
+            cookies={"auth_token": jwt},
+            timeout=30.0,
+        )
+        if status == 200:
+            listed = json.loads(body) if body else []
+            key = first_usable_key(listed)
             if key:
                 return key
+            if server_hides_keys(listed):
+                hook_log("local_server_hides_keys", {"base_url": base})
+                try:
+                    _HIDES_KEYS_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                    _HIDES_KEYS_MARKER.write_text(
+                        json.dumps({"base_url": base, "found_at": time.time()}), encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+                raise RuntimeError(SERVER_HIDES_KEYS_MESSAGE)
 
     status, body = _cloud_http_request(
         f"{base}/api/v1/auth/api-keys",
@@ -991,7 +907,21 @@ async def _login_default_user_for_owner_api_key(service_url: str, config: dict) 
     key = str(payload.get("key", "") or "")
     if not key:
         raise RuntimeError("default-user API key creation returned empty key")
+    hook_log("local_owner_key_minted", {"replaced_rejected": bool(mint)})
     return key
+
+
+def _local_key_rejected(service_url: str, api_key: str) -> bool:
+    """True only when the server answers the key with 401/403 (one check)."""
+    try:
+        status, _body = _cloud_http_request(
+            f"{_normalize_service_url(service_url)}/api/v1/users/me",
+            api_key=api_key,
+            timeout=10.0,
+        )
+    except Exception:
+        return False
+    return status in (401, 403)
 
 
 def _resolve_agent_name(config: dict, cwd: str) -> str:
@@ -1011,380 +941,84 @@ def _resolve_agent_name(config: dict, cwd: str) -> str:
 
 
 async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
-    """Resolve the PRINCIPAL key for this deployment.
+    """Resolve the one key every request runs as.
 
-    Order: env ``COGNEE_API_KEY`` -> single cached key -> mint once from the
-    default user (and cache it).
-
-    The provisioned plugin-agent key is explicitly NOT a principal: earlier
-    steps in this same process may have stamped it into the env / config (see
-    ``_api_key_with_source``), and provisioning authenticated as the agent
-    would nest a new agent under the agent. Skip it wherever it leaked in.
+    Remote: the user's key from the plugin option (``COGNEE_API_KEY`` in the
+    environment, put there by ``_env_file`` from
+    ``CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY``). Local: never the option key, but
+    the server's own owner key, looked up from that server and checked once;
+    minted there on a fresh install, or when the listed key is rejected (a key
+    stored hashed by an earlier ``HASH_API_KEY=true`` server). Nothing is
+    written to disk.
     """
     from _plugin_common import (
-        load_cached_agent_key,
+        cloud_key_applies,
+        forget_cached_api_key,
         load_cached_api_key,
         save_cached_api_key,
+        takes_owner_key,
     )
 
-    agent_key = load_cached_agent_key(service_url)
-    api_key = str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
-    if agent_key and api_key == agent_key:
-        api_key = ""
-    if not api_key:
-        api_key = os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or load_cached_api_key(service_url)
-    if not api_key:
-        api_key = await _login_default_user_for_owner_api_key(service_url, config)
-        if api_key:
-            save_cached_api_key(service_url, api_key)
-    return api_key
-
-
-# Shared-memory outcomes that no retry within this deployment can change: the
-# server predates the permissions API or cannot store session entries by
-# dataset UUID, the user is not the owner of its tenant, or a tenant-less user
-# already owns data (activating a tenant would hide it). Under identity mode
-# ``auto`` an install that hit one of these stays on the principal instead of
-# probing and provisioning again every launch.
-_STRUCTURAL_SHARED_MEMORY_FAILURES = frozenset(
-    {"unsupported", "typed_dataset_unsupported", "not_tenant_owner", "tenantless_with_data"}
-)
-
-
-async def _ensure_plugin_identity(service_url: str, config: dict, principal_key: str) -> str:
-    """Resolve the plugin's dedicated agent key, provisioning when the mode allows.
-
-    ``plugin_identity`` / ``COGNEE_PLUGIN_IDENTITY`` selects the policy:
-      - ``false``: principal only; a cached identity is ignored.
-      - ``true``: explicit identity. Provision when none is cached. Anything
-        that prevents that — a server that does not add keys (cognee#6113), an
-        agent at its key limit, a cached key bound to another principal — is an
-        error, never a silent fall back to the owner's authority.
-      - ``auto`` (default): identity in service of shared agent memory. With
-        shared memory on, provision when none is cached; the caller then wires
-        the shared role and reverts to the principal if that fails, so nothing
-        the principal owns is ever stranded. With shared memory off, or after a
-        structural shared-memory failure, stay on the principal. A blocked or
-        foreign cached key is not used: the launch runs as the principal and
-        says so in the log.
-
-    A cached key that passes its checks always wins. A cached key the server
-    rejected (``blocked``) is replaced through the same provisioning, which
-    adds one more key and touches no other machine's.
-    """
-    from _plugin_common import (
-        _AGENT_KEY_CACHE,
-        PLUGIN_KEY,
-        _installed_plugin_version,
-        _load_json_file,
-        _principal_fingerprint,
-        clear_key_limit,
-        load_cached_agent_key,
-        load_cached_api_key,
-        load_shared_memory_marker,
-        plugin_identity_lock,
-        plugin_identity_mode,
-        provision_plugin_agent_via_http,
-        record_key_limit,
-        save_cached_agent_key,
-        save_cached_api_key,
-        shared_memory_enabled,
-    )
-
-    mode = plugin_identity_mode(config)
-    # Re-decided every launch: only a 409 below writes it back.
-    clear_key_limit()
-    if mode == "disabled":
+    if cloud_key_applies(service_url):
+        return _api_key_with_source(service_url)[0]
+    if not takes_owner_key(service_url):
+        # Pinned to cloud with no Cloud URL option for this address: no key,
+        # and nothing is looked up from, or logged into, a local server.
         return ""
-    strict = mode == "enabled"
-    with plugin_identity_lock():
-        key = load_cached_agent_key(service_url)
-        record = _load_json_file(_AGENT_KEY_CACHE)
-        if key and record.get("blocked"):
-            # Revoked out-of-band (or pruned server-side). Never reused;
-            # provisioning below decides whether it is replaced.
-            hook_log("plugin_identity_blocked", {"reprovision": "by_server"})
-            key = ""
-        if key:
-            if record.get("principal_fingerprint") != _principal_fingerprint(principal_key):
-                if strict:
-                    raise RuntimeError(
-                        "Cached plugin identity does not match this principal; reconnect explicitly"
-                    )
-                hook_log("plugin_identity_skipped", {"reason": "principal_mismatch"})
-                return ""
-            return key
-        if not strict:
-            if not shared_memory_enabled(config):
-                return ""
-            marker = load_shared_memory_marker(service_url)
-            prior = str(marker.get("reason") or "")
-            if prior in _STRUCTURAL_SHARED_MEMORY_FAILURES:
-                # Structural for the plugin version that recorded it. After an
-                # update the limitation may be gone (server-side fixes ship
-                # with plugin bumps), so try once more instead of never again.
-                if marker.get("plugin_version") == _installed_plugin_version():
-                    hook_log("plugin_provision_skipped", {"status": "shared_memory_" + prior})
-                    return ""
-                hook_log("plugin_provision_retry_after_update", {"prior_reason": prior})
-        status, body = provision_plugin_agent_via_http(
-            principal_key=principal_key, service_url=service_url
-        )
-        if status != "provisioned":
-            if status == "limit":
-                # Surfaced to the user by SessionStart (``_apply_key_limit_warning``)
-                # and the doctor until this machine gets its own key again.
-                record_key_limit(service_url)
-            if strict:
-                if status == "limit":
-                    raise RuntimeError(
-                        "Plugin identity holds the maximum number of keys; revoke an old "
-                        f"machine's key (GET/DELETE /api/v1/integrations/plugins/"
-                        f"{PLUGIN_KEY}/keys) and start a new session"
-                    )
-                raise RuntimeError(
-                    f"Plugin provisioning {status}; owner fallback is disabled. "
-                    "A cognee server that adds plugin keys per machine is required."
-                )
-            # ``auto``: no identity on this server (one that rotates keys, or an
-            # agent at its key limit) — the principal sees everything anyway,
-            # so shared memory has nothing to add.
-            hook_log("plugin_provision_skipped", {"status": status})
-            return ""
-        key = str(body.get("api_key") or "").strip()
-        save_cached_agent_key(
-            service_url,
-            key,
-            str(body.get("agent_id") or ""),
-            principal_key=principal_key,
-            key_id=str(body.get("key_id") or ""),
-        )
-        # Keep the PRINCIPAL reachable for later control-plane work (grant
-        # backfills from the idle watcher): an env-provided key only lives in
-        # this process's environment.
-        if not load_cached_api_key(service_url):
-            save_cached_api_key(service_url, principal_key)
-        config["_provisioned_now"] = True
-        hook_log(
-            "plugin_agent_provisioned",
-            {
-                "agent_id": str(body.get("agent_id") or ""),
-                "created": bool(body.get("created")),
-                "reason": "explicit" if strict else "shared_memory",
-            },
-        )
-        return key
 
-
-def _wire_shared_memory(
-    service_url: str, config: dict, principal_key: str, agent_key: str, session_key: str
-) -> dict:
-    """Run the shared-memory wiring for the active agent and pin the launch's
-    canonical dataset ids. Returns ``ensure_shared_memory``'s outcome."""
-    from _plugin_common import (
-        ensure_shared_memory,
-        hook_log,
-        load_cached_agent_id,
-        set_launch_dataset_ids,
-    )
-
-    shared = ensure_shared_memory(
-        service_url=service_url,
-        principal_key=principal_key,
-        agent_key=agent_key,
-        agent_id=load_cached_agent_id(service_url),
-        dataset=str(config.get("dataset", "") or "").strip(),
-        allow_setup=True,
-        config=config,
-    )
-    set_launch_dataset_ids(session_key, shared["dataset_id"], shared["dataset_ids"])
-    hook_log(
-        "shared_memory_resolved",
-        {
-            "mode": shared["mode"],
-            "reason": shared["reason"],
-            "dataset_id": shared["dataset_id"],
-            "read_ids": len(shared["dataset_ids"]),
-        },
-    )
-    return shared
+    api_key = load_cached_api_key(service_url)
+    if api_key and _local_key_rejected(service_url, api_key):
+        hook_log("local_owner_key_rejected", {"base_url": service_url})
+        forget_cached_api_key(service_url)
+        api_key = await _login_default_user_for_owner_api_key(service_url, config, mint=True)
+    elif not api_key:
+        api_key = await _login_default_user_for_owner_api_key(service_url, config)
+    if api_key:
+        save_cached_api_key(service_url, api_key)
+        try:
+            _HIDES_KEYS_MARKER.unlink()
+        except OSError:
+            pass
+    return api_key
 
 
 async def _ensure_agent_credentials_and_register(
     config: dict, cwd: str, session_id: str, agent_session_name: str, session_key: str
 ) -> tuple[str, str, str, bool]:
+    """Register this session as the user (no plugin identity in this plugin)."""
     service_url = _normalize_service_url(str(config.get("base_url", "") or ""))
     if not service_url:
         return "", "", "", False
 
-    from _plugin_common import (
-        block_cached_agent_key,
-        clear_cached_agent_key,
-        plugin_identity_mode,
-        register_agent_via_http,
-        set_launch_dataset_ids,
-    )
+    from _plugin_common import register_agent_via_http, set_launch_dataset_ids
 
-    principal_key = await _resolve_single_principal_key(service_url, config)
-    if not principal_key:
+    api_key = await _resolve_single_principal_key(service_url, config)
+    if not api_key:
         return "", "", "", False
-
-    os.environ["COGNEE_PRINCIPAL_API_KEY"] = principal_key
-    agent_key = await _ensure_plugin_identity(service_url, config, principal_key)
-
-    # Shared agent memory: wire the agent into the user's shared role and pin
-    # the canonical dataset ids on the launch record. Under identity mode
-    # ``auto`` the agent was provisioned only on the promise that shared memory
-    # keeps the principal's datasets reachable — if that wiring did not happen,
-    # honour the promise by staying on the principal (the agent key is dropped
-    # and its server-side key revoked; a structural reason also stops the next
-    # launch from provisioning again). An explicit identity (``true``) is kept
-    # regardless: the user asked for it.
-    shared = {
-        "mode": "separated",
-        "reason": "no_agent_identity",
-        "dataset_id": "",
-        "dataset_ids": [],
-    }
-
-    def _wire(key: str) -> tuple[str, dict]:
-        """Wire ``key``'s agent into shared memory; revert a fresh, unwired key.
-
-        Returns the key to run as ("" when reverted) and the wiring outcome.
-        """
-        wired = _wire_shared_memory(service_url, config, principal_key, key, session_key)
-        if (
-            wired["mode"] != "shared"
-            and config.get("_provisioned_now")
-            and plugin_identity_mode(config) != "enabled"
-        ):
-            hook_log(
-                "plugin_identity_reverted",
-                {"reason": wired["reason"], "detail": "shared memory unavailable"},
-            )
-            from _plugin_common import (
-                _AGENT_KEY_CACHE,
-                _load_json_file,
-                revoke_minted_agent_key,
-            )
-
-            # Nobody will hold the key just minted: revoke it — only it, by id;
-            # other machines hold keys for the same agent (the agent user stays
-            # for a later, successful migration).
-            revoke_minted_agent_key(
-                principal_key=principal_key,
-                key_id=str(_load_json_file(_AGENT_KEY_CACHE).get("key_id") or ""),
-            )
-            clear_cached_agent_key()
-            set_launch_dataset_ids(session_key, "", [])
-            return "", wired
-        return key, wired
-
-    if agent_key:
-        agent_key, shared = _wire(agent_key)
-    api_key = agent_key or principal_key
 
     os.environ["COGNEE_API_KEY"] = api_key
     config["api_key"] = api_key
+    # No agent, so no shared-memory role: the launch goes by dataset name.
+    set_launch_dataset_ids(session_key, "", [])
 
-    # The effective identity's user id (best-effort) — used for dataset
-    # readiness + watchers. Under a plugin identity this is the agent
-    # sub-user, which is exactly the user the data plane operates as.
     user_id = await _user_id_via_api(service_url, api_key)
 
-    async def _register() -> tuple[bool, dict]:
-        # Registration is a lifecycle counter + connection registry under the
-        # effective identity. The connection handle IS the Cognee session id.
-        # Under shared memory the binding is the canonical dataset's UUID.
-        if not shared.get("dataset_id"):
-            # Without a canonical id the dataset goes by NAME, which the server
-            # resolves only among the caller's existing datasets (cognee >=
-            # 1.6.3): a name that does not exist yet is refused with 403, and on
-            # a new account that is the default dataset. Create it first, as
-            # the identity that registers. Best-effort: when it fails, the
-            # registration reports the real error.
-            try:
-                await ensure_dataset_ready_via_api(
-                    service_url, api_key, str(config.get("dataset", "") or "").strip()
-                )
-            except Exception as exc:
-                hook_log("dataset_ensure_before_register_failed", {"error": str(exc)[:200]})
-        return register_agent_via_http(
-            agent_session_name=agent_session_name,
-            session_id=session_id,
-            dataset_names=[str(config.get("dataset", "") or "").strip()],
-            dataset_ids=[shared["dataset_id"]] if shared.get("dataset_id") else None,
-        )
-
-    def _refused(reg: dict) -> bool:
-        # A refused key (401/403) and a refused dataset (a 403 naming it) take
-        # the same path: the principal can still create the dataset and
-        # register. ``dataset_refused`` only changes what the user is told.
-        return bool(reg.get("auth_failed") or reg.get("dataset_refused"))
-
-    registered, registration = await _register()
-    if not registered and _refused(registration) and agent_key:
-        # 401: the key itself is dead — revoked out-of-band (dashboard
-        # disconnect or revoke) or pruned server-side. It is blocked so no
-        # later hook reuses it, and replaced.
-        # 403: the key works but the server refused this registration (the key
-        # or the dataset); the key is kept — blocking it would make every
-        # launch mint another one.
-        key_rejected = registration.get("status_code") == 401
-        replacement = ""
-        if key_rejected:
-            # One more key for this machine revokes nothing: replace it now
-            # (once) instead of running this launch degraded. The cache is
-            # re-read under the identity lock, so a key another session of this
-            # machine already replaced is reused rather than minted again.
-            block_cached_agent_key(agent_key)
-            config.pop("_provisioned_now", None)
-            replacement = await _ensure_plugin_identity(service_url, config, principal_key)
-            if replacement:
-                replacement, shared = _wire(replacement)
-        if replacement:
-            hook_log("plugin_identity_reprovisioned", {"after": "auth_rejected"})
-            agent_key = api_key = replacement
-            os.environ["COGNEE_API_KEY"] = api_key
-            config["api_key"] = api_key
-            user_id = await _user_id_via_api(service_url, api_key)
-            registered, registration = await _register()
-            if not registered and registration.get("status_code") == 401:
-                block_cached_agent_key(agent_key)
-        if not registered and _refused(registration):
-            if plugin_identity_mode(config) == "enabled":
-                # Raised without an HTTP status, so the status line does not
-                # report an auth failure for a refused dataset.
-                raise RuntimeError(
-                    "Plugin identity rejected and could not be replaced; owner fallback is disabled"
-                    if key_rejected
-                    else "The server refused the dataset; owner fallback is disabled"
-                    if registration.get("dataset_refused")
-                    else "Plugin identity was refused registration (403); owner fallback "
-                    "is disabled"
-                )
-            # ``auto``: this launch runs as the principal; shared memory is off
-            # until the identity is replaced (401) or the server accepts it (403).
-            hook_log(
-                "plugin_identity_rejected_fallback",
-                {
-                    "agent_key_blocked": key_rejected,
-                    "status": registration.get("status_code"),
-                },
-            )
-            agent_key = ""
-            api_key = principal_key
-            shared = {
-                "mode": "separated",
-                "reason": "identity_rejected",
-                "dataset_id": "",
-                "dataset_ids": [],
-            }
-            set_launch_dataset_ids(session_key, "", [])
-            os.environ["COGNEE_API_KEY"] = api_key
-            config["api_key"] = api_key
-            user_id = await _user_id_via_api(service_url, api_key)
-            registered, registration = await _register()
+    # Without a canonical id the dataset goes by NAME, which the server
+    # resolves only among the caller's existing datasets (cognee >= 1.6.3): a
+    # name that does not exist yet is refused with 403, and on a new account
+    # that is the default dataset. Create it first. Best-effort: when it fails,
+    # the registration reports the real error.
+    dataset = str(config.get("dataset", "") or "").strip()
+    try:
+        await ensure_dataset_ready_via_api(service_url, api_key, dataset)
+    except Exception as exc:
+        hook_log("dataset_ensure_before_register_failed", {"error": str(exc)[:200]})
+    registered, registration = register_agent_via_http(
+        agent_session_name=agent_session_name,
+        session_id=session_id,
+        dataset_names=[dataset],
+        dataset_ids=None,
+    )
     # Optional lifecycle routes (older / minimal servers, lifecycle_supported is
     # False): the session runs unregistered rather than failing. Anything else
     # is a real failure on a server that has the route — raise with the HTTP
@@ -1640,7 +1274,7 @@ def _purge_legacy_resolved_files() -> None:
     # config.json: an older config layer that SessionStart read but the per-turn
     # hooks never did, so a stale base_url in it split the plugin across two
     # servers (SDK-466). Nothing reads it any more; remove it so it cannot be
-    # mistaken for live configuration. ~/.cognee/.env is the one setup file.
+    # mistaken for live configuration. The plugin options are the setup now.
     legacy_config = _STATE_DIR / "config.json"
     try:
         if legacy_config.exists():
@@ -1954,7 +1588,7 @@ async def _run_heavy(
         code_outcome = autoindex_on_session_start(
             cwd,
             service_url,
-            os.environ.get("COGNEE_API_KEY", ""),
+            _api_key_with_source(service_url)[0],
             is_local_server=service_url_is_local(service_url),
         )
         if code_outcome:
@@ -2244,7 +1878,7 @@ def _observer_note(observer: dict) -> str:
             )
         else:
             lines.append(
-                "To use a provider key instead, set LLM_API_KEY in ~/.cognee/.env; "
+                "To use a provider key instead, set the plugin's LLM API key option; "
                 "COGNEE_LLM_OBSERVER=false turns the observer off."
             )
         if not observer.get("shim_running"):
@@ -2332,148 +1966,6 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
-def _band_draws_this_session(session_id: str) -> bool:
-    """Whether the hooks module draws this session's status row above the prompt.
-
-    The module writes ``band/<session>.json`` at its own session start, which
-    runs before this hook, so the marker is already there when the module
-    loaded for this session. It is absent where the module cannot load (a
-    Claude Code older than the mods API, ``--safe-mode``, an organisation that
-    allows only its own mods) and where the band is switched off in ``/config``.
-    """
-    if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
-        return False
-    marker = Path.home() / ".cognee-plugin" / "claude-code" / "band" / f"{session_id}.json"
-    try:
-        return marker.is_file()
-    except OSError:
-        return False
-
-
-def _ensure_statusline_configured(session_id: str = "") -> None:
-    """Write the statusLine entry to ~/.claude/settings.json when safe.
-
-    One row, whichever can be drawn: where the hooks module draws the row above
-    the prompt for this session, the plugin's own entry is removed (Claude Code
-    keeps a status-line row reserved as long as the entry exists, even when the
-    renderer prints nothing for the session, which leaves a blank row under the
-    prompt); where it does not, the line below the prompt is installed, or
-    refreshed when the plugin moved. Claude Code hot-reloads settings.json, so
-    either change lands on the next status refresh without a restart. An entry
-    the user wrote is never touched either way.
-    """
-    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
-        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
-        return
-    if _band_draws_this_session(session_id):
-        _evict_own_statusline(reason="band_draws_row")
-        return
-
-    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
-    if plugin_root:
-        statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
-    else:
-        statusline_sh = Path(__file__).resolve().parent / "cognee-statusline.sh"
-
-    if not statusline_sh.exists():
-        hook_log(
-            "statusline_setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
-        )
-        return
-
-    settings_path = Path.home() / ".claude" / "settings.json"
-    # Guard on the script's existence at run time. Claude Code does not remove
-    # this statusLine entry when the plugin is uninstalled, and the command runs
-    # through a shell — so if the plugin's files are later purged from the cache,
-    # a bare path would fail on every refresh. The `[ -x ] && exec … || true`
-    # guard degrades to a clean, empty status line instead. (When the files
-    # linger but the plugin is disabled, the renderer self-evicts this entry.)
-    guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
-    desired = {"type": "command", "command": guarded_command}
-    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
-    # to Claude's event-driven updates, so the connection glyph reflects a change
-    # (e.g. a bad key detected at SessionStart, or the server dying) while the
-    # session is idle — event triggers go quiet when idle, and settings changes
-    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
-    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
-    try:
-        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
-    except ValueError:
-        _interval = 2
-    if _interval >= 1:
-        desired["refreshInterval"] = _interval
-
-    try:
-        settings: dict = {}
-        if settings_path.exists():
-            text = settings_path.read_text(encoding="utf-8").strip()
-            if text:
-                settings = json.loads(text)
-
-        existing = settings.get("statusLine")
-        if existing == desired:
-            return
-
-        existing_command = existing.get("command") if isinstance(existing, dict) else None
-        is_cognee_owned = (
-            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
-        )
-        if existing and not is_cognee_owned:
-            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
-            return
-
-        settings["statusLine"] = desired
-        _write_settings(settings_path, settings)
-        hook_log("statusline_configured", {"path": str(statusline_sh)})
-    except Exception as exc:
-        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
-
-
-def _write_settings(settings_path: Path, settings: dict) -> None:
-    """Replace ~/.claude/settings.json atomically (never a torn file)."""
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, settings_path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _evict_own_statusline(reason: str) -> None:
-    """Remove the plugin's own ``statusLine`` entry from ~/.claude/settings.json.
-
-    Only an entry that runs ``cognee-statusline.sh`` is ours; a line the user
-    set themselves (a chain script of their own included) is left alone, with
-    a log line saying so. Best-effort: a settings file that cannot be read or
-    written is left as it is.
-    """
-    settings_path = Path.home() / ".claude" / "settings.json"
-    try:
-        if not settings_path.exists():
-            return
-        text = settings_path.read_text(encoding="utf-8").strip()
-        settings = json.loads(text) if text else {}
-        existing = settings.get("statusLine")
-        if not existing:
-            return
-        existing_command = existing.get("command") if isinstance(existing, dict) else None
-        if not (isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command):
-            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
-            return
-        settings.pop("statusLine", None)
-        _write_settings(settings_path, settings)
-        hook_log("statusline_evicted", {"reason": reason})
-    except Exception as exc:
-        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
-
-
 _MEMORY_PREFERENCE_STEER = (
     "Use cognee-search for memory and cognee-remember to save it. "
     "Before searching, say 'Searching Cognee…' in progress text. "
@@ -2508,51 +2000,6 @@ def _apply_memory_preference(output: dict) -> dict:
     return result
 
 
-def _apply_update_nudge(output: dict) -> dict:
-    """Append a one-time 'update available' systemMessage (once per new version).
-
-    The version comparison + marker are produced by the background check in the
-    idle watcher; here we only READ the marker (no network). The status line
-    surfaces the same info ambiently on every refresh — this message is the
-    actionable, one-shot nudge. Shown once per newly-detected version (tracked
-    via ``notified_version``) so it never nags, and auto-stops once updated.
-    """
-    try:
-        from _plugin_common import installed_plugin_id, mark_update_notified, read_update_status
-
-        status = read_update_status()
-    except Exception:
-        return output
-    if not status:
-        return output
-    installed = str(status.get("installed_version") or "")
-    latest = str(status.get("latest_version") or "")
-    if not (installed and latest) or status.get("notified_version") == latest:
-        return output
-
-    # The id must match the marketplace the user installed from, or the
-    # suggested command fails with "plugin not found".
-    try:
-        plugin_id = installed_plugin_id()
-    except Exception:
-        plugin_id = "cognee-memory@cognee"
-    message = (
-        f"Cognee update available {installed} → {latest} — run "
-        f"`/plugin update {plugin_id}` (or enable marketplace auto-update)."
-    )
-    result = dict(output or {})
-    hso = dict(result.get("hookSpecificOutput") or {})
-    hso.setdefault("hookEventName", "SessionStart")
-    existing = str(hso.get("systemMessage") or "").strip()
-    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
-    result["hookSpecificOutput"] = hso
-    try:
-        mark_update_notified(latest)
-    except Exception:
-        pass
-    return result
-
-
 async def _start(payload: dict | None = None) -> dict:
     """Session start (:func:`_start_session`).
 
@@ -2573,7 +2020,6 @@ async def _start(payload: dict | None = None) -> dict:
 async def _start_session(payload: dict | None, setup: dict) -> dict:
     config = load_config()
     payload = payload or {}
-    _ensure_statusline_configured(str(payload.get("session_id") or ""))
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
     # The service URL is the sole router (api_key is optional auth, with a
     # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided
@@ -2670,13 +2116,14 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
         dataset=str(config.get("dataset", "") or "").strip(),
         host_pid=_find_claude_parent_pid(),
     )
-    # The server this launch registers on. Hooks re-read ~/.cognee/.env, so a
-    # later edit is detected against this and reported (base_url_change_notice).
+    # The server this launch registers on. Hooks read the URL option again, so a
+    # later change is detected against this and reported (base_url_change_notice).
     set_launch_base_url(session_key, target_url)
     # The launch record is what the status line and doctor read — neither has
     # this process's environment — so the observer decision lands on it here,
     # once the record exists.
     _record_observer(observer)
+    _record_launch_facts(config, target_url, observer)
     from _project_memory import begin as begin_project_memory
 
     begin_project_memory(get_dataset(config), session_id, cwd)
@@ -3000,6 +2447,140 @@ def _with_system_note(output: dict, note: str) -> dict:
     return result
 
 
+# The one-time notice for settings ~/.cognee/.env still holds but the plugin
+# no longer reads. The flag lives in the plugin's own state, never in Claude
+# Code's settings.
+_ENV_UPGRADE_NOTICE_FLAG = _STATE_DIR / "env-upgrade-notice.json"
+ENV_UPGRADE_NOTICE = (
+    "Cognee for Claude Code no longer reads Cloud or LLM settings from ~/.cognee/.env. "
+    "Set your Cognee Cloud URL and API key, or your LLM settings for local mode, in the "
+    "plugin's options (/plugin → cognee-memory). Until then Cognee runs locally with "
+    "defaults."
+)
+# Its own one-time notice: storage settings the plugin's local server no longer
+# takes from ~/.cognee/.env or the shell.
+_STORAGE_NOTICE_FLAG = _STATE_DIR / "env-storage-notice.json"
+STORAGE_NOTICE = (
+    "Cognee for Claude Code no longer reads storage settings from ~/.cognee/.env or "
+    "the shell. Its local server uses the built-in stores under ~/.cognee; data stored "
+    "elsewhere is untouched but not used."
+)
+CLOUD_KEY_EMPTY_NOTICE = (
+    "Cognee Memory: the Cloud API key option is empty, so Cognee Cloud will refuse "
+    "this session. Set it in the plugin's options (/plugin → cognee-memory)."
+)
+CLOUD_PIN_NO_URL_NOTICE = (
+    "Cognee Memory: COGNEE_BACKEND=cloud is set but the Cognee Cloud URL option is "
+    "empty, so Cognee sends nothing. Set the URL in the plugin's options (/plugin → "
+    "cognee-memory), or remove the switch to run locally."
+)
+CLOUD_URL_EMPTY_NOTICE = (
+    "The Cognee Cloud API key option is set but the Cloud URL is empty, so Cognee is "
+    "running locally; set the URL to use Cloud."
+)
+
+
+def _option_notices() -> list:
+    """The SessionStart notes about the plugin options. Never raises.
+
+    Once ever: ~/.cognee/.env holds Cloud or LLM settings and the matching
+    options are empty. Once ever, separately: storage settings (data
+    directories, database providers) in the file or the shell, which the
+    plugin's local server no longer uses. Every session: a Cloud URL without its key, or a key
+    without a URL. Reads only option presence and setting names, never values.
+    """
+    notes: list = []
+    try:
+        from _env_file import (
+            cloud_pinned_without_url,
+            legacy_settings_in_file,
+            option,
+            storage_settings_ignored,
+            url_option,
+        )
+
+        legacy = legacy_settings_in_file()
+        if (legacy.get("cloud") or legacy.get("llm")) and not _ENV_UPGRADE_NOTICE_FLAG.exists():
+            notes.append(ENV_UPGRADE_NOTICE)
+            try:
+                _ENV_UPGRADE_NOTICE_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                _ENV_UPGRADE_NOTICE_FLAG.write_text(
+                    json.dumps(
+                        {
+                            "shown_at": time.time(),
+                            "names": sorted(legacy.get("cloud", []) + legacy.get("llm", [])),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                hook_log("env_upgrade_notice_flag_failed", {"error": str(exc)[:200]})
+        storage = storage_settings_ignored()
+        if storage and not _STORAGE_NOTICE_FLAG.exists():
+            notes.append(STORAGE_NOTICE)
+            try:
+                _STORAGE_NOTICE_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                _STORAGE_NOTICE_FLAG.write_text(
+                    json.dumps({"shown_at": time.time(), "names": storage}), encoding="utf-8"
+                )
+            except OSError as exc:
+                hook_log("env_storage_notice_flag_failed", {"error": str(exc)[:200]})
+        if _HIDES_KEYS_MARKER.exists():
+            notes.append(SERVER_HIDES_KEYS_MESSAGE)
+        url = url_option()
+        key_set = bool(option("cognee_api_key"))
+        if url and not service_url_is_local(url) and not key_set:
+            notes.append(CLOUD_KEY_EMPTY_NOTICE)
+        if cloud_pinned_without_url():
+            notes.append(CLOUD_PIN_NO_URL_NOTICE)
+        elif key_set and not url:
+            notes.append(CLOUD_URL_EMPTY_NOTICE)
+    except Exception as exc:
+        hook_log("option_notices_failed", {"error": str(exc)[:200]})
+    return notes
+
+
+def _apply_option_notices(output: dict) -> dict:
+    for note in _option_notices():
+        output = _with_system_note(output, note)
+    return output
+
+
+def _record_launch_facts(config: dict, target_url: str, observer: dict) -> None:
+    """Note what this launch decided, for doctor (which has no options). Never raises.
+
+    Booleans and names only: whether each key option is set, the LLM provider
+    and model as applied, the observer decision, and where the key comes from.
+    """
+    try:
+        from _env_file import option
+        from _plugin_common import get_session_key, record_launch_facts
+
+        local = not target_url or service_url_is_local(target_url)
+        record_launch_facts(
+            get_session_key(),
+            {
+                "cloud_key_option_set": bool(option("cognee_api_key")),
+                "llm_key_option_set": bool(option("llm_api_key")),
+                "embedding_key_option_set": bool(option("embedding_api_key")),
+                "llm_provider": "" if not local else os.environ.get("LLM_PROVIDER", ""),
+                "llm_model": "" if not local else os.environ.get("LLM_MODEL", ""),
+                "observer": {
+                    "active": bool(observer.get("active")),
+                    "reason": str(observer.get("reason") or ""),
+                    "model": str(observer.get("model") or ""),
+                },
+                "key_source": (
+                    "local_owner_key"
+                    if local
+                    else ("plugin_option" if option("cognee_api_key") else "missing")
+                ),
+            },
+        )
+    except Exception as exc:
+        hook_log("launch_facts_failed", {"error": str(exc)[:200]})
+
+
 def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
     """Say, on reopening a chat, whether it reached long-term memory (SDK-1071).
 
@@ -3103,14 +2684,6 @@ def _apply_recall_mode_notice(output: dict, payload: dict | None = None) -> dict
 def main():
     if is_observer_child():
         return
-    # First run: leave a commented ~/.cognee/.env template so one-time config
-    # has a documented file to land in. Values (if any) were already loaded
-    # into os.environ when _plugin_common was imported.
-    from _env_file import ensure_env_file_template, env_file_path
-
-    if ensure_env_file_template():
-        hook_log("env_file_template_created", {"path": str(env_file_path())})
-
     # Detached bootstrap mode: run the slow server boot + registration out of
     # band so the SessionStart hook itself returns fast.
     if _BOOTSTRAP_ARG in sys.argv:
@@ -3139,12 +2712,12 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     try:
-        from _auto_memory import sync as sync_auto_memory
+        from _auto_memory import advice as auto_memory_advice
         from _cloud_worker import enabled as cloud_enabled
 
-        # Native memory is only taken over in cloud mode; anywhere else, give back
-        # a setting we changed earlier.
-        notice = sync_auto_memory(cloud_enabled())
+        # Claude Code's own settings are never written (SDK-1411): at most a
+        # one-time note on how to turn its auto-memory off, or back on.
+        notice = auto_memory_advice(cloud_enabled())
         if notice:
             hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
             hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
@@ -3208,9 +2781,10 @@ def main():
             # A missing, busy or malformed cache must never cost the startup output.
             hook_log("context_digest_inject_failed", {"error": str(exc)[:200]})
     output = _apply_sync_notice(output, payload)
-    output = _apply_update_nudge(output)
+    _flag_missing_local_runtime()
     output = _apply_host_python_warning(output)
     output = _apply_key_limit_warning(output)
+    output = _apply_option_notices(output)
     if coding:
         output = _coding_session_start(output, payload)
     else:

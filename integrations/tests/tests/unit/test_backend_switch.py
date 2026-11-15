@@ -17,6 +17,7 @@ of silently falling back to local.
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -45,6 +46,13 @@ CLOUD_ENV_FILE = "\n".join(
 def env_file(suite, isolated_modules, tmp_path, monkeypatch):
     """The isolated _env_file module + a loader that runs a fresh env file."""
     ef = isolated_modules(suite, "_env_file")
+    if suite.keys_from_plugin_options:
+        # The same settings, where this plugin takes them from: its plugin
+        # options, which Claude Code exports to hook processes.
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path))
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", CLOUD_URL)
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck_from_file")
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk_from_file")
 
     def _load(content: str):
         path = tmp_path / ".env"
@@ -86,18 +94,103 @@ def test_forced_local_beats_a_real_shell_export(env_file, monkeypatch):
     assert os.environ["COGNEE_BASE_URL"] == ""
 
 
-def test_scrub_survives_a_child_rerunning_the_loader(env_file, monkeypatch):
+def test_scrub_survives_a_child_rerunning_the_loader(env_file, suite, monkeypatch):
     """The scrub writes EMPTY strings, not deletions: a child re-running the
     loader must not re-inject the file's cloud URL (setdefault skips keys that
     are present, even when empty)."""
     ef, load = env_file
     monkeypatch.setenv("COGNEE_BACKEND", "local")
     load(CLOUD_ENV_FILE)
-    monkeypatch.delenv("COGNEE_BACKEND")  # even if the child lost the switch
+    if not suite.keys_from_plugin_options:
+        # Even if the child lost the switch. The Claude Code plugin derives the
+        # URL from its options in every process, so its children keep the
+        # switch itself (it is inherited like every exported variable).
+        monkeypatch.delenv("COGNEE_BACKEND")
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
     assert os.environ["COGNEE_BASE_URL"] == ""
-    assert os.environ["COGNEE_API_KEY"] == ""
+    if not suite.keys_from_plugin_options:
+        # A key from the plugin options is set again in every process; with
+        # no URL the child is still local, so the key goes unused.
+        assert os.environ["COGNEE_API_KEY"] == ""
+
+
+def test_keys_in_the_file_or_shell_are_ignored(suite, isolated_modules, tmp_path, monkeypatch):
+    """The Claude Code plugin takes its keys and URL only from its plugin options."""
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: reads its keys from the env file")
+    ef = isolated_modules(suite, "_env_file")
+    path = tmp_path / ".env"
+    path.write_text(CLOUD_ENV_FILE, encoding="utf-8")
+    monkeypatch.setenv("COGNEE_ENV_FILE", str(path))
+    monkeypatch.setenv("COGNEE_API_KEY", "ck_from_shell")
+    monkeypatch.setenv("COGNEE_PRINCIPAL_API_KEY", "ck_inherited")
+    monkeypatch.setenv("COGNEE_BASE_URL", "https://shell.cognee.ai")
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert "COGNEE_BASE_URL" not in os.environ
+    assert "COGNEE_API_KEY" not in os.environ
+    assert "COGNEE_PRINCIPAL_API_KEY" not in os.environ
+    assert "LLM_API_KEY" not in os.environ
+
+    # The key option alone means local mode: the key is for no local server,
+    # so it is not exported at all.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck_option")
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert "COGNEE_API_KEY" not in os.environ
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "https://tenant.cognee.ai")
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert os.environ["COGNEE_API_KEY"] == "ck_option"
+
+
+def test_url_option_wins_and_is_read_from_settings_without_options(
+    suite, isolated_modules, temp_home, tmp_path, monkeypatch
+):
+    """Hooks get the URL option exported; the status line and skills read it
+    where Claude Code saves non-secret options (``pluginConfigs``)."""
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: has no plugin options")
+    ef = isolated_modules(suite, "_env_file")
+    path = tmp_path / ".env"
+    path.write_text(CLOUD_ENV_FILE, encoding="utf-8")
+    monkeypatch.setenv("COGNEE_ENV_FILE", str(path))
+    option_url = "https://option.cognee.ai"
+
+    # A hook process: options exported, CLAUDE_PLUGIN_ROOT set.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", option_url)
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert os.environ["COGNEE_BASE_URL"] == option_url
+
+    # The status line / a Bash-run skill: no options, no CLAUDE_PLUGIN_ROOT.
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT")
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL")
+    monkeypatch.delenv("COGNEE_BASE_URL")
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert "COGNEE_BASE_URL" not in os.environ  # no option saved; the file's URL is ignored
+
+    settings = temp_home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "pluginConfigs": {
+                    "other-plugin@x": {"options": {"cognee_base_url": "https://wrong"}},
+                    "cognee-memory@cognee": {"options": {"cognee_base_url": option_url}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert os.environ["COGNEE_BASE_URL"] == option_url
 
 
 def test_forced_cloud_scrubs_nothing(env_file, monkeypatch):
@@ -145,8 +238,10 @@ def test_cloud_synonyms(env_file, monkeypatch, value):
     assert ef.forced_backend() == "cloud"
 
 
-def test_template_documents_the_switch(env_file):
+def test_template_documents_the_switch(env_file, suite):
     ef, _load = env_file
+    if not hasattr(ef, "_TEMPLATE"):
+        pytest.skip(f"{suite.name}: writes no env-file template (the README documents it)")
     assert "COGNEE_BACKEND" in ef._TEMPLATE
 
 
@@ -242,10 +337,15 @@ def doctor(suite, isolated_modules):
     return isolated_modules(suite, "doctor")
 
 
-def test_doctor_reports_forced_cloud_without_url(doctor, monkeypatch):
+def test_doctor_reports_forced_cloud_without_url(doctor, suite, monkeypatch):
     monkeypatch.setenv("COGNEE_BACKEND", "cloud")
     assert doctor._resolve_mode() == "Cloud"
-    assert "missing COGNEE_BASE_URL" in doctor._mode_annotation()
+    missing = (
+        "the Cloud URL option is empty"
+        if suite.keys_from_plugin_options
+        else "missing COGNEE_BASE_URL"
+    )
+    assert missing in doctor._mode_annotation()
     display, raw = doctor._resolve_server_url()
     assert display == "-"
     assert raw == ""

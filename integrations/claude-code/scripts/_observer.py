@@ -13,8 +13,8 @@ nothing in cognee changes — it sees an OpenAI-shaped endpoint.
 
 Embeddings cannot come from the subscription (Claude has no embedding
 endpoint), so the observer pairs the LLM shim with cognee's local CPU
-embedder (``EMBEDDING_PROVIDER=fastembed``), whose driver extra session start
-installs automatically.
+embedder (``EMBEDDING_PROVIDER=fastembed``), whose driver extra is part of the
+install command session start prints.
 
 Decision (``resolve_observer``), in order:
 
@@ -22,11 +22,14 @@ Decision (``resolve_observer``), in order:
 * cloud mode → off (the remote server owns its LLM key).
 * ``COGNEE_MANAGED_ENDPOINT=true`` → off (the external deployment owns its LLM).
 * ``auto`` (default) and an ``LLM_API_KEY`` or an explicit ``LLM_PROVIDER`` is
-  configured → off: the user chose a provider, respect it. That includes one in
-  the ``.env`` the server itself loads (``server_dotenv_path``), which overrides
-  anything this process exports.
+  configured → off: the user chose a provider, respect it.
 * no ``claude`` executable reachable → off (``true`` surfaces this as an error).
 * otherwise → on.
+
+The ``claude`` child uses only Claude Code's stored login (the keychain or
+``.credentials.json``): no provider-routing or token variable reaches it, so a
+Claude Code routed through Bedrock, Vertex, Foundry or a gateway, or logged in
+with ``setup-token``, cannot run the observer (``STORED_LOGIN_ONLY_MESSAGE``).
 
 This module is stdlib-only and side-effect free on import. ``apply_observer_env``
 is the only writer of the environment; it runs in SessionStart before the
@@ -50,6 +53,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from _net import is_loopback_url, open_url
+
 SETTING_ENV = "COGNEE_LLM_OBSERVER"
 #: Set by the shim in every ``claude`` child it spawns; every hook script exits
 #: at once when it sees this, so an observer call can never re-enter the plugin.
@@ -72,6 +77,16 @@ DEFAULT_CLAUDE_MODEL = "haiku"
 #: retrieval model in the fastembed registry. 384 dimensions.
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_EMBEDDING_DIMENSIONS = "384"
+
+#: The ``llm_state`` reason, and the user-facing text, for an observer probe that
+#: reports an auth failure. The shim's ``claude`` child never sees provider
+#: routing or token variables, so "log in to Claude Code" is not always the fix:
+#: a Bedrock/Vertex/gateway/``setup-token`` setup is logged in and still fails.
+STORED_LOGIN_ONLY_REASON = "observer_needs_stored_login"
+STORED_LOGIN_ONLY_MESSAGE = (
+    "The Claude observer can use only Claude Code's stored login (not Bedrock, "
+    "Vertex, a gateway or setup-token); set the LLM options instead."
+)
 
 _STATE_DIR = Path.home() / ".cognee-plugin" / "observer"
 PIDFILE = _STATE_DIR / "observer.pid"
@@ -274,51 +289,8 @@ def llm_key_configured() -> bool:
     return bool(key) and not _is_observer_key(key)
 
 
-def server_dotenv_path() -> Path | None:
-    """The ``.env`` the local cognee server will load, if any.
-
-    ``import cognee`` runs ``dotenv.load_dotenv(override=True)``, whose
-    ``find_dotenv`` walks up from the cognee package directory and takes the
-    first ``.env`` it finds: inside the venv, then ``~/.cognee-plugin``, ``~``,
-    and so on to the root. Because of ``override=True`` its values beat the
-    environment the server was spawned with, so a key there is the one the
-    server uses even though this process never sees it.
-    """
-    start = _SERVER_VENV
-    for pattern in ("lib/python*/site-packages/cognee", "Lib/site-packages/cognee"):
-        found = sorted(_SERVER_VENV.glob(pattern))
-        if found:
-            start = found[-1]
-            break
-    try:
-        current = start.resolve()
-    except OSError:
-        current = start
-    for directory in (current, *current.parents):
-        candidate = directory / ".env"
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            continue
-    return None
-
-
-def server_dotenv_values() -> dict:
-    path = server_dotenv_path()
-    if path is None:
-        return {}
-    try:
-        from _env_file import parse_env_file
-
-        return parse_env_file(path)
-    except Exception:
-        return {}
-
-
 def _is_local_url(url: str) -> bool:
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    return host in ("localhost", "::1", "0.0.0.0") or host.startswith("127.")
+    return is_loopback_url(url)
 
 
 def llm_provider_configured() -> bool:
@@ -385,14 +357,6 @@ def resolve_observer(config: dict | None = None) -> dict:
             if llm_provider_configured():
                 result["reason"] = "llm_provider_configured"
                 return result
-            dotenv = server_dotenv_values()
-            dotenv_key = str(dotenv.get("LLM_API_KEY") or "").strip()
-            if (dotenv_key and not _is_observer_key(dotenv_key)) or str(
-                dotenv.get("LLM_PROVIDER") or ""
-            ).strip():
-                result["reason"] = "server_dotenv_configured"
-                result["dotenv"] = str(server_dotenv_path() or "")
-                return result
     warning = model_warning()
     if warning:
         result["model_warning"] = warning
@@ -448,8 +412,8 @@ def is_active() -> bool:
     itself and every worker it spawned). Hooks run in the host's environment,
     which has none of that — so a watcher re-spawned from a hook falls back to
     the launch record SessionStart stamped (``llm_observer.active``). Without
-    the fallback that watcher would run the litellm key check against a launch
-    that has no key by design and put a false ✕ on the status line.
+    the fallback that watcher would skip the observer check and withdraw the
+    session's verdict, so a broken observer login would never reach the bar.
     """
     if os.environ.get(ACTIVE_ENV_FLAG, "") == "1":
         return True
@@ -468,10 +432,10 @@ def is_active() -> bool:
 # --- shim process control ----------------------------------------------------
 
 
-def _http_get(url: str, timeout: float) -> tuple[int, dict]:
+def _http_get(url: str, timeout: float, auth: bool = True) -> tuple[int, dict]:
     try:
-        req = urllib.request.Request(url, headers=_auth_headers())
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        req = urllib.request.Request(url, headers=_auth_headers() if auth else {})
+        with open_url(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             return resp.status, (json.loads(body) if body else {})
     except urllib.error.HTTPError as exc:
@@ -486,7 +450,7 @@ def _http_get(url: str, timeout: float) -> tuple[int, dict]:
 
 def observer_health(port_number: int | None = None, timeout: float = 1.0) -> dict:
     """The shim's ``/health`` document, or {} when nothing of ours answers there."""
-    status, body = _http_get(base_url(port_number) + "/health", timeout)
+    status, body = _http_get(base_url(port_number) + "/health", timeout, auth=False)
     if status == 200 and isinstance(body, dict) and body.get("service") == "cognee-claude-observer":
         return body
     return {}
@@ -587,7 +551,7 @@ def stop_observer(port_number: int | None = None) -> bool:
     try:
         req = urllib.request.Request(url, data=b"{}", method="POST", headers=_auth_headers())
         req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=2.0):
+        with open_url(req, timeout=2.0):
             return True
     except Exception:
         pass
@@ -618,9 +582,6 @@ def describe(decision: dict | None = None) -> str:
         "managed_endpoint": "off (COGNEE_MANAGED_ENDPOINT: the deployment owns its LLM key)",
         "llm_key_configured": "off (LLM_API_KEY is configured)",
         "llm_provider_configured": "off (LLM_PROVIDER is configured)",
-        "server_dotenv_configured": (
-            f"off (the server's {decision.get('dotenv') or '.env'} configures its LLM)"
-        ),
         "claude_cli_missing": "unavailable (no `claude` executable found)",
     }
     return reasons.get(str(decision.get("reason") or ""), "off")

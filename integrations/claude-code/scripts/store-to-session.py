@@ -25,10 +25,10 @@ import urllib.error
 sys.path.insert(0, os.path.dirname(__file__))
 from _cloud_worker import enabled as cloud_enabled
 from _plugin_common import (
+    _api_key_with_source,
     append_warmup_entry,
     bump_save_counter,
     bump_turn_counter,
-    clear_payment_required,
     elapsed_ms,
     get_session_key,
     hook_log,
@@ -41,7 +41,6 @@ from _plugin_common import (
     phase_end,
     pop_pending_prompt,
     quiet_hook_output,
-    record_payment_required,
     remember_entry_via_http,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
@@ -348,8 +347,6 @@ async def _store_tool_call(payload: dict) -> None:
             )
             notify(f"trace store failed, buffered for replay ({exc})")
         else:
-            if status_code == 402:
-                record_payment_required("save")
             hook_log(
                 "trace_store_error",
                 {
@@ -364,7 +361,6 @@ async def _store_tool_call(payload: dict) -> None:
 
     phase_end("saving", count=1 if result else 0, ok=bool(result))
     if result:
-        clear_payment_required()
         trace_id = (
             result.get("entry_id")
             if isinstance(result, dict)
@@ -506,8 +502,6 @@ async def _store_assistant_stop(payload: dict) -> None:
             )
             notify(f"stop store failed, buffered for replay ({exc})")
         else:
-            if status == 402:
-                record_payment_required("save")
             hook_log(
                 "stop_store_error",
                 {"error": str(exc)[:200], "status": status, "buffered": False},
@@ -517,7 +511,6 @@ async def _store_assistant_stop(payload: dict) -> None:
 
     phase_end("saving", count=1 if result else 0, ok=bool(result))
     if result:
-        clear_payment_required()
         qa_id = (
             result.get("entry_id")
             if isinstance(result, dict)
@@ -558,7 +551,7 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
             # next Stop retries once the server is back.
             hook_log("code_reingest_skipped_server", {"base_url": service_url})
             return
-        outcome = reingest_if_changed(cwd, service_url, os.environ.get("COGNEE_API_KEY", ""))
+        outcome = reingest_if_changed(cwd, service_url, _api_key_with_source(service_url)[0])
         if not outcome:
             return
         if outcome.get("changed") and outcome.get("submitted"):

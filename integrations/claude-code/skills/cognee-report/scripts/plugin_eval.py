@@ -7,7 +7,6 @@ Reads, for a chosen time window:
 * ``recall-audit.log``            - every recall: hits per scope, injected context
 * Claude Code transcripts         - hook durations/crashes, token usage, skill use
 * ``installed_plugins.json``      - installed version and when it was last updated
-* optionally the Cognee server    - what actually landed (``--server``)
 
 and produces a scorecard (JSON / text / Markdown), an objective grade with
 explicit gates, and evidence-backed recommendations. Everything here is
@@ -24,17 +23,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
-import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 SCHEMA_VERSION = 1
 
@@ -223,7 +218,6 @@ _COGNEE_HOOK_SCRIPTS = (
     "store-user-prompt.py",
     "session-context-lookup.py",
     "clear-transcript-context.py",
-    "credits-refresh.py",
     "sync-session-to-graph.py",
 )
 _SCRIPT_NAME_RE = re.compile(r"scripts/([\w.\-]+\.(?:py|sh))")
@@ -1239,96 +1233,6 @@ def analyze_transcripts(
 # --------------------------------------------------------------------------- #
 
 
-def analyze_server(
-    base_url: str,
-    api_key: str,
-    since: Optional[datetime],
-    until: Optional[datetime],
-    opener: Callable[..., Any] = urllib.request.urlopen,
-    max_pages: int = 10,
-) -> Dict[str, Any]:
-    """What landed server-side: operations and pipeline runs in the window. Fail-soft."""
-    if not base_url:
-        return {
-            "available": False,
-            "reason": "no server URL (pass --server-url or set COGNEE_BASE_URL)",
-        }
-    terminal: Dict[str, Dict[str, Any]] = {}
-    reached_window_start = False
-    try:
-        for page in range(max_pages):
-            url = "%s/api/v1/activity/pipeline-runs?limit=500&offset=%d" % (
-                base_url.rstrip("/"),
-                page * 500,
-            )
-            request = urllib.request.Request(url, headers={"X-Api-Key": api_key} if api_key else {})
-            with opener(request, timeout=30) as response:
-                rows = json.loads(response.read().decode("utf-8") or "[]")
-            if not isinstance(rows, list) or not rows:
-                break
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                created = parse_ts(row.get("created_at"))
-                if created is None or (until and created >= until):
-                    continue
-                if since and created < since:
-                    reached_window_start = True
-                    continue
-                key = str(row.get("pipeline_run_id") or row.get("id"))
-                previous = terminal.get(key)
-                is_terminal = bool(row.get("outcome")) or any(
-                    word in str(row.get("status") or "")
-                    for word in ("COMPLETED", "ERRORED", "ABANDONED")
-                )
-                if previous is None or (is_terminal and not previous["_terminal"]):
-                    terminal[key] = dict(row, _terminal=is_terminal)
-            if reached_window_start or len(rows) < 500:
-                break
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        return {"available": False, "reason": redact(exc, 160)}
-
-    operations: Dict[str, Counter] = defaultdict(Counter)
-    pipelines: Dict[str, Counter] = defaultdict(Counter)
-    tokens_in = tokens_out = 0
-    for row in terminal.values():
-        if row.get("pipeline_name"):
-            status = str(row.get("status") or "")
-            state = (
-                "completed"
-                if "COMPLETED" in status
-                else "errored"
-                if "ERRORED" in status
-                else "abandoned"
-                if "ABANDONED" in status
-                else "unfinished"
-            )
-            pipelines[str(row["pipeline_name"])][state] += 1
-        else:
-            outcome = str(row.get("outcome") or "unfinished")
-            if row.get("background") and outcome == "succeeded":
-                outcome = "accepted_in_background"
-            operations[str(row.get("operation_name") or "unknown")][outcome] += 1
-        if not row.get("parent_operation_id"):  # a parent already includes its children's tokens
-            tokens_in += int(row.get("tokens_in") or 0)
-            tokens_out += int(row.get("tokens_out") or 0)
-    return {
-        "available": True,
-        "runs": len(terminal),
-        "operations": {name: dict(c) for name, c in sorted(operations.items())},
-        "pipelines": {name: dict(c) for name, c in sorted(pipelines.items())},
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "note": "Distillation is a stage inside improve; it shows up as the add/cognify runs "
-        "nested under it.",
-    }
-
-
-# --------------------------------------------------------------------------- #
-# Scorecard, grade, advice
-# --------------------------------------------------------------------------- #
-
-
 def log_files(plugin_dir: Path) -> List[Dict[str, Any]]:
     sizes = []
     try:
@@ -1920,16 +1824,6 @@ def build_scorecard(
         },
         "server": None,
     }
-    if with_server and args.server:
-        card["server"] = analyze_server(
-            args.server_url
-            or os.environ.get("COGNEE_BASE_URL")
-            or os.environ.get("COGNEE_LOCAL_API_URL")
-            or "",
-            os.environ.get("COGNEE_API_KEY", ""),
-            since,
-            until,
-        )
     decisions = {}
     for event_ts, raw in iter_jsonl(rotated_files(plugin_dir, "hook.log"), {}):
         if event_ts is None or (since and event_ts < since) or (until and event_ts >= until):
@@ -2415,21 +2309,6 @@ def render_full_text(card: Dict[str, Any], markdown: bool = False) -> str:
         bullets.append(
             "Transcripts not analysed: token totals, hook latency and explicit use unavailable"
         )
-    server = card.get("server")
-    if server:
-        if server.get("available"):
-            bullets.append(
-                "Server: %d runs; operations %s; pipelines %s; %s in / %s out tokens"
-                % (
-                    server["runs"],
-                    server["operations"],
-                    server["pipelines"],
-                    "{:,}".format(server["tokens_in"]),
-                    "{:,}".format(server["tokens_out"]),
-                )
-            )
-        else:
-            bullets.append("Server: unavailable (%s)" % server.get("reason"))
     lines += ["- " + bullet for bullet in bullets]
 
     lines += ["", "%sRecommendations (evidence-backed)" % h2]
@@ -2465,203 +2344,6 @@ def render_full_text(card: Dict[str, Any], markdown: bool = False) -> str:
         lines += ["", "%sNotes" % h2] + ["- " + note for note in card["notes"]]
     lines += ["", "Aggregates only: no prompt or memory text is included in this report."]
     return "\n".join(lines) + "\n"
-
-
-# --------------------------------------------------------------------------- #
-# Notion export
-# --------------------------------------------------------------------------- #
-
-NOTION_API = "https://api.notion.com/v1"
-NOTION_DEFAULT_VERSION = "2026-03-11"
-NOTION_MAX_TEXT = 2000  # characters per rich_text object
-NOTION_MAX_RICH_TEXT = 100  # rich_text objects per block
-NOTION_MAX_CHILDREN = 100  # blocks per request
-
-
-def parse_notion_id(value: str) -> Optional[str]:
-    """A page id from a bare id, a dashed uuid, or a Notion URL (the id ends the last segment)."""
-    segment = str(value or "").split("?")[0].rstrip("/").split("/")[-1].replace("-", "")
-    match = re.search(r"([0-9a-fA-F]{32})$", segment)
-    if not match:
-        return None
-    raw = match.group(1).lower()
-    return "%s-%s-%s-%s-%s" % (raw[:8], raw[8:12], raw[12:16], raw[16:20], raw[20:])
-
-
-def _rich_text(text: str) -> List[Dict[str, Any]]:
-    text = text or " "
-    chunks = [text[i : i + NOTION_MAX_TEXT] for i in range(0, len(text), NOTION_MAX_TEXT)][
-        :NOTION_MAX_RICH_TEXT
-    ]
-    return [{"type": "text", "text": {"content": chunk}} for chunk in chunks]
-
-
-def _block(kind: str, text: str = "", **extra: Any) -> Dict[str, Any]:
-    body: Dict[str, Any] = {} if kind == "divider" else {"rich_text": _rich_text(text)}
-    body.update(extra)
-    return {"object": "block", "type": kind, kind: body}
-
-
-def notion_blocks(card: Dict[str, Any]) -> List[Dict[str, Any]]:
-    overall = card["grade"]["overall"]
-    emoji = {"graded": "✅", "gates_failed": "⚠️", "insufficient_data": "ℹ️"}[overall["status"]]
-    text_report = render_full_text(card)
-    scorecard = text_report.split("Scorecard\n", 1)[-1].split("\nWhat happened", 1)[0].rstrip()
-    happened = text_report.split("What happened\n", 1)[-1].split("\nRecommendations", 1)[0]
-    blocks = [
-        _block("callout", grade_headline(card), icon={"emoji": emoji}),
-        _block(
-            "paragraph", text_report.split("\n")[2] + "  |  " + text_report.split("\n")[3].strip()
-        ),
-        _block("heading_2", "Recommendations"),
-    ]
-    if not card["advice"]:
-        blocks.append(_block("paragraph", "Nothing crossed a threshold in this window."))
-    for item in card["advice"]:
-        blocks.append(
-            _block("heading_3", "[%s %s] %s" % (item["priority"], item["kind"], item["title"]))
-        )
-        blocks.append(_block("bulleted_list_item", "Evidence: " + item["evidence"]))
-        blocks.append(_block("bulleted_list_item", "Why it matters: " + item["why"]))
-        blocks.append(_block("bulleted_list_item", "Do: " + item["action"]))
-    blocks += [
-        _block("heading_2", "Scorecard"),
-        _block("code", scorecard, language="plain text"),
-        _block("heading_2", "What happened"),
-    ]
-    blocks += [
-        _block("bulleted_list_item", line[2:])
-        for line in happened.splitlines()
-        if line.startswith("- ")
-    ]
-    if card.get("comparison"):
-        compare = text_report.split("Before vs after\n", 1)[-1].split("\n\n", 1)[0]
-        blocks += [
-            _block("heading_2", "Before vs after"),
-            _block("code", compare, language="plain text"),
-        ]
-    if card["notes"]:
-        blocks.append(_block("heading_2", "Notes"))
-        blocks += [_block("bulleted_list_item", note) for note in card["notes"]]
-    blocks += [
-        _block("divider"),
-        _block(
-            "paragraph",
-            "Aggregates only: no prompt or memory text is included. "
-            "Generated %s by plugin_eval.py (schema %d)." % (card["generated_at"], card["schema"]),
-        ),
-    ]
-    return blocks
-
-
-def notion_title(card: Dict[str, Any]) -> str:
-    window = card["window"]
-    since = to_local_label(parse_ts(window["since"]))[:10] if window["since"] else "all time"
-    return "Cognee plugin report - %s v%s - %s" % (
-        card["agent"],
-        card["install"].get("version") or "?",
-        since,
-    )
-
-
-class NotionError(RuntimeError):
-    pass
-
-
-def _notion_call(
-    method: str,
-    path: str,
-    token: str,
-    body: Dict[str, Any],
-    version: str,
-    opener: Callable[..., Any],
-    sleep: Callable[[float], None],
-) -> Dict[str, Any]:
-    request = urllib.request.Request(
-        NOTION_API + path,
-        data=json.dumps(body).encode("utf-8"),
-        method=method,
-        headers={
-            "Authorization": "Bearer " + token,
-            "Notion-Version": version,
-            "Content-Type": "application/json",
-        },
-    )
-    for attempt in range(4):
-        try:
-            with opener(request, timeout=30) as response:
-                return json.loads(response.read().decode("utf-8") or "{}")
-        except urllib.error.HTTPError as exc:
-            if exc.code == 429 and attempt < 3:
-                try:
-                    wait = float(exc.headers.get("Retry-After") or 1.0)
-                except (TypeError, ValueError):
-                    wait = 1.0
-                sleep(min(10.0, max(0.5, wait)))
-                continue
-            try:
-                detail = json.loads(exc.read().decode("utf-8")).get("message", "")
-            except Exception:
-                detail = ""
-            hint = {
-                401: " (check NOTION_TOKEN)",
-                404: " (share the parent page with your integration: page menu -> Connections)",
-            }.get(exc.code, "")
-            raise NotionError(
-                "Notion answered HTTP %s%s: %s" % (exc.code, hint, redact(detail, 300))
-            ) from exc
-        except (urllib.error.URLError, OSError) as exc:
-            raise NotionError("could not reach Notion: %s" % redact(exc, 200)) from exc
-    raise NotionError("Notion kept rate-limiting the request")
-
-
-def export_to_notion(
-    card: Dict[str, Any],
-    token: str,
-    parent: str,
-    *,
-    data_source: bool = False,
-    title_property: str = "Name",
-    version: Optional[str] = None,
-    opener: Callable[..., Any] = urllib.request.urlopen,
-    sleep: Callable[[float], None] = time.sleep,
-) -> Dict[str, Any]:
-    parent_id = parse_notion_id(parent)
-    if not parent_id:
-        raise NotionError(
-            "could not find a page id in %r; pass the page URL or its 32-character id"
-            % redact(parent, 80)
-        )
-    if not token:
-        raise NotionError(
-            "NOTION_TOKEN is not set (create an internal integration and share the parent page "
-            "with it)"
-        )
-    version = version or os.environ.get("NOTION_VERSION") or NOTION_DEFAULT_VERSION
-    blocks = notion_blocks(card)
-    title = [{"type": "text", "text": {"content": notion_title(card)}}]
-    body = {
-        "parent": {"data_source_id": parent_id} if data_source else {"page_id": parent_id},
-        "properties": {(title_property if data_source else "title"): {"title": title}},
-        "children": blocks[:NOTION_MAX_CHILDREN],
-    }
-    page = _notion_call("POST", "/pages", token, body, version, opener, sleep)
-    for start in range(NOTION_MAX_CHILDREN, len(blocks), NOTION_MAX_CHILDREN):
-        _notion_call(
-            "PATCH",
-            "/blocks/%s/children" % page.get("id"),
-            token,
-            {"children": blocks[start : start + NOTION_MAX_CHILDREN]},
-            version,
-            opener,
-            sleep,
-        )
-    return {"id": page.get("id"), "url": page.get("url"), "blocks": len(blocks)}
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 
 
 def compute_markers(
@@ -2725,7 +2407,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Claude Code config dir (transcripts, plugin registry)",
     )
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("outcomes", help="run or report controlled matched task trials")
 
     report = sub.add_parser(
         "report", parents=[common], help="scorecard, grade and recommendations for a time window"
@@ -2760,39 +2441,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip Claude Code transcripts (faster; loses tokens, hook latency, explicit use)",
     )
-    report.add_argument(
-        "--server",
-        action="store_true",
-        help="also ask the Cognee server what landed (COGNEE_API_KEY, --server-url)",
-    )
-    report.add_argument(
-        "--server-url", help="Cognee base URL (default: COGNEE_BASE_URL / COGNEE_LOCAL_API_URL)"
-    )
-    report.add_argument(
-        "--export-notion",
-        action="store_true",
-        help="create a Notion page with this report (needs NOTION_TOKEN)",
-    )
-    report.add_argument(
-        "--notion-parent",
-        default=os.environ.get("NOTION_PARENT_PAGE_ID", ""),
-        help="parent page URL or id (default: NOTION_PARENT_PAGE_ID)",
-    )
-    report.add_argument(
-        "--notion-data-source",
-        action="store_true",
-        help="treat --notion-parent as a data source (database) id",
-    )
-    report.add_argument(
-        "--notion-title-property",
-        default="Name",
-        help="title property name when the parent is a data source",
-    )
-    report.add_argument(
-        "--notion-dry-run",
-        metavar="FILE",
-        help="write the Notion payload to FILE instead of sending it",
-    )
 
     sub.add_parser(
         "markers",
@@ -2820,10 +2468,6 @@ def _utf8_stdout() -> bool:
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "outcomes":
-        from outcome_eval import main as outcome_main
-
-        return outcome_main(argv[1:])
     if not argv or argv[0] not in ("report", "markers", "-h", "--help"):
         argv.insert(0, "report")
     args = build_parser().parse_args(argv)
@@ -2878,37 +2522,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.out:
         Path(args.out).write_text(output, encoding="utf-8")
 
-    if args.notion_dry_run:
-        payload = {
-            "title": notion_title(card),
-            "parent": parse_notion_id(args.notion_parent),
-            "children": notion_blocks(card),
-        }
-        Path(args.notion_dry_run).write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        print(
-            "plugin_eval: Notion payload written to %s (nothing was sent)"
-            % redact(args.notion_dry_run),
-            file=sys.stderr,
-        )
-    elif args.export_notion:
-        try:
-            page = export_to_notion(
-                card,
-                os.environ.get("NOTION_TOKEN") or os.environ.get("NOTION_API_KEY") or "",
-                args.notion_parent,
-                data_source=args.notion_data_source,
-                title_property=args.notion_title_property,
-            )
-        except NotionError as exc:
-            print("plugin_eval: Notion export failed: %s" % exc, file=sys.stderr)
-            return 4
-        print(
-            "plugin_eval: exported to Notion: %s (%d blocks)"
-            % (page.get("url") or page.get("id"), page["blocks"]),
-            file=sys.stderr,
-        )
     return 0
 
 

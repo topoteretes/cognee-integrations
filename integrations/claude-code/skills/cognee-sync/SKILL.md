@@ -16,6 +16,8 @@ when_to_use: >-
 
 Bridge session cache entries into the permanent knowledge graph.
 
+In Cloud mode this skill can't authenticate from the shell; automatic recall and capture still work. The command then exits 2 and says why (the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only): pass that on and stop.
+
 ## Instructions
 
 Run the sync script:
@@ -23,6 +25,9 @@ Run the sync script:
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"
 ```
+
+A non-zero exit means nothing was synced (for example `skipped, no server
+credentials resolved` exits 1): report that, not a successful sync.
 
 ## What this does
 

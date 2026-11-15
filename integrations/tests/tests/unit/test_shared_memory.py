@@ -26,6 +26,16 @@ import asyncio
 import pytest
 from utils.suites import ALL_SUITES
 
+
+@pytest.fixture(autouse=True)
+def _needs_plugin_identity(request):
+    # The Claude Code plugin has no plugin identity and stores no key (SDK-1411).
+    if "suite" in request.fixturenames:
+        suite = request.getfixturevalue("suite")
+        if not suite.has_plugin_identity:
+            pytest.skip(f"{suite.name}: no plugin identity")
+
+
 PRINCIPAL_KEY = "test-api-key"
 ROLE = "cognee-agent"
 

@@ -34,6 +34,11 @@ Configuration:
   claude-code/sessions/<host id>.json — follows a dataset switch), falling
   back to the Cognee connection endpoint and COGNEE_PLUGIN_DATASET / agent_sessions.
 
+Server only: an unreachable server prints UNREACHABLE and exits 1 (no CLI
+fallback). In Cloud mode a shell has no key (Claude Code passes the plugin's
+Cloud key option to hooks only), so a search run from a shell exits 2 before
+any request.
+
 The hooks module runs this file directly (one fixed script, no shell);
 cognee-search.sh is a thin wrapper around it for the skills.
 """
@@ -42,13 +47,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from _env_file import load_env_file
+from _net import open_url
 
 # One-time config from ~/.cognee/.env (shell exports still win).
 load_env_file()
@@ -111,6 +116,8 @@ def _runtime() -> dict:
             os.environ["COGNEE_PLUGIN_IN_VENV"] = previous
     if not api_key:
         api_key = _cached_api_key(service_url)
+    # Before any request: a remote server with no key here can only 401.
+    _require_shell_auth(service_url, api_key, "cognee-search")
     if not session_id and service_url and api_key:
         session_id = _connection_session_id(service_url, api_key, https_context)
     return {
@@ -123,21 +130,39 @@ def _runtime() -> dict:
     }
 
 
-def _cached_api_key(service_url: str) -> str:
-    """The key cached at ~/.cognee-plugin/api_key.json, when it is for this server."""
-    cache_path = os.path.join(os.path.expanduser("~"), ".cognee-plugin", "api_key.json")
+def _require_shell_auth(service_url: str, api_key: str, tool: str) -> None:
+    """Exit 2, before any request, when a remote server has no key in this process.
+
+    A Cognee Cloud key is a plugin option Claude Code passes to the plugin's
+    hooks only, so a skill run from a shell has none; an unauthenticated
+    request could only 401. The check and its message live in _plugin_common.
+    """
+    previous = os.environ.get("COGNEE_PLUGIN_IN_VENV")
+    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
     try:
-        with open(cache_path, encoding="utf-8") as f:
-            cache = json.load(f)
-    except (OSError, ValueError):
+        from _plugin_common import require_shell_auth
+    except ImportError:
+        return
+    finally:
+        if previous is None:
+            os.environ.pop("COGNEE_PLUGIN_IN_VENV", None)
+        else:
+            os.environ["COGNEE_PLUGIN_IN_VENV"] = previous
+    require_shell_auth(service_url, api_key, tool)
+
+
+def _cached_api_key(service_url: str) -> str:
+    """The local server's owner key, looked up from that server ("" for Cloud).
+
+    No key is stored on disk; a Cloud key reaches only hook processes, through
+    the plugin options.
+    """
+    try:
+        import _plugin_common
+
+        return _plugin_common.load_cached_api_key(service_url)
+    except Exception:
         return ""
-    if not isinstance(cache, dict):
-        return ""
-    key = str(cache.get("api_key") or "").strip()
-    cached_url = str(cache.get("base_url") or "").strip().rstrip("/")
-    if key and (not cached_url or cached_url == service_url.rstrip("/")):
-        return key
-    return ""
 
 
 def _connection_session_id(service_url: str, api_key: str, https_context) -> str:
@@ -152,7 +177,7 @@ def _connection_session_id(service_url: str, api_key: str, https_context) -> str
     )
     try:
         context = https_context() if https_context else None
-        with urllib.request.urlopen(req, timeout=15.0, context=context) as resp:
+        with open_url(req, timeout=15.0, context=context) as resp:
             payload = json.loads(resp.read().decode("utf-8") or "{}")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return ""
@@ -192,19 +217,6 @@ def _recall(rt: dict, query: str, scope: str, top_k: str, dataset: str, code_que
         print(f"[cognee-search] recall client failed: {exc}", file=sys.stderr)
         return ""
     return UNREACHABLE if result == UNREACHABLE else json.dumps(result)
-
-
-def _cli_recall(*args: str) -> str:
-    """One `cognee-cli recall` run's stdout ("" when the CLI is missing or fails)."""
-    try:
-        ran = subprocess.run(
-            ["cognee-cli", "recall", *args, "-f", "json"],
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return ""
-    return ran.stdout
 
 
 def main(argv: list[str]) -> int:
@@ -273,7 +285,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     # A query is sent like any other text: <private> spans and secret shapes
-    # are removed first, for the server and the CLI fallback alike. The code
+    # are removed first. The code
     # query is JSON, so it is sanitized field by field and stays valid JSON.
     # A failure stops the search instead of sending the raw text.
     try:
@@ -329,41 +341,25 @@ def main(argv: list[str]) -> int:
     # cognee >= 1.6.0, and through the sync bridge before that).
     scope = '["code"]' if mode == "code" else '["graph"]'
 
-    # Server-first: the running server (/api/v1/recall) is the source of truth.
+    # Server only: the running server (/api/v1/recall) is the source of truth.
     # Only a 2xx response is authoritative (an empty list = genuinely no hits).
-    # Anything else comes back as UNREACHABLE, and the search falls back to
-    # cognee-cli with a warning — never reporting a server failure as "not
-    # found". The circuit breaker is the ONE at ~/.cognee-plugin/
-    # recall-breaker.json that the per-prompt hooks, doctor and the status line
-    # use (no COGNEE_PLUGIN_STATE_DIR override here).
+    # Anything else comes back as UNREACHABLE (or "" when the client itself
+    # failed) and the search is not run — never reported as "not found", and
+    # never answered from another backend. The circuit breaker is the ONE at
+    # ~/.cognee-plugin/recall-breaker.json that the per-prompt hooks, doctor and
+    # the status line use (no COGNEE_PLUGIN_STATE_DIR override here).
     recall_json = _recall(rt, query, scope, top_k, dataset, code_query)
 
     if recall_json and recall_json != UNREACHABLE:
         # Server answered — authoritative, even if the result is empty.
         print(recall_json)
         return 0
-    if mode == "code" or foreign:
-        # No CLI fallback for code searches or for another dataset: the code
-        # lane exists only on the server (>= 1.5.3), and a dataset addressed by
-        # UUID resolves only there — a CLI recall would answer from a different
-        # backend or identity and read as authoritative when it is not.
-        print(
-            "[cognee-search] server unreachable — search not run; retry once the server is back",
-            file=sys.stderr,
-        )
-        print(UNREACHABLE)
-        return 1
     print(
-        "[cognee-search] falling back to cognee-cli (degraded — empty CLI output is NOT "
-        "proof of absence; the server's POST /api/v1/recall is the ground truth)",
+        "[cognee-search] server unreachable — search not run; retry once the server is back",
         file=sys.stderr,
     )
-    # Auto recall names no dataset here either; a pinned recall keeps its own.
-    if routed:
-        sys.stdout.write(_cli_recall(query, "-k", top_k))
-    else:
-        sys.stdout.write(_cli_recall(query, "-d", dataset, "-k", top_k))
-    return 0
+    print(UNREACHABLE)
+    return 1
 
 
 if __name__ == "__main__":

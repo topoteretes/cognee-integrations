@@ -1,8 +1,5 @@
 {
-  "description": "Cognee memory: the settings hooks run the memory pipeline; the hooks module draws the live activity (desktop band, spinner, answer line).",
-  "modules": [
-    "./register.ts"
-  ],
+  "description": "Cognee memory: recall, capture, session learning and sync.",
   "hooks": {
     "SessionStart": [
       {
@@ -71,22 +68,6 @@
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/send-unit.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/send-unit.py\"",
             "async": true,
             "timeout": 60
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/credits-refresh.py\"",
-            "async": true
           }
         ]
       }

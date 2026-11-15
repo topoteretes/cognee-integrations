@@ -272,10 +272,7 @@ def test_the_isolation_scaffold_is_one_script_that_never_replaces_a_real_config(
     scripts = {(case / "isolate.sh").read_text(encoding="utf-8") for case in ALL_CASES}
     assert len(ALL_CASES) == 2 * len(SKILLS) + 4 and len(scripts) == 1
     (script,) = scripts
-    for setting in (
-        "COGNEE_CAPTURE=false",
-        "COGNEE_BASE_URL=https://cognee-eval.invalid",
-        "COGNEE_IDLE_DISABLED=true",
-    ):
-        assert f"\n{setting}\n" in script
+    # The env file can no longer name a server: the scaffold turns the plugin off.
+    assert "\nCOGNEE_PLUGIN_DISABLED=true\n" in script
+    assert "COGNEE_BASE_URL" not in script
     assert 'if [ -e "$env_file" ]; then' in script

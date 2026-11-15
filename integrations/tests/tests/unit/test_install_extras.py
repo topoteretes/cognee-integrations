@@ -38,6 +38,16 @@ _PROVIDER_ENV_VARS = (
 
 
 @pytest.fixture
+def database_extras(suite):
+    """Hosts whose own local server can run on a configured database or an
+    Ollama LLM. The Claude Code plugin's server always runs on the built-in
+    stores with an allowlisted environment and has no Ollama support in this
+    version, so it checks for no such driver (test_claude_second_review.py)."""
+    if suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: its server never uses a database or Ollama driver")
+
+
+@pytest.fixture
 def ss(suite, hook_module, monkeypatch):
     for var in _PROVIDER_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -52,7 +62,7 @@ def test_no_providers_configured_needs_no_extras(ss):
     assert ss._cognee_install_spec() == f"cognee=={ss._PINNED_COGNEE_VERSION}"
 
 
-def test_postgres_and_neo4j_detected(ss, monkeypatch):
+def test_postgres_and_neo4j_detected(ss, monkeypatch, database_extras):
     monkeypatch.setenv("DB_PROVIDER", "postgres")
     monkeypatch.setenv("GRAPH_DATABASE_PROVIDER", "neo4j")
     extras = ss._detect_required_extras()
@@ -62,18 +72,18 @@ def test_postgres_and_neo4j_detected(ss, monkeypatch):
     assert ss._cognee_install_spec() == f"cognee[{joined}]=={ss._PINNED_COGNEE_VERSION}"
 
 
-def test_pgvector_maps_to_postgres_binary_not_a_separate_extra(ss, monkeypatch):
+def test_pgvector_maps_to_postgres_binary_not_a_separate_extra(ss, monkeypatch, database_extras):
     monkeypatch.setenv("VECTOR_DB_PROVIDER", "pgvector")
     assert ss._detect_required_extras() == ["postgres-binary"]
 
 
-def test_postgres_and_pgvector_together_dont_duplicate_the_extra(ss, monkeypatch):
+def test_postgres_and_pgvector_together_dont_duplicate_the_extra(ss, monkeypatch, database_extras):
     monkeypatch.setenv("DB_PROVIDER", "postgres")
     monkeypatch.setenv("VECTOR_DB_PROVIDER", "pgvector")
     assert ss._detect_required_extras() == ["postgres-binary"]
 
 
-def test_fastembed_and_ollama_detected(ss, monkeypatch):
+def test_fastembed_and_ollama_detected(ss, monkeypatch, database_extras):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "fastembed")
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     extras = ss._detect_required_extras()
@@ -81,9 +91,52 @@ def test_fastembed_and_ollama_detected(ss, monkeypatch):
     assert "ollama" in extras
 
 
-def test_provider_values_are_case_insensitive(ss, monkeypatch):
+def test_provider_values_are_case_insensitive(ss, monkeypatch, database_extras):
     monkeypatch.setenv("DB_PROVIDER", "POSTGRES")
     assert "postgres-binary" in ss._detect_required_extras()
+
+
+@pytest.fixture
+def option_llm_providers(suite):
+    """Hosts that take the LLM provider from a plugin option and no longer
+    install cognee: the extras check is the only gate between an LLM provider
+    whose SDK the base install lacks and a server whose every LLM call fails."""
+    if not suite.keys_from_plugin_options:
+        pytest.skip(f"{suite.name}: installs cognee itself")
+
+
+@pytest.mark.parametrize(
+    ("provider", "extra"),
+    [("anthropic", "anthropic"), ("Anthropic", "anthropic"), ("mistral", "mistral")],
+)
+def test_llm_provider_sdk_extra_detected(ss, monkeypatch, option_llm_providers, provider, extra):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    assert ss._detect_required_extras() == [extra]
+    assert ss._cognee_install_spec() == f"cognee[{extra}]=={ss._PINNED_COGNEE_VERSION}"
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+def test_llm_providers_on_litellm_need_no_extra(ss, monkeypatch, option_llm_providers, provider):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    assert ss._detect_required_extras() == []
+
+
+def test_venv_without_the_llm_sdk_is_refused(ss, monkeypatch, option_llm_providers):
+    """A venv at the pin but without the provider's SDK is refused, and the
+    refusal names the extra, instead of booting a server that fails on every
+    LLM call."""
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setattr(ss, "_venv_cognee_version", lambda: ss._PINNED_COGNEE_VERSION)
+    monkeypatch.setattr(ss, "_venv_missing_extras", lambda extras: list(extras))
+    refusals = []
+    monkeypatch.setattr(
+        ss, "_refuse_local_runtime", lambda reason, detail: refusals.append((reason, detail))
+    )
+    assert ss.ensure_cognee_installed() is False
+    assert len(refusals) == 1
+    reason, detail = refusals[0]
+    assert "anthropic" in reason
+    assert detail["missing_extras"] == ["anthropic"]
 
 
 def test_unrecognized_provider_value_is_ignored_not_an_error(ss, monkeypatch):
@@ -138,4 +191,5 @@ def test_probe_failure_fails_soft(ss, monkeypatch):
         raise OSError("probe blew up")
 
     monkeypatch.setattr(ss.subprocess, "run", _boom)
+    monkeypatch.setattr(ss, "_EXTRA_SENTINEL_DISTS", {"neo4j": "neo4j"})
     assert ss._venv_missing_extras(["neo4j"]) == []

@@ -77,10 +77,13 @@ jobs:
         with:
           enable-cache: true
 
-      # The plugin builds its own venv (uv + a pinned cognee) on first
-      # SessionStart, which takes minutes. Locally the harness symlinks the
-      # developer's; in CI there is none, so cache it across runs instead.
-      # COGNEE_LIVE_ALLOW_BUILD lets the first (cache-miss) run build it.
+      # The Codex plugin builds its venv (uv + a pinned cognee) on first
+      # SessionStart, which takes minutes; the Claude Code plugin (1.8.2+) never
+      # installs anything and needs the venv to exist. Locally the harness
+      # symlinks the developer's; in CI there is none, so cache it across runs
+      # and build it explicitly when the cache has no venv at the pinned
+      # version (step below).
+      # COGNEE_LIVE_ALLOW_BUILD still lets the Codex plugin build it.
       # The venv's bin/python is a symlink into the runner image (its system or
       # tool-cache interpreter), so a venv cached on one image is dangling on
       # the next OS release. ImageOS (e.g. ubuntu24) is set by the runner; it
@@ -93,9 +96,32 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cognee-plugin/venv
-          key: cognee-plugin-venv-${{ runner.os }}-${{ steps.image.outputs.os }}-${{ hashFiles('integrations/claude-code/scripts/session-start.py') }}
+          key: cognee-plugin-venv-${{ runner.os }}-${{ steps.image.outputs.os }}-${{ hashFiles('integrations/codex/plugins/cognee/scripts/session-start.py', 'integrations/claude-code/scripts/session-start.py') }}
           restore-keys: |
             cognee-plugin-venv-${{ runner.os }}-${{ steps.image.outputs.os }}-
+
+      # The command the Claude Code plugin tells a local user to run, with its
+      # pinned cognee. Skipped only when the restored venv already holds that
+      # exact version and fastembed: restore-keys can bring back a venv built
+      # for an older pin, which the plugin refuses and the cache would then
+      # save again under the new key.
+      - name: Build the plugin runtime venv
+        run: |
+          pin="$(sed -n 's/^_PINNED_COGNEE_VERSION = "\(.*\)"$/\1/p' integrations/claude-code/scripts/session-start.py)"
+          if [ -z "$pin" ]; then
+            echo "::error::could not read _PINNED_COGNEE_VERSION from the Claude Code plugin"
+            exit 1
+          fi
+          venv="$HOME/.cognee-plugin/venv"
+          have="$("$venv/bin/python" -c 'import importlib.metadata as m, importlib.util as u; assert u.find_spec("fastembed"); print(m.version("cognee"))' 2>/dev/null || true)"
+          if [ "$have" = "$pin" ]; then
+            echo "venv restored from cache with cognee ${pin}"
+            exit 0
+          fi
+          echo "building the venv (cached cognee: ${have:-none}, pin: ${pin})"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install "cognee[fastembed]==${pin}"
 
       - name: Install test dependencies
         working-directory: integrations/tests

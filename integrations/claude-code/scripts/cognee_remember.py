@@ -17,10 +17,13 @@ Usage:
             With --file, positional <content> is not required.
 
 Configuration:
-  Resolves auth from env/api_key.json.
+  Resolves auth from the plugin option (hooks) or the local server. In Cloud
+  mode a shell has no key (Claude Code passes the Cloud key option to hooks
+  only), so a save run from a shell exits 2 before any request.
   Dataset comes from this launch's record (follows a dataset switch), then
   COGNEE_PLUGIN_DATASET, then agent_sessions.
-  Falls back to cognee-cli only if the server is unreachable.
+  Server only: an unreachable server prints UNREACHABLE and exits 1, and the
+  content is not saved (no CLI fallback).
 
 The hooks module runs this file directly (one fixed script, no shell);
 cognee-remember.sh is a thin wrapper around it for the skills.
@@ -29,7 +32,6 @@ cognee-remember.sh is a thin wrapper around it for the skills.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 
 from _env_file import load_env_file
@@ -42,7 +44,7 @@ UNREACHABLE = "UNREACHABLE"
 
 def _runtime() -> dict:
     """The server URL, key and dataset this launch writes with."""
-    from cognee_search import _cached_api_key, _configured_dataset
+    from cognee_search import _cached_api_key, _configured_dataset, _require_shell_auth
 
     service_url = (
         os.environ.get("COGNEE_BASE_URL")
@@ -72,6 +74,8 @@ def _runtime() -> dict:
             os.environ.pop("COGNEE_PLUGIN_IN_VENV", None)
         else:
             os.environ["COGNEE_PLUGIN_IN_VENV"] = previous
+    # Before any request: a remote server with no key here can only 401.
+    _require_shell_auth(service_url, api_key, "cognee-remember")
     return {
         "service_url": service_url,
         "api_key": api_key,
@@ -149,10 +153,10 @@ def main(argv: list[str]) -> int:
     if dataset_explicit:
         dataset_id = _shared_dataset_id(dataset)
 
-    # Server-first: POST to /api/v1/remember through _remember_http, which
-    # prints the result (and refreshes the credits marker). UNREACHABLE → fall
-    # back to cognee-cli and warn; any other result (ok or error) is
-    # authoritative and is not retried.
+    # Server only: POST to /api/v1/remember through _remember_http, which
+    # prints the result. Any result other
+    # than UNREACHABLE (ok or error) is authoritative and is not retried;
+    # UNREACHABLE means nothing was saved.
     import _remember_http
 
     result = UNREACHABLE
@@ -172,41 +176,12 @@ def main(argv: list[str]) -> int:
     if result != UNREACHABLE:
         _remember_http.report(result)
         return 0
-    if file_path:
-        # No CLI fallback for file uploads: the CLI path would re-read and
-        # rename the content, losing the extension-based code routing this
-        # mode exists for.
-        print(
-            "[cognee-remember] server unreachable — file upload NOT stored; "
-            "retry once the server is back",
-            file=sys.stderr,
-        )
-        print(UNREACHABLE)
-        return 1
     print(
-        "[cognee-remember] falling back to cognee-cli (degraded — server unreachable; "
-        "verify the store succeeded once the server is back)",
+        "[cognee-remember] server unreachable — content not saved; retry once the server is back",
         file=sys.stderr,
     )
-    # The server path sanitizes inside _remember_http; the CLI gets the same
-    # text. A failure stops here instead of storing the raw text.
-    try:
-        from _capture_policy import sanitize
-
-        content = sanitize(content)
-    except Exception as exc:
-        print(f"[cognee] could not sanitize the text: {exc}", file=sys.stderr)
-        return 1
-    try:
-        ran = subprocess.run(
-            ["cognee-cli", "remember", content, "-d", dataset, "--node-set", node_set],
-            capture_output=True,
-            text=True,
-        )
-        sys.stdout.write(ran.stdout)
-    except OSError:
-        pass
-    return 0
+    print(UNREACHABLE)
+    return 1
 
 
 if __name__ == "__main__":
