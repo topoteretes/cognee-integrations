@@ -265,11 +265,11 @@ def _active_base_url() -> str:
     own to compare, a marker written for someone else's *cloud* tenant was accepted by
     a *local* session. Defaulting here is what gives that guard teeth.
     """
-    for var in ("COGNEE_LOCAL_API_URL", "COGNEE_BASE_URL"):
-        url = os.environ.get(var, "").strip()
-        if url:
-            return url.rstrip("/")
-    return _DEFAULT_LOCAL_BASE_URL
+    url = (
+        os.environ.get("COGNEE_LOCAL_API_URL", "").strip()
+        or os.environ.get("COGNEE_BASE_URL", "").strip()
+    )
+    return url.rstrip("/") if url else _DEFAULT_LOCAL_BASE_URL
 
 
 def _path_safe(session_id: str) -> bool:
@@ -486,19 +486,11 @@ def _running_plugin_version() -> str:
     install path is version-pinned (``.../cognee-memory/<version>/scripts/``), so
     this file's own location identifies the running version.
     """
-    candidates = []
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
-    if root:
-        candidates.append(Path(root) / ".claude-plugin" / "plugin.json")
-    candidates.append(Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json")
-    for path in candidates:
-        try:
-            version = str(json.loads(path.read_text(encoding="utf-8")).get("version") or "").strip()
-            if version:
-                return version
-        except Exception:
-            continue
-    return ""
+    try:
+        from _version import PLUGIN_VERSION
+    except Exception:
+        return ""
+    return str(PLUGIN_VERSION or "").strip()
 
 
 def _parse_semver(value: str):

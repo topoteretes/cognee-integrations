@@ -112,8 +112,8 @@ def _unquote(value: str) -> str:
     return value
 
 
-def _blocked(key: str) -> bool:
-    return key in _DENYLIST_EXACT or key.startswith(_DENYLIST_PREFIXES)
+def _blocked(name: str) -> bool:
+    return name in _DENYLIST_EXACT or name.startswith(_DENYLIST_PREFIXES)
 
 
 def parse_env_file(path: Path) -> dict:
@@ -141,11 +141,11 @@ def parse_env_file(path: Path) -> dict:
             continue
         if line.startswith("export "):
             line = line[len("export ") :].lstrip()
-        key, _, value = line.partition("=")
-        key = key.strip()
-        if not key or not all(c.isalnum() or c == "_" for c in key):
+        name, _, value = line.partition("=")
+        name = name.strip()
+        if not name or not all(c.isalnum() or c == "_" for c in name):
             continue
-        result[key] = _unquote(value)
+        result[name] = _unquote(value)
     return result
 
 
@@ -176,12 +176,12 @@ def load_env_file() -> None:
         path = env_file_path()
         if path.is_file():
             _tighten_permissions(path)
-            for key, value in parse_env_file(path).items():
-                if _blocked(key):
+            for name, value in parse_env_file(path).items():
+                if _blocked(name):
                     continue
-                if key not in os.environ:
-                    os.environ[key] = value
-                    _injected[key] = value
+                if name not in os.environ:
+                    os.environ[name] = value
+                    _injected[name] = value
     except Exception:
         pass
     _apply_backend_switch()
@@ -214,19 +214,19 @@ def refresh_env_file() -> None:
         _seen = stamp
     except Exception:
         return
-    for key, last in list(_injected.items()):
-        if os.environ.get(key) != last:
+    for name, last in list(_injected.items()):
+        if os.environ.get(name) != last:
             # Set by something else since (an export, a test): theirs now.
-            _injected.pop(key)
-        elif key not in fresh:
-            os.environ.pop(key, None)
-            _injected.pop(key)
-    for key, value in fresh.items():
-        if _blocked(key):
+            _injected.pop(name)
+        elif name not in fresh:
+            os.environ.pop(name, None)
+            _injected.pop(name)
+    for name, value in fresh.items():
+        if _blocked(name):
             continue
-        if key in _injected or key not in os.environ:
-            os.environ[key] = value
-            _injected[key] = value
+        if name in _injected or name not in os.environ:
+            os.environ[name] = value
+            _injected[name] = value
     _apply_backend_switch()
 
 

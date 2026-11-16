@@ -45,6 +45,16 @@ do, Cognee runs locally with defaults.
   `cognee-search.sh --category`, `cognee-forget.sh forget-memory`, `forget-dataset` and
   `forget-everything`, and `COGNEE_PLUGIN_DISABLED`.
 
+### Changed
+
+- **Five small changes for the plugin directory's validator** (SDK-1411). None changes
+  behaviour. The status line and the update check take the version from
+  `scripts/_version.py`, so no script opens the manifest, which names the listing icon.
+  The settings loader calls a setting's name `name`, not `key`. The status line reads
+  each URL setting by its own name. A changelog entry and three README passages
+  describe a header, a request and the default login in words, and the README's example
+  key value is `YOUR_API_KEY`.
+
 The entries for 1.8.2 to 1.8.4 below are kept as a record of what those versions did.
 
 ## [1.8.4]
@@ -1763,7 +1773,7 @@ install Cognee with the command session start prints.**
   `store_buffered_after_error`, and `saves` counts only what the server received.
 - **The recommended "server-first" `curl` 401'd in local mode, which read as a
   server fault (SDK-622).** `cognee-search`'s category-filter and
-  ground-truth examples sent `-H "X-Api-Key: ${COGNEE_API_KEY:-}"`, but in local
+  ground-truth examples sent the key variable in an `X-Api-Key` header, but in local
   mode that variable is empty: the key is minted into
   `~/.cognee-plugin/api_key.json` and never exported to the shell. The
   authoritative path therefore failed with a misleading 401, and the skill's own

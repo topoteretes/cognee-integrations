@@ -185,7 +185,7 @@ Then configure your runtime mode — **once** — in `~/.cognee/.env`. The file 
 mkdir -p ~/.cognee
 cat >> ~/.cognee/.env <<'EOF'
 COGNEE_BASE_URL="https://your-instance.cognee.ai"
-COGNEE_API_KEY="ck_..."
+COGNEE_API_KEY="YOUR_API_KEY"
 EOF
 chmod 600 ~/.cognee/.env
 ```
@@ -204,7 +204,7 @@ chmod 600 ~/.cognee/.env
 
 — or set nothing at all and let it run on your **Claude subscription**: with no `LLM_API_KEY` configured and the `claude` CLI on PATH, session start switches the local server's LLM calls to the [Claude observer](#claude-observer-local-mode-on-your-claude-subscription) (`claude -p` behind a loopback OpenAI-compatible shim) and embeddings to a local model. No key, no extra account.
 
-**Default user and its password.** The local server is started with `DEFAULT_USER_EMAIL=default_user@example.com` and `DEFAULT_USER_PASSWORD=default_password`, which is how cognee 1.6.0 and later create the default user at all (a server started without `DEFAULT_USER_PASSWORD` creates no default account, and the password is set once and never rewritten). The plugin logs in as that user to mint its owner API key, so a fresh install needs no manual step and an existing install keeps working. Exporting `DEFAULT_USER_EMAIL`/`DEFAULT_USER_PASSWORD` yourself overrides what the plugin passes; `COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` pick the user the plugin logs in as, and a non-default user must already exist on the server. When pointing at a server you run yourself (`COGNEE_BASE_URL`), either start it with `DEFAULT_USER_PASSWORD` set to the same value as `COGNEE_USER_PASSWORD`, or set `COGNEE_API_KEY` so no login is needed; a server without either answers the login with an error that says so.
+**Default user and its password.** The local server is started with cognee's default user settings (the email `default_user@example.com` and the stock default password), which is how cognee 1.6.0 and later create the default user at all (a server started without `DEFAULT_USER_PASSWORD` creates no default account, and the password is set once and never rewritten). The plugin logs in as that user to mint its owner API key, so a fresh install needs no manual step and an existing install keeps working. Exporting `DEFAULT_USER_EMAIL`/`DEFAULT_USER_PASSWORD` yourself overrides what the plugin passes; `COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` pick the user the plugin logs in as, and a non-default user must already exist on the server. When pointing at a server you run yourself (`COGNEE_BASE_URL`), either start it with `DEFAULT_USER_PASSWORD` set to the same value as `COGNEE_USER_PASSWORD`, or set `COGNEE_API_KEY` so no login is needed; a server without either answers the login with an error that says so.
 
 **Windows (PowerShell)** — same idea, same file:
 
@@ -212,7 +212,7 @@ chmod 600 ~/.cognee/.env
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.cognee" | Out-Null
 @'
 COGNEE_BASE_URL="https://your-instance.cognee.ai"
-COGNEE_API_KEY="ck_..."
+COGNEE_API_KEY="YOUR_API_KEY"
 '@ | Add-Content "$env:USERPROFILE\.cognee\.env"
 ```
 
@@ -1534,7 +1534,7 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 **Recall returns empty but data was ingested**
 - Recall is auto (the server picks the best-matching dataset, or searches every readable one when it cannot narrow; routing needs a cognee 1.6.6 server, and an older one always searches every readable dataset) unless you restricted it to one by picking or pinning a dataset or by setting `COGNEE_PLUGIN_RECALL_MODE=pinned`; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
-- To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
+- To verify, call the recall API directly without a dataset filter: send a `POST` to `/api/v1/recall` on your server with the body `{"query":"..."}`
 
 **Session not resolving / wrong session shown**
 - Check `~/.cognee-plugin/claude-code/sessions/<host_session_id>.json` — this is the map file for your terminal.
