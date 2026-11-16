@@ -115,22 +115,22 @@ case "$CMD" in
         [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "Error: forget requires <dataset_id> <data_id>" >&2; usage; exit 1; }
         validate_uuid "$2"
         validate_uuid "$3"
-        # Body built with json.dumps, not string interpolation, and the values
-        # passed through the environment so they never touch argv or the
-        # Python source. Belt and braces with validate_uuid above: this helper
-        # must only ever be able to express a single-document delete.
-        payload="$(FORGET_DATASET_ID="$2" FORGET_DATA_ID="$3" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "dataId": os.environ["FORGET_DATA_ID"]}))')"
+        # Body built with json.dumps, not string interpolation, from the two
+        # ids as arguments, so they never become part of the Python source.
+        # Belt and braces with validate_uuid above: this helper must only ever
+        # be able to express a single-document delete.
+        payload="$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1], "dataId": sys.argv[2]}))' "$2" "$3")"
         api_forget "$payload"
         ;;
     forget-memory)
         [ -n "${2:-}" ] || { echo "Error: forget-memory requires <dataset_id>" >&2; usage; exit 1; }
         validate_uuid "$2"
-        api_forget "$(FORGET_DATASET_ID="$2" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "memoryOnly": True}))')"
+        api_forget "$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1], "memoryOnly": True}))' "$2")"
         ;;
     forget-dataset)
         [ -n "${2:-}" ] || { echo "Error: forget-dataset requires <dataset_id>" >&2; usage; exit 1; }
         validate_uuid "$2"
-        api_forget "$(FORGET_DATASET_ID="$2" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"]}))')"
+        api_forget "$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1]}))' "$2")"
         ;;
     forget-everything)
         # Deletes every dataset the user owns. The flag has to be typed out so

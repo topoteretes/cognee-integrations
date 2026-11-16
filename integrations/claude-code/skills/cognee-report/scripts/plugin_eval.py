@@ -674,7 +674,7 @@ def analyze_recalls(
 ) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]]]]:
     """Recall metrics, plus per-session in-window recalls for the transcript pass."""
     stats: Dict[str, Any] = {}
-    seen: Dict[str, Set[str]] = defaultdict(set)
+    seen: Dict[str, Set[str]] = defaultdict(lambda: set())
     scope_hits: Counter = Counter()
     scope_ms: Dict[str, List[float]] = defaultdict(list)
     slowest_scope_ms: List[float] = []
