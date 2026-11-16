@@ -67,7 +67,7 @@ _TEMPLATE = """\
 # (COGNEE_CLAUDE_BACKEND / COGNEE_CODEX_BACKEND target one plugin only.)
 
 ## Cloud / remote mode — point the plugins at a Cognee instance:
-# COGNEE_BASE_URL="https://your-instance.cognee.ai"
+# COGNEE_BASE_URL="<your Cognee Cloud URL>"
 # COGNEE_API_KEY="ck_..."
 
 ## Local mode (default when COGNEE_BASE_URL is unset) — the plugin runs a

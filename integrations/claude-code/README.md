@@ -531,7 +531,7 @@ compaction, gets a block of about 2,000 characters:
 ```
 Project memory (Cognee), learned from 4 earlier sessions in the agent_sessions dataset. Check it before exploring: …
 Lessons:
-- All 212 unit tests pass; run them with `uv run pytest -q`. (session 2026-11-03, commit 1a2b3c4)
+- The unit tests run with `uv run pytest -q`, and all 212 succeed. (session 2026-11-03, commit 1a2b3c4)
 - Edit on an unchanged string fails with "No changes to make" → use: rewrite the file with a script. (seen in 2 sessions) (session 2026-11-02, commit 9f8e7d6; app.py changed since)
 Recent commits (newest first):
 - 5d6e7f8 (2026-11-04): src/app.py, tests/test_app.py (+40/−12 lines)

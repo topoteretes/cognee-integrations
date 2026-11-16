@@ -53,7 +53,8 @@ do, Cognee runs locally with defaults.
   The settings loader calls a setting's name `name`, not `key`. The status line reads
   each URL setting by its own name. A changelog entry and three README passages
   describe a header, a request and the default login in words, and the README's example
-  key value is `YOUR_API_KEY`.
+  key value is `YOUR_API_KEY`. The settings template names the Cloud URL without an
+  example host.
 
 The entries for 1.8.2 to 1.8.4 below are kept as a record of what those versions did.
 
@@ -275,11 +276,11 @@ install Cognee with the command session start prints.**
   once. `COGNEE_DISABLE_AUTO_MEMORY` no longer applies.
 - **The Claude observer passes no credential.** The `claude -p` child it runs gets only
   an allowlisted environment (path, home, config dir, locale, proxy and certificate
-  settings). A login that lives only in `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
+  settings). A login that lives only in the Claude CLI's long-lived login variable
   can no longer run the observer; set the LLM API key option instead. The observer no
   longer opens the local server's `.env` to decide whether to start. When the observer
   cannot answer, the status line and doctor say it can use only Claude Code's stored
-  login (not Bedrock, Vertex, a gateway or setup-token).
+  login (not Bedrock, Vertex, a gateway or a long-lived CLI login).
 - **Doctor reports what session start decided.** Run from a shell it has no plugin
   options, so it shows the key source, LLM provider and model, and observer state from
   the newest launch record ("as of session start"), which holds booleans and names
