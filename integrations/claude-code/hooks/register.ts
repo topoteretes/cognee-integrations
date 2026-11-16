@@ -1,45 +1,36 @@
 // Cognee memory: the in-process layer of the plugin.
 //
 // The settings hooks in hooks.json run the memory pipeline (recall, capture,
-// learning from the session, sync) exactly as before. This module adds what
-// only an in-process module can:
+// learning from the session, sync). This module only draws what they report.
+// It starts no program, opens no connection and writes no file: it reads the
+// files the plugin's scripts write under ~/.cognee-plugin/claude-code, and
+// keeps a few values in its own store for the scripts to read.
 //
-//   * the status row, above the prompt on every surface: it runs the plugin's
-//     own status-line renderer in `--json` mode and lays the result out, so
-//     the band shows the row the settings-file status line shows (the badge
-//     included). In a
-//     terminal the renderer marks the session (`band/<session>.json`) when
-//     this module asks, and then prints nothing for it, so the row is never
-//     drawn twice;
-//     with the `band` option off the settings status line is back below;
-//   * live activity: it reads the per-session marker the hooks write
-//     (`~/.cognee-plugin/claude-code/phase/<session>.json`) and shows it on
-//     the row and after the spinner (the answer's own credit line is the
-//     agent's, from the recall hook's instruction);
-//   * the dataset name on the row is a picker: choosing another writable
-//     dataset, or typing the name of a new one, switches the session there
-//     without a model turn (`/cognee-dataset <name>` does the same from the
-//     prompt);
-//   * a `see fix` button beside a red ✕ on the row: a dialog pane that says what
-//     is wrong in plain words and how to fix it, runs the plugin's doctor, and
-//     for a key or URL problem takes the value and writes it to ~/.cognee/.env;
+//   * the status row, above the prompt on every surface, from
+//     status/<session>.json, which every hook and each run of the settings
+//     status line keep current. The module records in its store that it
+//     draws the row (`band:<session>`), and the settings status line then
+//     prints nothing for that session, so the row is never drawn twice; with
+//     the `band` option off the settings status line is back below;
+//   * live activity: the per-session marker the hooks write
+//     (phase/<session>.json), shown on the row and after the spinner (the
+//     answer's own credit line is the agent's, from the recall hook's
+//     instruction);
+//   * the dataset name on the row is a picker: its list and the recall mode
+//     come from mod/<session>.json. Choosing another writable dataset, or
+//     typing the name of a new one, saves the pick in the store
+//     (`pick:<session>`); the plugin's prompt hook switches the session
+//     before it recalls, so the pick takes effect with the next message
+//     (`/cognee-dataset <name>` does the same from the prompt);
+//   * a `see fix` button beside a red ✕ on the row: a dialog pane that says
+//     what is wrong in plain words and how to fix it;
 //   * a first-run tour: three dim hint lines under the row, each about the
-//     thing above it, shown once per machine (the plugin's store remembers)
-//     and again on `/cognee-tour`;
-//   * two tools the model calls directly, `mcp__cognee-memory__search` and
-//     `mcp__cognee-memory__remember`, served by the plugin's own Python
-//     scripts: no skill file to read, no Bash row, structured arguments.
+//     thing above it, shown once per machine (the store remembers) and again
+//     on `/cognee-tour`.
 //
-// Everything the module runs is one of the plugin's own Python scripts, named
-// in full at its call site and started directly under a Python interpreter
-// (never a shell), as a local process; the only network traffic is theirs,
-// on the person's or the model's
-// explicit action, plus the listing of the writable datasets for the picker
-// (once the SessionStart hook has run; a few more tries while a server is
-// still starting). Nothing here runs on a fixed timer while the session is
-// idle: the marker is read on the events the hooks fire, and polled once a
-// second only while an operation is running (a server boot the hook handed
-// off included) or for a short window after one was started.
+// Nothing here runs on a fixed timer while the session is idle: the files
+// are read on the events the hooks fire, and polled once a second only while
+// an operation is running or for a short window after one was started.
 //
 // Only native events are hooked (prompt.submit, tool.call, turn.complete,
 // session.compact, session.start, session.end), never the classic.* mirrors
@@ -102,8 +93,6 @@ const STALE_MS = 90_000
 const DIM_AFTER_MS = 60_000
 // A result older than this is no longer news: it leaves the row.
 const HIDE_AFTER_MS = 300_000
-const RENDERER_TIMEOUT_MS = 5000
-const RENDERER_RETRY_MS = 60_000
 // Phases whose settings hook runs async, so the terminal spinner shows no
 // statusMessage for them; the mod adds its own suffix there. The sync hooks
 // (recall, anchor, session start) already announce themselves in a terminal.
@@ -124,37 +113,9 @@ const ACTIVE_LABELS = {
   switching: 'switching dataset…',
 } as const
 type Phase = keyof typeof ACTIVE_LABELS
-// What the module runs itself shows after a terminal spinner too: the tool row
-// there says only which tool runs.
-const OWN_PHASES = ['searching', 'remembering', 'switching']
-// How a call to each of the plugin's tools is labelled in the transcript.
-const TOOL_ROW_LABELS: Record<string, string> = {
-  'mcp__cognee-memory__search': 'Cognee search',
-  'mcp__cognee-memory__remember': 'Cognee remember',
-}
+// Phases the module started itself. None are left: it starts no work.
+const OWN_PHASES: string[] = []
 
-const SEARCH_TIMEOUT_MS = 60_000
-// Above the wrapper's own worst case (a 120 s POST, an 8 s wait for the
-// cognify to become queryable, the interpreter's start), so the module never
-// cuts off a write that is still in flight and then calls it not stored.
-const REMEMBER_TIMEOUT_MS = 150_000
-// What the remember tool takes in one call. Each call runs a cognify on the
-// tenant's key (an LLM pass per chunk plus embeddings), and a typed tool
-// whose description invites a whole file lowers the bar for a large one.
-// Past these the call is refused with a pointer to the cognee-remember
-// skill, which has no cap.
-const REMEMBER_MAX_CHARS = 16_000
-const REMEMBER_MAX_FILE_BYTES = 64_000
-// And per session: each call is a paid cognify, and nothing else bounds how
-// many the model makes. Past either the call is refused with a pointer to the
-// skill, which has no allowance, so a person who wants more is never stopped.
-const REMEMBER_SESSION_CALLS = 5
-const REMEMBER_SESSION_BYTES = 64_000
-let rememberCalls = 0
-let rememberBytes = 0
-// The listing makes several HTTP calls of up to 15 s each; its budget sits
-// above their sum, so a slow server is a late list, not a wiped one.
-const LIST_TIMEOUT_MS = 45_000
 // A listing that fails is tried again: it runs before the SessionStart hook
 // has written the launch record it needs, or against a server that is up but
 // not answering. The wait grows with each attempt (5 s, 10 s, ...), and after
@@ -163,14 +124,6 @@ const LIST_TIMEOUT_MS = 45_000
 // is not an attempt: the listing waits for the `setting_up` phase to end.
 const LIST_RETRY_MS = 5_000
 const LIST_MAX_ATTEMPTS = 5
-// A switch only starts the sync of the session it leaves (it never waits for
-// it), so what remains is a few HTTP calls of up to 15 s each.
-const SWITCH_TIMEOUT_MS = 120_000
-const NODE_SETS: Record<string, string> = {
-  user: 'user_context',
-  project: 'project_docs',
-  agent: 'agent_actions',
-}
 
 // ── module state (reset on a reload, which is fine: it is all redrawn) ──────
 let sessionId = ''
@@ -183,12 +136,11 @@ let adoptWatch: { cancel: () => void } | null = null
 // Until when the row reads "connecting…" after a /clear or /resume while the
 // new conversation is not bound yet (the adopt watch's own window).
 let adoptUntil = 0
-let phaseInFlight = false
-let rendererPython: string | null = null
-let rendererFailures = 0
-// When the renderer last failed for the third time: the cutoff below expires
-// after RENDERER_RETRY_MS, so a slow start does not freeze the row for good.
-let rendererFailedAt = 0
+let stateRoot = ''
+// The pick waiting for the prompt hook: when it was saved, and how many
+// prompts have gone by since without the hook reporting on it.
+let pickAt = 0
+let pickPrompts = 0
 let snapshotInFlight = false
 let snapshot: Snapshot | null = null
 let active: Activity | null = null
@@ -230,7 +182,6 @@ const WAVE_SVG = `<svg width="1516" height="1516" viewBox="0 0 1516 1516" fill="
 let purple = PURPLE_DARK
 let bandOn = true
 let spinnerOn = true
-let toolsOn = true
 
 // The dataset picker on the band.
 type DatasetRow = { name: string; id: string; current: boolean }
@@ -272,41 +223,37 @@ let tourStep = -1
 let tourChecked = false
 
 // The fix dialog: what the row's reason means and what to do about it. Each
-// guide is plain words first, then steps; `field` names the env-file variable
-// the pane takes a value for, when one value is the fix.
+// guide is plain words first, then steps. The dialog runs nothing and writes
+// nothing: the steps say what to run or which line to add.
 const FIX_PANE = 'cognee-fix'
-const DOCTOR_TIMEOUT_MS = 30_000
-type FixGuide = { title: string; what: string; steps: string[]; field?: { name: string; placeholder: string } }
+type FixGuide = { title: string; what: string; steps: string[] }
 const FIX_GUIDES: Record<string, FixGuide> = {
   incorrect_cognee_api_key: {
     title: 'The memory server rejected the plugin\'s API key',
     what: 'The key this plugin sends to the Cognee server (`COGNEE_API_KEY`) is missing, wrong or expired, so nothing can be recalled or saved.',
     steps: [
-      '**Cloud:** paste the API key from your Cognee Cloud account below, or put `COGNEE_API_KEY=ck_…` in `~/.cognee/.env`. A key exported in your shell wins over the file.',
+      '**Cloud:** put the API key from your Cognee Cloud account in `~/.cognee/.env` as `COGNEE_API_KEY=ck_…`. A key exported in your shell wins over the file.',
       '**Local:** delete `~/.cognee-plugin/api_key.json` and start a new session; the plugin mints a fresh key from the local server.',
-      'With a plugin identity (`COGNEE_PLUGIN_IDENTITY`), **run doctor** below: it says whether the cached identity credential was the one rejected.',
+      'With a plugin identity (`COGNEE_PLUGIN_IDENTITY`), run the doctor (ask Claude to run `scripts/cognee-doctor.sh` from this plugin): it says whether the cached identity credential was the one rejected.',
       'A new prompt tries the new key; a new session applies it everywhere.',
     ],
-    field: { name: 'COGNEE_API_KEY', placeholder: 'ck_… (saved to ~/.cognee/.env)' },
   },
   incorrect_llm_api_key: {
     title: 'The local server cannot reach its LLM',
     what: 'The Cognee server on this machine builds memory with an LLM, and the key it uses (`LLM_API_KEY`) is missing or the provider rejected it. The server itself is fine.',
     steps: [
-      'Paste a working provider key below, or put `LLM_API_KEY=…` (and `LLM_PROVIDER` if not OpenAI) in `~/.cognee/.env`.',
+      'Put a working provider key in `~/.cognee/.env` as `LLM_API_KEY=…` (and `LLM_PROVIDER` if not OpenAI).',
       'Or use your Claude subscription instead: remove `LLM_API_KEY` from `~/.cognee/.env` and keep the `claude` CLI on PATH; the next session routes the server\'s LLM calls through it.',
       'Start a new session: the server reads its key at start.',
     ],
-    field: { name: 'LLM_API_KEY', placeholder: 'sk-… (saved to ~/.cognee/.env)' },
   },
   missing_cognee_base_url: {
     title: 'Cloud mode is forced, but no server URL is configured',
     what: '`COGNEE_BACKEND=cloud` is exported in this shell, and no `COGNEE_BASE_URL` is set anywhere, so there is no server to talk to.',
     steps: [
-      'Paste your Cognee Cloud URL below (it is saved as `COGNEE_BASE_URL` in `~/.cognee/.env`), and make sure `COGNEE_API_KEY` is set too.',
+      'Put your Cognee Cloud URL in `~/.cognee/.env` as `COGNEE_BASE_URL=…`, and make sure `COGNEE_API_KEY` is set too.',
       'Or go local for this terminal: `unset COGNEE_BACKEND`, then start a new session.',
     ],
-    field: { name: 'COGNEE_BASE_URL', placeholder: 'https://your-instance.cognee.ai' },
   },
   cognee_needs_python_3_10: {
     title: 'Local mode needs a Python the server can run on',
@@ -323,7 +270,7 @@ const FIX_GUIDES: Record<string, FixGuide> = {
     steps: [
       '**Local:** start a new session; the plugin starts the server again. If it keeps failing, `~/.cognee-plugin/claude-code/hook.log` says why.',
       '**Cloud:** check `COGNEE_BASE_URL` in `~/.cognee/.env` (or your shell), then your network or VPN.',
-      '**Run doctor** below: it shows the URL in use, the mode and the health check.',
+      'Run the doctor (ask Claude to run `scripts/cognee-doctor.sh` from this plugin): it shows the URL in use, the mode and the health check.',
       'The dot turns green again on the next successful recall.',
     ],
   },
@@ -331,7 +278,7 @@ const FIX_GUIDES: Record<string, FixGuide> = {
     title: 'The memory server is answering with errors',
     what: 'The server is up but replied with a server error (HTTP 5xx) to the last requests. Memory is not read or written until it recovers.',
     steps: [
-      '**Run doctor** below for the health check and the server version.',
+      'Run the doctor (ask Claude to run `scripts/cognee-doctor.sh` from this plugin) for the health check and the server version.',
       '**Local:** start a new session to restart the server; `~/.cognee-plugin/claude-code/hook.log` holds the error.',
       '**Cloud:** retry in a moment; if it persists, the error belongs to the Cognee team.',
     ],
@@ -342,25 +289,21 @@ const FIX_GUIDES: Record<string, FixGuide> = {
     steps: [
       'Wait a little and send another prompt; a single answer in time clears the mark.',
       'On a slow or loaded server, raise the per-prompt budget: `COGNEE_READY_PROBE_TIMEOUT=6` in `~/.cognee/.env`.',
-      '**Run doctor** below to see whether the health check answers at all.',
+      'Run the doctor (ask Claude to run `scripts/cognee-doctor.sh` from this plugin) to see whether the health check answers at all.',
     ],
   },
 }
 const FIX_FALLBACK: FixGuide = {
   title: 'Memory reported a problem',
-  what: 'The row shows a reason the plugin recorded; the doctor report below has the details.',
-  steps: ['**Run doctor** below.', 'A new session re-checks everything.'],
+  what: 'The row shows a reason the plugin recorded; the doctor report has the details.',
+  steps: ['Run the doctor: ask Claude to run `scripts/cognee-doctor.sh` from this plugin.', 'A new session re-checks everything.'],
 }
 let fixReason = ''
 let fixOpen = false
-let doctorOutput = ''
-let doctorRunning = false
-let fixNote: { text: string; isError: boolean } | null = null
 // One successful listing per session, refreshed after a switch or by
 // /cognee-dataset; a failed one is retried a few times (LIST_MAX_ATTEMPTS).
 let datasetsListed = false
 let datasetsListing = false
-let datasetsInFlight: Promise<void> | null = null
 let datasetsAttempts = 0
 let datasetsRetryAt = 0
 // A listing put off because the worker was still booting the server.
@@ -513,74 +456,6 @@ function asText(value: unknown): string {
   }
 }
 
-// One recall entry (the wrapper's /api/v1/recall item) as text.
-function hitText(entry: Record<string, unknown>): string {
-  const source = asText(entry.source)
-  if (source === 'trace') {
-    const parts = [`${asText(entry.origin_function) || '?'} — ${asText(entry.status)}`]
-    if (entry.session_feedback) parts.push(`feedback: ${asText(entry.session_feedback)}`)
-    if (entry.method_return_value) parts.push(`output: ${asText(entry.method_return_value).slice(0, 600)}`)
-    return parts.join('\n')
-  }
-  const text = asText(entry.text) || asText(entry.content)
-  if (text) return text
-  const lines: string[] = []
-  if (entry.question) lines.push(`Q: ${asText(entry.question)}`)
-  if (entry.answer) lines.push(`A: ${asText(entry.answer)}`)
-  return lines.join('\n')
-}
-
-// What a search wrapper printed, as the model and the pane read it.
-function formatSearch(stdout: string, exitCode: number): { text: string; count: number; isError: boolean } {
-  const raw = stdout.trim()
-  if (!raw || raw === 'UNREACHABLE' || (exitCode !== 0 && !raw.startsWith('[') && !raw.startsWith('{'))) {
-    return { text: 'Cognee server unreachable: the search did not run. Retry once memory is ready.', count: 0, isError: true }
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return { text: raw, count: raw ? 1 : 0, isError: exitCode !== 0 }
-  }
-  if (Array.isArray(parsed)) {
-    const entries = parsed.filter(x => x && typeof x === 'object') as Record<string, unknown>[]
-    if (entries.length === 0) return { text: 'No memories matched.', count: 0, isError: false }
-    const blocks = entries.map((entry, i) => {
-      const source = asText(entry.source) || 'memory'
-      return `### ${i + 1}. ${source}\n${hitText(entry).trim()}`
-    })
-    return { text: blocks.join('\n\n'), count: entries.length, isError: false }
-  }
-  if (parsed && typeof parsed === 'object' && 'error' in parsed) {
-    return { text: `Cognee search failed: ${asText((parsed as { error: unknown }).error)}`, count: 0, isError: true }
-  }
-  return { text: raw, count: 1, isError: false }
-}
-
-// What the remember wrapper printed, as one line for the model.
-function formatRemember(stdout: string, exitCode: number, dataset: string): { text: string; isError: boolean } {
-  const raw = stdout.trim()
-  if (!raw || raw === 'UNREACHABLE') {
-    return { text: 'Cognee server unreachable: nothing was stored. Retry once memory is ready.', isError: true }
-  }
-  let parsed: Record<string, unknown> = {}
-  try {
-    const value = JSON.parse(raw)
-    if (value && typeof value === 'object') parsed = value as Record<string, unknown>
-  } catch {
-    return { text: raw, isError: exitCode !== 0 }
-  }
-  if (parsed.error) return { text: `Cognee remember failed: ${asText(parsed.error)}`, isError: true }
-  if (parsed.ok === false) return { text: `Cognee rejected the write: ${raw}`, isError: true }
-  // The wrapper names the dataset it wrote to; the band's snapshot can lag a
-  // switch, so it only stands in when the wrapper did not say.
-  const where = asText(parsed.dataset) || dataset || 'the active dataset'
-  if (parsed.queryable === true) return { text: `Stored in ${where}; it is in the graph and recall will find it.`, isError: false }
-  const outcome = asText(parsed.wait_outcome)
-  if (outcome === 'errored') return { text: `Stored in ${where}, but building the graph from it failed; check the server log.`, isError: true }
-  return { text: `Stored in ${where}; the graph is still being built from it, so recall finds it in a moment.`, isError: false }
-}
-
 // "auto" names the recall mode in switch-dataset.py, so no dataset can be named so.
 function isReservedName(name: string): boolean {
   return name.trim().toLowerCase() === 'auto'
@@ -604,12 +479,38 @@ function datasetRows(value: unknown): DatasetRow[] {
 }
 
 // ── helpers that reach the engine ───────────────────────────────────────────
-// The module reads and writes no file. The plugin's state lives in
-// ~/.cognee-plugin/claude-code and belongs to the plugin's scripts: the
-// renderer answers with this session's activity marker (see readPhase) and
-// keeps the band/<session>.json marker (see refreshSnapshot).
+// The module starts no program and writes no file. It reads what the plugin's
+// scripts write under ~/.cognee-plugin/claude-code: phase/<session>.json (the
+// activity marker), status/<session>.json (the row's data) and
+// mod/<session>.json (the picker's datasets and what became of a pick). What
+// it has to tell the scripts goes into its own store (see markBand, switchDataset).
 async function bindSession($: any): Promise<void> {
   sessionId = await $.session.id()
+  const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
+  stateRoot = `${home}/.cognee-plugin/claude-code`
+  await markBand($)
+}
+
+// Tell the settings-file status line that this session's row is drawn above
+// the prompt: the renderer prints nothing for a session with this entry in
+// the module's store, so the row is not shown twice. Only while the band is on.
+async function markBand($: any): Promise<void> {
+  if (!bandOn || !sessionId) return
+  try {
+    await $.store.set(`band:${sessionId}`, { at: (await $.clock.now()) / 1000 })
+  } catch {
+    // the status line then stays; nothing else depends on the entry
+  }
+}
+
+// A file the plugin's scripts wrote, as text; '' when it is not there yet.
+async function readText($: any, path: string): Promise<string> {
+  try {
+    const text = await $.fs.read(path)
+    return typeof text === 'string' ? text : ''
+  } catch {
+    return ''
+  }
 }
 
 // After a /clear or /resume: bind the conversation that replaced the ended
@@ -662,7 +563,7 @@ function awaitingConnection(now: number): boolean {
   if (snapshot?.state === 'ok' || snapshot?.state === 'fail') return false
   if (now < warmupUntil) return true
   if (!sessionId && now < adoptUntil) return true
-  return snapshot === null && !!sessionId && rendererFailures < 3
+  return snapshot === null && !!sessionId
 }
 
 function startSpin($: any): void {
@@ -703,25 +604,13 @@ function resultKey(r: Activity | null): string {
 }
 
 async function readPhase($: any): Promise<void> {
-  if (!sessionId || phaseInFlight) return
-  // The renderer prints this session's marker (`--phase`): the module asks the
-  // plugin's own script instead of opening the file. One run at a time; a
-  // slow one is skipped over, not queued behind the poll.
-  phaseInFlight = true
+  if (!sessionId || !stateRoot) return
+  markerActive = false
   let marker: PhaseMarker
   try {
-    const script = `${$.plugin.root}/scripts/cognee_statusline_render.py`
-    const stdin = JSON.stringify({ session_id: sessionId })
-    const ran = await runPython($, [script, '--phase'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
-    markerActive = false
-    // No marker yet prints nothing, which does not parse: the row stays as it is.
-    if (!ran || ran === 'timeout' || ran.exitCode !== 0) return
-    marker = JSON.parse(ran.stdout) as PhaseMarker
+    marker = JSON.parse(await $.fs.read(`${stateRoot}/phase/${sessionId}.json`)) as PhaseMarker
   } catch {
-    markerActive = false
     return
-  } finally {
-    phaseInFlight = false
   }
   const now = await $.clock.now()
   const shown = pickActivity(marker, now)
@@ -756,6 +645,8 @@ async function startPoll($: any, windowMs: number): Promise<void> {
   if (poll) return
   poll = $.clock.every(POLL_MS, async () => {
     await readPhase($)
+    // A file read, so it runs with every tick while the poll is open.
+    await refreshSnapshot($)
     const at = await $.clock.now()
     pollTicks += 1
     if (active?.phase === 'saving' && !markerActive && at - activeSince > STALE_MS) clearActive($)
@@ -784,102 +675,28 @@ async function startPoll($: any, windowMs: number): Promise<void> {
   })
 }
 
-type Ran = { exitCode: number; stdout: string; stderr: string }
 
-// One of the plugin's Python scripts, under whichever interpreter answers
-// first (python3 on macOS and Linux, python or py on Windows; the same order
-// the settings hooks use). Null when none could start it.
-// 'timeout' when the script ran and was killed at its time: the next
-// interpreter is NOT tried then, since the script did run (a switch killed
-// mid-sync must not be started over; an append must not land twice). Only a
-// spawn that failed (no such interpreter) moves on to the next candidate.
-async function runPython($: any, args: string[], init: { stdin?: string; timeoutMs: number }): Promise<Ran | 'timeout' | null> {
-  // The interpreter that answered last goes first; the others stay as the
-  // fallback for when it can no longer be spawned (a venv gone, a PATH change).
-  const defaults = ['python3', 'python', 'py']
-  const candidates = rendererPython ? [rendererPython, ...defaults.filter(c => c !== rendererPython)] : defaults
-  for (const python of candidates) {
-    try {
-      const ran = (await $.process.run([python, ...args], init)) as Ran
-      rendererPython = python
-      return ran
-    } catch (err) {
-      const why = String(err)
-      if (/time|outlast|kill/i.test(why)) return 'timeout'
-      if (!/ENOENT|not found|no such|spawn|cannot (find|run|start)/i.test(why)) return null
-      // the next candidate
-    }
-  }
-  return null
-}
-
-// A search, trimmed the way the prompt hook trims what it injects: a graph
-// item on cognee >= 1.6.0 carries the whole prompt the server's LLM would
-// have read, and only its retrieved context is worth showing. The trim is the
-// plugin's own Python (recall-trim.py); when it cannot run, the raw answer is
-// shown rather than nothing.
-async function runSearch($: any, query: string, args: string[]): Promise<Ran | null> {
-  const ran = await runPython($, [`${$.plugin.root}/scripts/cognee_search.py`, query, ...args], { timeoutMs: SEARCH_TIMEOUT_MS })
-  if (ran === 'timeout') return null
-  if (!ran || ran.exitCode !== 0 || !ran.stdout.trimStart().startsWith('[')) return ran
-  const trimmedRun = await runPython($, [`${$.plugin.root}/scripts/recall-trim.py`, '--query', query], {
-    stdin: ran.stdout,
-    timeoutMs: RENDERER_TIMEOUT_MS,
-  })
-  const trimmed = trimmedRun === 'timeout' ? null : trimmedRun
-  if (!trimmed || trimmed.exitCode !== 0 || !trimmed.stdout.trim()) return ran
-  return { ...ran, stdout: trimmed.stdout }
-}
-
-// A file's kind and size, as the remember script reports them. Throws when
-// the script could not be run, so the tool call fails closed.
-async function fileSize($: any, file: string): Promise<{ kind: string; size: number }> {
-  const ran = await runPython($, [`${$.plugin.root}/scripts/cognee_remember.py`, '--file-size', file], { timeoutMs: RENDERER_TIMEOUT_MS })
-  if (!ran || ran === 'timeout' || ran.exitCode !== 0) throw new Error('could not size the file')
-  const stat = JSON.parse(ran.stdout) as { kind?: unknown; size?: unknown }
-  return { kind: String(stat.kind ?? ''), size: Number(stat.size ?? 0) }
-}
-
-// One run of the plugin's own renderer in --json mode: the dataset, mode,
-// connection state, credits and update nudge, as the terminal bar shows them.
-// Local process, no network. Runs only on events, never on a timer.
+// The row's data: the dataset, mode, connection state, credits and update
+// nudge, as the terminal bar shows them. The plugin's scripts keep
+// status/<session>.json current (every hook, and each run of the settings
+// status line); the module only reads it.
 async function refreshSnapshot($: any): Promise<void> {
-  if (!sessionId || snapshotInFlight) return
-  if (rendererFailures >= 3) {
-    if ((await $.clock.now()) - rendererFailedAt < RENDERER_RETRY_MS) return
-    rendererFailures = 0
-  }
+  if (!sessionId || !stateRoot || snapshotInFlight) return
   snapshotInFlight = true
   try {
-    const script = `${$.plugin.root}/scripts/cognee_statusline_render.py`
-    // `band` tells the renderer whether this module draws the row above the
-    // prompt. The renderer keeps the marker that makes the settings-file
-    // status line step aside, so the row is not shown twice.
-    const stdin = JSON.stringify({ session_id: sessionId, band: bandOn })
-    const ran = await runPython($, [script, '--json'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
-    if (ran && ran !== 'timeout' && ran.exitCode === 0 && ran.stdout.trim()) {
+    const text = await readText($, `${stateRoot}/status/${sessionId}.json`)
+    if (text.trim()) {
       try {
-        const before = snapshot?.dataset ?? ''
         const previous = snapshot === null ? null : JSON.stringify(snapshot)
-        snapshot = JSON.parse(ran.stdout) as Snapshot
-        rendererFailures = 0
+        snapshot = JSON.parse(text) as Snapshot
         purple = snapshot?.light === true ? PURPLE_LIGHT : PURPLE_DARK
-        // The session moved to another dataset without the picker (the
-        // cognee-switch-datasets skill runs the switch script from a shell):
-        // the listing still marks the old one current and may lack the new
-        // one. A picker switch relists on its own when it ends.
-        const after = snapshot?.dataset ?? ''
-        if (before && after && before !== after && !switching) void relistDatasets($)
-        // The warm-up retakes the snapshot every few seconds: an unchanged one
-        // must not redraw (and so reset) an open picker.
+        // An unchanged snapshot must not redraw (and so reset) an open picker.
         if (JSON.stringify(snapshot) !== previous) redraw($)
-        return
       } catch {
-        // fall through
+        // a file caught mid-write: the next read has it whole
       }
     }
-    rendererFailures += 1
-    if (rendererFailures >= 3) rendererFailedAt = await $.clock.now()
+    await loadDatasets($)
   } finally {
     snapshotInFlight = false
   }
@@ -893,55 +710,10 @@ function fixGuide(reason: string): FixGuide {
 async function openFix($: any, reason: string): Promise<void> {
   fixReason = reason
   fixOpen = true
-  fixNote = null
-  doctorOutput = ''
   const opened = await $.ui.open({ id: FIX_PANE, title: 'Fix memory', focus: true, closeOnEscape: true, holdToasts: true, rows: 18 })
   if (!opened.isPlaced) $.ui.toast(`fix: ${opened.reason}`)
 }
 
-async function runDoctor($: any): Promise<void> {
-  if (doctorRunning) return
-  doctorRunning = true
-  redraw($)
-  try {
-    const ran = await runPython($, [`${$.plugin.root}/scripts/doctor.py`], { timeoutMs: DOCTOR_TIMEOUT_MS })
-    if (ran === 'timeout') doctorOutput = `the doctor gave no answer within ${DOCTOR_TIMEOUT_MS / 1000} s`
-    else doctorOutput = ran ? (ran.stdout.trim() || ran.stderr.trim() || '(no output)') : 'could not run the doctor: no Python interpreter found'
-  } finally {
-    doctorRunning = false
-    redraw($)
-  }
-}
-
-// Append one variable to ~/.cognee/.env (the last value of a key wins there,
-// so appending is also how a value is changed). Written by the module, so the
-// secret never goes through a shell history.
-async function saveEnvValue($: any, name: string, value: string): Promise<void> {
-  const trimmed = value.trim()
-  if (!trimmed) return
-  if (/[\r\n]/.test(trimmed)) {
-    fixNote = { text: 'one line only', isError: true }
-    redraw($)
-    return
-  }
-  // The plugin's own env-file module does the write: it resolves the file the
-  // hooks read (COGNEE_ENV_FILE, else ~/.cognee/.env) and creates it 0600,
-  // which the fs API cannot. The value travels on stdin, never on argv.
-  const ran = await runPython($, [`${$.plugin.root}/scripts/_env_file.py`, '--append', name], { stdin: trimmed, timeoutMs: RENDERER_TIMEOUT_MS })
-  if (ran === 'timeout') {
-    fixNote = { text: `saving ${name} took too long; check the env file before trying again`, isError: true }
-    redraw($)
-    return
-  }
-  const written = ran && ran.exitCode === 0 ? ran.stdout.trim() : ''
-  if (written) fixNote = { text: `${name} saved to ${written}; a new session applies it`, isError: false }
-  else fixNote = { text: `could not save ${name}${ran?.stderr.trim() ? `: ${ran.stderr.trim()}` : ''}`, isError: true }
-  redraw($)
-}
-
-// ── the tour ────────────────────────────────────────────────────────────────
-// Once, at the first draw of the band (the person is looking at the row by
-// then; at session start the Desktop app has no surface yet).
 async function startTourIfFirstRun($: any): Promise<void> {
   if (tourChecked) return
   tourChecked = true
@@ -968,121 +740,107 @@ async function endTour($: any, finished: boolean): Promise<void> {
 }
 
 // ── the dataset picker ──────────────────────────────────────────────────────
-function sessionKeyArgs(): string[] {
-  return sessionId ? ['--session-key', sessionId] : []
-}
-
-// The datasets the picker offers: the writable ones, from the plugin's own
-// switch script, once the SessionStart hook has run (it writes the launch
-// record the script reads) and after each switch. A run that fails, times
-// out or cannot start keeps the list it had and is tried again later; only
-// an answer replaces it.
+// The datasets the picker offers: the writable ones, with the recall mode, as
+// the plugin's scripts last listed them (mod/<session>.json: at session start,
+// after each switch, and again when the list is old). The same file says what
+// became of the last pick.
 async function loadDatasets($: any): Promise<void> {
-  if (!sessionId) return
-  // A listing already running answers for this call too.
-  if (datasetsInFlight) return datasetsInFlight
-  // The server is not listening yet: the hook handed its boot to a worker,
-  // which keeps `setting_up` alive for as long as the boot runs (minutes on a
-  // cold start). Every try meanwhile would fail at once and spend the
-  // attempts before the server is up, so none is made; the poll, which runs
-  // for as long as the phase does, asks again once this wait is over.
-  if (active?.phase === 'setting_up') {
-    datasetsWaitingForBoot = true
-    datasetsRetryAt = (await $.clock.now()) + LIST_RETRY_MS
-    return
+  if (!sessionId || !stateRoot) return
+  let bridge: Record<string, any> = {}
+  try {
+    bridge = JSON.parse(await readText($, `${stateRoot}/mod/${sessionId}.json`)) as Record<string, any>
+  } catch {
+    bridge = {}
   }
-  datasetsWaitingForBoot = false
-  datasetsListing = true
-  datasetsAttempts += 1
-  datasetsInFlight = (async () => {
-    let listed = false
-    try {
-      const switchable = await runPython($, [`${$.plugin.root}/scripts/switch-dataset.py`, '--list', '--json', ...sessionKeyArgs()], {
-        timeoutMs: LIST_TIMEOUT_MS,
-      })
-      const parsed = switchable && switchable !== 'timeout' && switchable.stdout.trim() ? JSON.parse(switchable.stdout) : null
-      if (parsed && typeof parsed === 'object' && !parsed.error) {
-        switchTargets = datasetRows(parsed)
-        recallMode = recallModeOf(parsed)
-        recallMessage = asText(parsed.message)
-        listed = true
-      }
-    } catch {
-      // the name stays plain text until the next try
-    }
-    datasetsListed = listed
-    if (!listed) datasetsRetryAt = (await $.clock.now()) + LIST_RETRY_MS * datasetsAttempts
-    datasetsListing = false
-    datasetsInFlight = null
-    redraw($)
-  })()
-  return datasetsInFlight
+  const listing = bridge.listing
+  const before = JSON.stringify([switchTargets, recallMode, recallMessage, datasetsListed])
+  if (listing && typeof listing === 'object' && !listing.error) {
+    switchTargets = datasetRows(listing)
+    recallMode = recallModeOf(listing)
+    recallMessage = asText(listing.message)
+    datasetsListed = true
+  }
+  datasetsListing = false
+  await settlePick($, bridge.pick)
+  if (JSON.stringify([switchTargets, recallMode, recallMessage, datasetsListed]) !== before) redraw($)
 }
 
-// A listing asked for outright (/cognee-dataset, the end of a switch) starts
-// the attempts over.
 async function relistDatasets($: any): Promise<void> {
-  if (datasetsInFlight) await datasetsInFlight
-  datasetsListed = false
-  datasetsAttempts = 0
-  datasetsRetryAt = 0
   await loadDatasets($)
 }
 
-// Move the session to another dataset: the plugin's switch script, which
-// starts the sync of the session it leaves (without waiting) and a new one.
-// No model turn.
+// The prompt hook reports what it did with a pick, by the time the module
+// saved it. Once it has, the pending state ends and the store entry goes.
+async function settlePick($: any, done: unknown): Promise<void> {
+  if (!switching || !pickAt) return
+  const result = done && typeof done === 'object' ? (done as Record<string, unknown>) : null
+  if (!result || toNumber(result.at) !== pickAt) return
+  const failed = result.state !== 'done'
+  const line = asText(result.message) || (failed ? 'the switch failed' : `switched to ${asText(result.dataset) || switchingTo}`)
+  $.ui.toast(failed ? `✕ ${line}` : line)
+  await endPick($)
+}
+
+async function endPick($: any): Promise<void> {
+  switching = false
+  switchingTo = ''
+  pickAt = 0
+  pickPrompts = 0
+  try {
+    await $.store.delete(`pick:${sessionId}`)
+  } catch {
+    // the hook skips a pick it already handled
+  }
+  redraw($)
+}
+
+// Move the session to another dataset. The module starts no program: it saves
+// the pick in its store, and the plugin's prompt hook switches the session
+// before it recalls, so the next message is already answered from the new
+// dataset. Until then the row shows the pick as pending.
 async function switchDataset($: any, target: string): Promise<string> {
   const name = target.trim()
   if (!name) return 'name a dataset'
-  if (switching) return 'a switch is already running'
-  switching = true
+  if (switching) return 'a switch is already waiting for your next message'
   // `pin` and `auto` stay on the active dataset; an id reads as its name.
   const action = name.toLowerCase()
-  switchingTo = action === 'pin' || action === 'auto' ? '' : switchTargets.find(r => r.id === name)?.name ?? name
-  setActive($, activity('switching'))
-  let line = ''
+  const label = action === 'pin' || action === 'auto' ? '' : switchTargets.find(r => r.id === name)?.name ?? name
+  const at = (await $.clock.now()) / 1000
   try {
-    const ran = await runPython($, [`${$.plugin.root}/scripts/switch-dataset.py`, name, '--json', ...sessionKeyArgs()], {
-      timeoutMs: SWITCH_TIMEOUT_MS,
-    })
-    let parsed: Record<string, unknown> = {}
-    try {
-      parsed = ran && ran !== 'timeout' && ran.stdout.trim() ? (JSON.parse(ran.stdout) as Record<string, unknown>) : {}
-    } catch {
-      parsed = {}
-    }
-    if (ran === 'timeout') line = `the switch ran past ${SWITCH_TIMEOUT_MS / 60_000} min and was stopped; /cognee-dataset shows where the session is`
-    else if (!ran) line = 'could not start the switch: no python interpreter found'
-    else if (parsed.error) line = asText(parsed.error)
-    // The script says what happened in its `message`; the generic line is for
-    // an older script that sends none.
-    else if (parsed.switched === false) line = asText(parsed.message) || `recall is ${asText(parsed.recall) || 'unchanged'} (saves go to ${asText(parsed.dataset) || name})`
-    else if (parsed.switched === true) line = asText(parsed.message) || `switched to ${asText(parsed.dataset) || name}`
-    else line = `switch failed${ran.stderr.trim() ? `: ${ran.stderr.trim().split('\n').pop()}` : ''}`
-    const failed = !parsed.switched && parsed.switched !== false
-    const mode = recallModeOf(parsed)
-    if (mode) recallMode = mode
-    // The switch landed: the rows say so now, so a relist that times out
-    // below cannot put the old name back on the row.
-    const landed = asText(parsed.dataset)
-    if (parsed.switched === true && landed) switchTargets = switchTargets.map(r => ({ ...r, current: r.name === landed }))
-    $.ui.toast(failed ? `✕ ${line}` : `${line}`)
-  } finally {
-    switching = false
-    switchingTo = ''
-    clearActive($)
+    await $.store.set(`pick:${sessionId}`, { target: name, at })
+  } catch {
+    return 'could not save the pick; use the cognee-switch-datasets skill'
   }
-  await refreshSnapshot($)
-  void relistDatasets($)
+  switching = true
+  switchingTo = label
+  pickAt = at
+  pickPrompts = 0
+  const line =
+    action === 'auto'
+      ? 'recall goes back to auto with your next message'
+      : action === 'pin'
+        ? 'recall is restricted to the active dataset with your next message'
+        : `switching to ${label} with your next message`
+  $.ui.toast(line)
+  redraw($)
   return line
+}
+
+// A pick the prompt hook never reported on (the hook could not see the
+// module's store): say so once and point at the skill, rather than leave the
+// row pending for good.
+async function givePickUp($: any): Promise<void> {
+  if (!switching || !pickAt) return
+  pickPrompts += 1
+  if (pickPrompts < 2) return
+  $.ui.toast('✕ the dataset pick did not reach the plugin; use the cognee-switch-datasets skill')
+  await endPick($)
 }
 
 export const register: Register = (on, options) => {
   markOn = options.icon !== 'none'
   bandOn = options.band !== false
   spinnerOn = options.spinner !== false
-  toolsOn = options.tools !== false
   tourOn = options.tour !== false
 
   on('session.start', async ($, e, next) => {
@@ -1116,53 +874,6 @@ export const register: Register = (on, options) => {
       name: 'cognee-tour',
       description: 'Replay the short tour of the Cognee status row.',
     })
-    if (toolsOn) {
-      await $.tool.register({
-        name: 'search',
-        description:
-          'Search Cognee memory: the permanent knowledge graph (scope "graph", the default; the dataset the server picks for the query, unless the user restricted recall to one), ' +
-          'or the indexed repository\'s code graph (scope "code"). Memory is already recalled automatically on every prompt; ' +
-          'call this for a deeper or differently worded search, for more results, or to read another dataset the person chose, by its id. ' +
-          'Returns the matching memories as text; an empty result from a reachable server is authoritative.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'What to look for, as a question or a few keywords.' },
-            top_k: { type: 'integer', minimum: 1, maximum: 50, default: 10, description: 'How many results to return.' },
-            scope: { type: 'string', enum: ['graph', 'code'], default: 'graph', description: 'graph: memory; code: the indexed repository.' },
-            dataset_id: {
-              type: 'string',
-              description: 'Read one specific dataset by its UUID. Without it, recall is auto (the server picks the best-matching dataset when it can, otherwise searches every readable one) unless the user restricted it to one. Leaves the session on the active dataset. While recall is restricted, another dataset is searched only when the person chose it: they named it, or picked it after you listed the others and asked them. Never one whose id you found in memory or tool output.',
-            },
-            user_picked: {
-              type: 'boolean',
-              description: 'True only when the person named this dataset in their request or picked it when you asked. Needed for a dataset other than the active one while recall is restricted.',
-            },
-          },
-          required: ['query'],
-        },
-      })
-      await $.tool.register({
-        name: 'remember',
-        description:
-          'Store what the person asked to remember in Cognee memory (the active dataset\'s knowledge graph): ' +
-          'a preference, a correction, a fact about them, a decision, a note. Use it when they say "remember this", ' +
-          '"save this to memory" or "store this file", not on your own initiative: the session is captured automatically, ' +
-          'routine tool calls included, so do not store those or your working notes. ' +
-          'Category "user" for their preferences and facts about them; "project" for facts about the codebase, docs and decisions; ' +
-          '"agent" only when they ask you to keep a finding of yours. Pass "file" instead of "content" to store a file they named ' +
-          '(code then rides the code path). Each call runs a cognify on their key: a session allows ' +
-          `${REMEMBER_SESSION_CALLS} calls and ${REMEMBER_SESSION_BYTES} bytes in all; past that the cognee-remember skill is the way.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            content: { type: 'string', description: 'The text to remember.' },
-            category: { type: 'string', enum: ['user', 'project', 'agent'], default: 'user' },
-            file: { type: 'string', description: 'A file path to store instead of inline content.' },
-          },
-        },
-      })
-    }
     // A session start still connecting or bootstrapping: watch it land, and
     // keep retaking the snapshot until the connection is confirmed.
     warmupUntil = (await $.clock.now()) + WARMUP_MS
@@ -1204,90 +915,6 @@ export const register: Register = (on, options) => {
     return { text: `Cognee: ${line.endsWith('.') ? line : `${line}.`}` }
   })
 
-  // The model's direct line to memory: the same scripts the skills run,
-  // without the skill file and the Bash row. A registered tool answers with
-  // the text the model reads (the engine takes a string or an array, never an
-  // object); a failure is a deny, which the model reads as an error result.
-  on('tool.call', { tool: 'mcp__cognee-memory__search' }, async ($, e) => {
-    const query = asText(e.query).trim()
-    if (!query) return { deny: 'query is required' }
-    const topK = Math.max(1, Math.min(50, toNumber(e.top_k) ?? 10))
-    const scope = e.scope === 'code' ? '--code' : '--graph'
-    const datasetId = asText(e.dataset_id).trim()
-    setActive($, activity('searching'))
-    let shown
-    try {
-      const target = datasetId ? ['--dataset-id', datasetId, ...(e.user_picked === true ? ['--user-picked'] : [])] : []
-      const ran = await runSearch($, query, [String(topK), scope, ...target])
-      shown = ran ? formatSearch(ran.stdout, ran.exitCode) : formatSearch('', 1)
-    } finally {
-      clearActive($)
-    }
-    // Only a recall known to be restricted names the active dataset; auto recall
-    // (the default) and an unknown mode may read the dataset(s) the server picks.
-    const where = datasetId ? `dataset ${datasetId}` : scope === '--code' ? 'the code graph' : recallMode === 'pinned' ? 'the active dataset' : 'memory'
-    if (shown.isError) return { deny: shown.text }
-    return { result: `${plural(shown.count, 'result')} from ${where}.\n\n${shown.text}` }
-  }).catch($ => {
-    clearActive($)
-    return { deny: 'Cognee search failed inside the plugin; try the cognee-search skill.' }
-  })
-
-  on('tool.call', { tool: 'mcp__cognee-memory__remember' }, async ($, e) => {
-    const content = asText(e.content).trim()
-    const file = asText(e.file).trim()
-    if (!content && !file) return { deny: 'content or file is required' }
-    if (content.length > REMEMBER_MAX_CHARS) {
-      return {
-        deny: `content is ${content.length} characters; the remember tool takes up to ${REMEMBER_MAX_CHARS}. Store a longer text with the cognee-remember skill.`,
-      }
-    }
-    // The remember script sizes the file (`--file-size`): the module opens and
-    // inspects no file itself.
-    const stat = file ? await fileSize($, file) : null
-    if (file && stat) {
-      if (stat.kind !== 'file') return { deny: `${file} is not a file` }
-      if (stat.size > REMEMBER_MAX_FILE_BYTES) {
-        return {
-          deny: `${file} is ${stat.size} bytes; the remember tool takes files up to ${REMEMBER_MAX_FILE_BYTES}. Store a larger file with the cognee-remember skill.`,
-        }
-      }
-    }
-    const size = stat ? stat.size : content.length
-    if (rememberCalls >= REMEMBER_SESSION_CALLS || rememberBytes + size > REMEMBER_SESSION_BYTES) {
-      return {
-        deny:
-          `this session has used its remember allowance (${rememberCalls} of ${REMEMBER_SESSION_CALLS} calls, ` +
-          `${rememberBytes} of ${REMEMBER_SESSION_BYTES} bytes). Store it with the cognee-remember skill if the person asked for it.`,
-      }
-    }
-    const nodeSet = NODE_SETS[asText(e.category)] ?? 'user_context'
-    // Counted before the call: a call that was cut off may have cost as much
-    // as one that answered.
-    rememberCalls += 1
-    rememberBytes += size
-    setActive($, activity('remembering'))
-    let shown
-    try {
-      const args = file ? ['--file', file, '--node-set', nodeSet] : [content, '--node-set', nodeSet]
-      const ran = await runPython($, [`${$.plugin.root}/scripts/cognee_remember.py`, ...args], { timeoutMs: REMEMBER_TIMEOUT_MS })
-      if (ran === 'timeout') {
-        // The POST may have landed; a resubmit would pay for a second cognify.
-        shown = {
-          text: `Cognee remember gave no answer within ${REMEMBER_TIMEOUT_MS / 1000} s; the write may have landed. Do not resubmit the same text: search for it first.`,
-          isError: true,
-        }
-      } else shown = ran ? formatRemember(ran.stdout, ran.exitCode, snapshot?.dataset ?? '') : formatRemember('', 1, '')
-    } finally {
-      clearActive($)
-    }
-    if (shown.isError) return { deny: shown.text }
-    return { result: shown.text }
-  }).catch($ => {
-    clearActive($)
-    return { deny: 'Cognee remember failed inside the plugin; nothing was stored. Try the cognee-remember skill.' }
-  })
-
   // Fires at each prompt, before the turn starts; next(e) runs the plugin's
   // recall hook (UserPromptSubmit), whose header "Cognee memory: recall N
   // memory ..." may come back in the context. The marker the hook wrote is
@@ -1310,9 +937,10 @@ export const register: Register = (on, options) => {
     }
     if (ran && 'drop' in ran) return ran
     await readPhase($)
-    // Not awaited: a process spawn on the path from prompt to answer only
-    // updates the row, and the poll below refreshes it a second later anyway.
-    void refreshSnapshot($)
+    // The prompt hook has run by now: it applied a pending dataset pick and
+    // rewrote the row's data. Read both, then give up on a pick it never saw.
+    await refreshSnapshot($)
+    await givePickUp($)
     // A listing that never landed gets another go once the person is back at
     // the prompt: the attempts start over, so the cap is per prompt rather
     // than per session.
@@ -1364,6 +992,21 @@ export const register: Register = (on, options) => {
   // /clear and /resume end the conversation and start another under a new id,
   // with no session.start: forget what was shown, and let the next prompt rebind.
   on('session.end', async ($, e, next) => {
+    // The ended session's entries leave the module's store: the status line
+    // is told nothing about a session that is gone, and a pick dies with it.
+    const ending = (typeof e.sessionId === 'string' && e.sessionId) || sessionId
+    if (ending) {
+      try {
+        await $.store.delete(`band:${ending}`)
+        await $.store.delete(`pick:${ending}`)
+      } catch {
+        // left behind: the entries name a session id that is never used again
+      }
+    }
+    switching = false
+    switchingTo = ''
+    pickAt = 0
+    pickPrompts = 0
     if (e.reason === 'clear' || e.reason === 'resume') {
       if (active) clearActive($)
       // The ended session's marker must not be read into the new one's row
@@ -1377,8 +1020,6 @@ export const register: Register = (on, options) => {
       snapshot = null
       namingDataset = false
       sessionId = ''
-      rememberCalls = 0
-      rememberBytes = 0
       // The next session has a launch record of its own: list again for it.
       resetDatasets()
       const ran = await next(e)
@@ -1427,40 +1068,18 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The fix dialog: the reason in plain words, the steps, the doctor's report
-  // on request, and a field for the one value that fixes a key or URL problem.
+  // The fix dialog: the reason in plain words and the steps. It runs nothing
+  // and writes nothing; the steps name the doctor command and the settings
+  // file where they apply.
   on('ui.render', { component: 'Pane', requestId: FIX_PANE }, async ($, e) => {
-    const { Box, Text, Markdown, Button, Input, Code } = $.ui.resolve(e) as any
+    const { Box, Text, Markdown, Button } = $.ui.resolve(e) as any
     const guide = fixGuide(fixReason)
     const rows: RenderElement[] = []
     rows.push(Text({ bold: true, color: 'red', children: [`✕ ${guide.title}`] }))
     rows.push(Text({ dimColor: true, children: [`reason: ${fixReason || 'unknown'}`] }))
     rows.push(Markdown({ text: `${guide.what}\n\n${guide.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}` }))
-    if (guide.field && Input) {
-      rows.push(Text({ children: [''] }))
-      rows.push(
-        Input({
-          key: 'secret',
-          label: `${guide.field.name} `,
-          placeholder: guide.field.placeholder,
-          submitLabel: 'save',
-          onSubmit: (value: string) => void saveEnvValue($, guide.field!.name, value),
-        }),
-      )
-    }
-    if (fixNote) rows.push(Text({ color: fixNote.isError ? 'red' : 'green', children: [fixNote.text] }))
     rows.push(Text({ children: [''] }))
-    rows.push(
-      Box({
-        flexDirection: 'row',
-        children: [
-          Button({ key: 'doctor', label: doctorRunning ? 'running doctor…' : 'run doctor', variant: 'primary', onPress: () => void runDoctor($) }),
-          Text({ children: ['   '] }),
-          Button({ key: 'closeFix', label: 'close', plain: true, dimColor: true, onPress: () => void $.ui.close({ id: FIX_PANE }) }),
-        ],
-      }),
-    )
-    if (doctorOutput) rows.push(Code({ source: doctorOutput }))
+    rows.push(Button({ key: 'closeFix', label: 'close', plain: true, dimColor: true, onPress: () => void $.ui.close({ id: FIX_PANE }) }))
     return Box({ flexDirection: 'column', children: rows })
   })
 
@@ -1815,16 +1434,6 @@ export const register: Register = (on, options) => {
     if (drawsSomething(theirs)) rows.push(theirs as RenderElement)
     rows.push(credit)
     return Box({ flexDirection: 'column', children: rows })
-  }).catch(($, e, next) => next(e))
-
-  // The transcript row of a call to one of the plugin's tools. The engine
-  // labels every registered tool "<plugin> - <tool> (MCP)" from its wire
-  // name; that reads as a separate server to a person, so the row names the
-  // tool plainly. The call and its result are untouched.
-  on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
-    const label = TOOL_ROW_LABELS[e.props.tool]
-    if (!label) return next(e)
-    return next({ ...e, props: { ...e.props, tool: label } })
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {

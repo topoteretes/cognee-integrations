@@ -1255,6 +1255,29 @@ def _recall_min_prompt_chars() -> int:
         return 5
 
 
+def _apply_mod_pick() -> None:
+    """Carry out a dataset picked in the hooks module's picker, before recalling.
+
+    The module starts no program: it saves the pick in its store and this hook
+    switches the session, so the message that follows a pick is answered from
+    the new dataset. The picker's listing is refreshed here when it is old.
+    """
+    try:
+        import _mod_bridge
+
+        key = get_session_key()
+        result = _mod_bridge.apply_pick(key)
+        if result:
+            hook_log(
+                "mod_pick_applied",
+                {"target": result.get("target"), "state": result.get("state")},
+            )
+        if _mod_bridge.listing_is_stale(key):
+            _mod_bridge.refresh_listing_in_background(key)
+    except Exception as exc:
+        hook_log("mod_pick_failed", {"error": str(exc)[:200]})
+
+
 def main():
     if is_observer_child():
         return
@@ -1276,6 +1299,8 @@ def main():
     if not get_session_key():
         hook_log("context_lookup_missing_session_key")
         return
+
+    _apply_mod_pick()
 
     if coding_memory_enabled():
         output = _coding_prompt(payload)

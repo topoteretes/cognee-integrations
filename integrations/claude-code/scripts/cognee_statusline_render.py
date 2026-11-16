@@ -678,41 +678,48 @@ _ACTIVE_LABELS = {
 }
 
 
-def _mark_band(session_id: str, band) -> None:
-    """Record whether the hooks module draws this session's row above the prompt.
-
-    The module passes ``band`` with every ``--json`` call. ``True`` writes this
-    session's marker, so the settings-file status line steps aside; ``False``
-    removes it, so the status line comes back when the band is turned off. A
-    call without the field (an older module) changes nothing. Never raises.
-    """
-    if not isinstance(band, bool) or not session_id or not _path_safe(session_id):
-        return
-    marker = _BAND_DIR / f"{session_id}.json"
-    try:
-        if not band:
-            marker.unlink(missing_ok=True)
-        elif not marker.is_file():
-            _BAND_DIR.mkdir(parents=True, exist_ok=True)
-            marker.write_text(
-                json.dumps(
-                    {"session_id": session_id, "at": time.time(), "plugin": "cognee-memory"}
-                ),
-                encoding="utf-8",
-            )
-    except Exception:
-        pass
-
-
 def _band_draws_row(session_id: str) -> bool:
     """True when the hooks module draws this session's row above the prompt.
 
-    Only this session's marker counts: a terminal without the module (an older
-    Claude Code, ``--safe-mode``, a managed org) keeps its status line.
+    The module records that in its own store (``band:<session>``); see
+    ``_mod_bridge``. Only this session's entry counts: a terminal without the
+    module (an older Claude Code, ``--safe-mode``, a managed org) keeps its
+    status line. A marker file from an older module is honoured too.
     """
     if not session_id or not _path_safe(session_id):
         return False
-    return (_BAND_DIR / f"{session_id}.json").is_file()
+    if (_BAND_DIR / f"{session_id}.json").is_file():
+        return True
+    try:
+        import _mod_bridge
+
+        return _mod_bridge.band_drawn(session_id)
+    except Exception:
+        return False
+
+
+_STATUS_DIR = _SHARED_ROOT / "claude-code" / "status"
+
+
+def write_status(session_id: str) -> None:
+    """Save the row's data where the hooks module reads it. Never raises.
+
+    The module starts no program, so it cannot ask for a snapshot: the hooks
+    (through ``_mod_bridge.refresh_status``) and every run of this renderer as
+    the settings status line keep ``status/<session>.json`` current instead.
+    """
+    if not session_id or not _path_safe(session_id):
+        return
+    try:
+        snapshot = _snapshot(session_id, enabled=True)
+        snapshot["at"] = time.time()
+        _STATUS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _STATUS_DIR / f"{session_id}.json"
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(snapshot), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 def _phase_marker(session_id: str) -> dict:
@@ -1351,13 +1358,6 @@ def main() -> None:
     session_id = str(ctx.get("session_id") or "")
     if not _path_safe(session_id) or session_id in {".", ".."}:
         session_id = ""
-    if "--phase" in sys.argv[1:]:
-        # The hooks module asks for this session's activity marker here, so it
-        # opens no file itself. No marker prints nothing.
-        marker = _phase_marker(session_id)
-        if marker:
-            sys.stdout.write(json.dumps(marker))
-        return
     try:
         if not _plugin_enabled(cwd):
             if as_json:
@@ -1369,8 +1369,10 @@ def main() -> None:
             # entry and render nothing so the line disappears.
             _evict_own_statusline()
             return
+        # Each run as the settings status line also refreshes the file the
+        # hooks module draws its row from.
+        write_status(session_id)
         if as_json:
-            _mark_band(session_id, ctx.get("band"))
             sys.stdout.write(json.dumps(_snapshot(session_id, enabled=True)))
             return
         if _band_draws_row(session_id):

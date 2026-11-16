@@ -4,7 +4,6 @@
 Usage:
   cognee_remember.py <content> [--node-set <node_set>] [--dataset <dataset>]
   cognee_remember.py --file <path> [--node-set <node_set>] [--dataset <dataset>]
-  cognee_remember.py --file-size <path>      (prints the path's kind and size as JSON)
 
 --node-set: node set for categorization (default: user_context)
             user_context | project_docs | agent_actions
@@ -102,27 +101,7 @@ def _shared_dataset_id(dataset: str) -> str:
         return ""
 
 
-def _file_size(path: str) -> int:
-    """Print a path's kind and size as JSON, for the hooks module's remember tool.
-
-    The module checks a file against its limits before storing it; it asks
-    here so that it inspects no file itself. No server and no key involved.
-    """
-    import json
-
-    if os.path.isfile(path):
-        info = {"kind": "file", "size": os.path.getsize(path)}
-    elif os.path.isdir(path):
-        info = {"kind": "directory", "size": 0}
-    else:
-        info = {"kind": "missing", "size": 0}
-    print(json.dumps(info))
-    return 0
-
-
 def main(argv: list[str]) -> int:
-    if len(argv) == 2 and argv[0] == "--file-size":
-        return _file_size(argv[1])
     rt = _runtime()
     dataset = rt["dataset"]
     dataset_id = rt["dataset_id"]

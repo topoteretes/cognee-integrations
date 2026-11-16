@@ -2384,6 +2384,24 @@ def phase_end(
         _write_json_file(path, state)
     except Exception as exc:
         hook_log("phase_end_failed", {"phase": phase, "error": str(exc)[:200]})
+    _refresh_mod_status(session_key)
+
+
+def _refresh_mod_status(session_key: Optional[str]) -> None:
+    """Rewrite the status row's data for the hooks module after a phase ends.
+
+    The module draws from ``status/<session>.json`` and starts no program, so
+    the hooks keep that file current: a phase ending is when the row changes
+    (a recall landed, a save finished, session start settled the connection).
+    """
+    try:
+        key = _phase_key(session_key)
+        if key and key != "_machine":
+            import _mod_bridge
+
+            _mod_bridge.refresh_status(key)
+    except Exception:
+        pass
 
 
 def phase_snapshot(session_key: Optional[str] = None) -> dict:

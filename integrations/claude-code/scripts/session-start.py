@@ -2921,6 +2921,15 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
         hook_log("bootstrap_owns_ready", {"session_id": session_id, "ready_now": bool(ready)})
     else:
         phase_end("connecting", session_key=session_key, ok=bool(ready))
+    if ready:
+        # The hooks module's dataset picker reads its list from a file: fetch
+        # it in the background, so session start does not wait for it.
+        try:
+            import _mod_bridge
+
+            _mod_bridge.refresh_listing_in_background(session_key)
+        except Exception as exc:
+            hook_log("mod_listing_start_failed", {"error": str(exc)[:200]})
     return _with_system_note(
         _with_system_note(
             _with_observer_note(
