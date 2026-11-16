@@ -14,10 +14,14 @@ What the relay accepts:
   (``~/.cognee-plugin/claude-code/relay``);
 * only the plugin's own scripts named in ``RELAYED``, never a path or a command.
 
+Where Unix sockets do not exist (Windows), the relay listens on a loopback
+port instead and asks every request for a one-time code. The code is random,
+made when the relay starts, kept in a file only the user can read
+(``relay.json``) and worthless once the relay stops. It is not one of the
+user's keys and opens nothing but this relay.
+
 The relay starts only when the Cognee API key option is set. Without it (local
 mode) the scripts need no relay: the local server's key is cached on disk.
-Where Unix sockets do not exist (Windows before Python 3.13 added them), the
-relay does not start, and a script run from a shell says that it has no key.
 
 Stdlib only.
 """
@@ -26,8 +30,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import signal
 import socket
 import subprocess
@@ -82,8 +88,16 @@ PASSED = (
 )
 
 
-def _supported() -> bool:
-    return hasattr(socket, "AF_UNIX")
+def _on_port() -> bool:
+    """Whether the relay listens on a loopback port (no Unix sockets here)."""
+    return not hasattr(socket, "AF_UNIX") or os.environ.get("COGNEE_RELAY_PORT_MODE", "") == "1"
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write a file only the user can read."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    with os.fdopen(os.open(str(path), flags, 0o600), "w", encoding="utf-8") as stream:
+        stream.write(text)
 
 
 def _in_relay_dir(action):
@@ -149,7 +163,7 @@ def ensure_relay() -> None:
     up: one small file read and one file touch. Never raises.
     """
     try:
-        if not _supported() or not _key_option():
+        if not _key_option():
             return
         # The switch that keeps every background helper off (tests, CI).
         if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() in {"1", "true", "yes"}:
@@ -245,14 +259,18 @@ def _read_line(conn: socket.socket) -> bytes:
     return b"".join(chunks).split(b"\n", 1)[0]
 
 
-def _answer(conn: socket.socket) -> None:
+def _answer(conn: socket.socket, code: str = "") -> None:
     try:
         with conn:
             try:
                 request = json.loads(_read_line(conn).decode("utf-8"))
             except ValueError:
                 request = {}
-            reply = _run(request if isinstance(request, dict) else {})
+            request = request if isinstance(request, dict) else {}
+            if code and not hmac.compare_digest(str(request.get("code") or ""), code):
+                reply = {"code": 2, "stderr": "the relay refused the request\n"}
+            else:
+                reply = _run(request)
             _trace("ran %s code=%s" % (request.get("script"), reply.get("code")))
             conn.sendall(json.dumps(reply).encode("utf-8") + b"\n")
     except Exception as exc:
@@ -260,10 +278,11 @@ def _answer(conn: socket.socket) -> None:
 
 
 def serve() -> int:
-    if not _supported() or not _key_option():
+    if not _key_option():
         return 1
     _DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(_DIR, 0o700)
+    if os.name != "nt":
+        os.chmod(_DIR, 0o700)
     state = _read_state()
     if _alive(int(state.get("pid") or 0)) and state.get("fingerprint") == _fingerprint():
         return 0
@@ -271,13 +290,20 @@ def serve() -> int:
         _SOCKET.unlink()
     except FileNotFoundError:
         pass
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    _in_relay_dir(server.bind)
-    os.chmod(_SOCKET, 0o600)
+    mine = {"pid": os.getpid(), "fingerprint": _fingerprint(), "started": time.time()}
+    code = ""
+    if _on_port():
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        code = secrets.token_hex(32)
+        mine.update({"port": server.getsockname()[1], "code": code})
+    else:
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        _in_relay_dir(server.bind)
+        os.chmod(_SOCKET, 0o600)
     server.listen(16)
     server.settimeout(30.0)
-    mine = {"pid": os.getpid(), "fingerprint": _fingerprint(), "started": time.time()}
-    _STATE.write_text(json.dumps(mine), encoding="utf-8")
+    _write_private(_STATE, json.dumps(mine))
     _trace("started pid=%d" % os.getpid())
     # A stop request ends the loop below, so the socket and state are removed.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -298,7 +324,7 @@ def serve() -> int:
                     return 0
                 continue
             conn.settimeout(None)
-            threading.Thread(target=_answer, args=(conn,), daemon=True).start()
+            threading.Thread(target=_answer, args=(conn, code), daemon=True).start()
     finally:
         server.close()
         if _read_state().get("pid") == os.getpid():
@@ -352,16 +378,22 @@ def relay(script: str, argv: list) -> int | None:
     itself: it already has the key option (a hook, or a relayed run), or no
     relay is up.
     """
-    if os.environ.get("COGNEE_RELAYED", "") == "1" or _key_option() or not _supported():
+    if os.environ.get("COGNEE_RELAYED", "") == "1" or _key_option():
         return None
-    if not _SOCKET.exists():
+    state = _read_state()
+    if not state:
         return None
+    cwd = os.getcwd()
     try:
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.settimeout(5.0)
-        cwd = os.getcwd()
-        _in_relay_dir(conn.connect)
-    except OSError:
+        if state.get("port"):
+            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            conn.settimeout(5.0)
+            conn.connect(("127.0.0.1", int(state["port"])))
+        else:
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            conn.settimeout(5.0)
+            _in_relay_dir(conn.connect)
+    except (OSError, ValueError):
         return None
     env = {
         "COGNEE_SESSION_REF": _session_ref(),
@@ -374,6 +406,8 @@ def relay(script: str, argv: list) -> int | None:
         "COGNEE_ENV_FILE": os.environ.get("COGNEE_ENV_FILE", ""),
     }
     request = {"script": script, "argv": list(argv), "cwd": cwd, "env": env}
+    if state.get("code"):
+        request["code"] = str(state["code"])
     try:
         with conn:
             conn.settimeout(None)

@@ -2588,8 +2588,8 @@ def clear_cached_agent_key() -> None:
 def shared_memory_enabled(config: dict | None = None) -> bool:
     """Shared agent memory is on unless the user opted out.
 
-    ``COGNEE_SHARED_AGENT_MEMORY`` (env) wins over ``shared_agent_memory`` in
-    the config file; both default to on.
+    The ``COGNEE_SHARED_AGENT_MEMORY`` variable wins over ``shared_agent_memory``
+    in the config file; both default to on.
     """
     raw = str(os.environ.get("COGNEE_SHARED_AGENT_MEMORY", "") or "").strip()
     if not raw and isinstance(config, dict) and config.get("shared_agent_memory") is not None:
@@ -3755,7 +3755,7 @@ def server_presence(
 
     Only PRESENCE_ABSENT licenses installing or booting. ``confirm_absent``
     adds one delayed, longer-budget re-probe before concluding absence — for
-    boot points about to install; pass False where a rigorous check follows
+    boot points about to install; give it False where a rigorous check follows
     later anyway (e.g. mode selection, whose boot path re-verifies).
 
     Local evidence (TCP, pidfile) only applies to loopback hosts: for remote

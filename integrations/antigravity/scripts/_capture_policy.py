@@ -208,9 +208,10 @@ def _matches(tool: str, prefix: str | None, name: str, params) -> bool:
     command = params.get("command") if isinstance(params, dict) else None
     if not isinstance(command, str):
         return False
-    # The prefix has to end on a word boundary: ``Bash(git:*)`` keeps ``git status``
-    # and drops ``gitx weird``. Compound commands (``cd x && git status``) are
-    # matched on their first word only; this is a prefix test, not a shell parser.
+    # The prefix has to end on a word boundary: a rule for one program keeps that
+    # program's commands and drops those of another whose name merely starts the
+    # same. A compound command is matched on its first word only; this is a
+    # prefix test, not a shell parser.
     command = command.lstrip()
     if not command.startswith(prefix):
         return False

@@ -4,6 +4,8 @@ Every key comes from the plugin's options (the ``userConfig`` section of the
 plugin manifest): the Cognee API key, the LLM key and the embedding
 key. Claude Code keeps them in its secure store and hands them to the plugin's
 hooks, and to the processes those hooks start, as ``CLAUDE_PLUGIN_OPTION_*``.
+The same holds for the login of a server that has no API key (an email and a
+password option), and the server URL has an option of its own.
 The plugin reads a key nowhere else: a value for one of the names in
 ``OPTION_ONLY`` in the shell or in the file is dropped and never used.
 A process Claude Code gives no options (a script a skill runs through Bash)
@@ -39,6 +41,7 @@ being (partially) ignored, never an exception.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -49,7 +52,18 @@ _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 
 # The keys, which come from the plugin options only: never loaded from the
 # file and removed from the environment the process was started with.
-OPTION_ONLY = ("COGNEE_API_KEY", "COGNEE_PRINCIPAL_API_KEY", "LLM_API_KEY", "EMBEDDING_API_KEY")
+OPTION_ONLY = (
+    "COGNEE_API_KEY",
+    "COGNEE_PRINCIPAL_API_KEY",
+    "LLM_API_KEY",
+    "EMBEDDING_API_KEY",
+    # The login for a server without an API key: two options as well.
+    "COGNEE_USER_EMAIL",
+    "COGNEE_USER_PASSWORD",
+)
+# Where a hook records the server URL option, for the processes Claude Code
+# gives no options (the status line): an address, not a secret.
+_URL_RECORD = Path.home() / ".cognee-plugin" / "claude-code" / "server-url.json"
 # Which of those names this process found in the shell or in the file (names
 # only, never a value): what the session-start notice and doctor report.
 _ignored_key_names: list = []
@@ -139,6 +153,57 @@ def _blocked(name: str) -> bool:
     return name in _DENYLIST_EXACT or name.startswith(_DENYLIST_PREFIXES) or name in OPTION_ONLY
 
 
+def login_email_option() -> str:
+    """The login email option (a server without an API key), or ""."""
+    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_EMAIL", "").strip()
+
+
+def login_password_option() -> str:
+    """The login password option, or ""."""
+    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_PASSWORD", "").strip()
+
+
+def _in_hook() -> bool:
+    """Whether Claude Code started this process as a hook, or a hook started it:
+    those are the processes that have the plugin's options."""
+    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip())
+
+
+def _apply_url_option() -> None:
+    """Take the server URL from its option when the shell exports none.
+
+    Order: a real ``COGNEE_BASE_URL`` export, then the option, then
+    ~/.cognee/.env. A hook records the option's value so that a process with
+    no options (the status line) resolves the same server; an emptied option
+    removes the record.
+    """
+    if os.environ.get("COGNEE_BASE_URL", "").strip():
+        return
+    if _in_hook():
+        url = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "").strip()
+        try:
+            recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url", "")
+        except Exception:
+            recorded = ""
+        if url != recorded:
+            try:
+                if url:
+                    _URL_RECORD.parent.mkdir(parents=True, exist_ok=True)
+                    _URL_RECORD.write_text(json.dumps({"url": url}), encoding="utf-8")
+                else:
+                    _URL_RECORD.unlink()
+            except Exception:
+                pass
+    else:
+        try:
+            url = str(json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url") or "")
+        except Exception:
+            url = ""
+    if url:
+        os.environ["COGNEE_BASE_URL"] = url
+        _injected["COGNEE_BASE_URL"] = url
+
+
 def cloud_key_option() -> str:
     """The Cognee API key option as Claude Code handed it to this process, or ""."""
     return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "").strip()
@@ -191,6 +256,10 @@ def _drop_shell_keys() -> None:
         _note_ignored("LLM_API_KEY")
     if os.environ.pop("EMBEDDING_API_KEY", ""):
         _note_ignored("EMBEDDING_API_KEY")
+    if os.environ.pop("COGNEE_USER_EMAIL", ""):
+        _note_ignored("COGNEE_USER_EMAIL")
+    if os.environ.pop("COGNEE_USER_PASSWORD", ""):
+        _note_ignored("COGNEE_USER_PASSWORD")
 
 
 def parse_env_file(path: Path, key_names: list | None = None) -> dict:
@@ -260,6 +329,10 @@ def load_env_file() -> None:
     _loaded = True
 
     _drop_shell_keys()
+    try:
+        _apply_url_option()
+    except Exception:
+        pass
     try:
         path = env_file_path()
         if path.is_file():

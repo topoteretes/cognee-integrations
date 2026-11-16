@@ -36,7 +36,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from _env_file import cloud_key_option, llm_key_option, load_env_file
+from _env_file import (
+    cloud_key_option,
+    llm_key_option,
+    load_env_file,
+    login_email_option,
+    login_password_option,
+)
 from _logfiles import append_line as _append_log_line
 from event_names import event_fields
 
@@ -124,8 +130,6 @@ _ENV_MAP = {
     # base_url is an externally managed deployment: never boot a local fallback
     # server on its port; fail loudly when it is unreachable.
     "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",
-    "COGNEE_USER_EMAIL": "user_email",
-    "COGNEE_USER_PASSWORD": "user_password",
     "LLM_MODEL": "llm_model",
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
     "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
@@ -173,8 +177,6 @@ def _env_settings() -> dict:
         "COGNEE_SESSION_PREFIX": os.environ.get("COGNEE_SESSION_PREFIX", ""),
         "COGNEE_BASE_URL": os.environ.get("COGNEE_BASE_URL", ""),
         "COGNEE_MANAGED_ENDPOINT": os.environ.get("COGNEE_MANAGED_ENDPOINT", ""),
-        "COGNEE_USER_EMAIL": os.environ.get("COGNEE_USER_EMAIL", ""),
-        "COGNEE_USER_PASSWORD": os.environ.get("COGNEE_USER_PASSWORD", ""),
         "LLM_MODEL": os.environ.get("LLM_MODEL", ""),
         "COGNEE_PREFER_MEMORY": os.environ.get("COGNEE_PREFER_MEMORY", ""),
         "COGNEE_PLUGIN_IDENTITY": os.environ.get("COGNEE_PLUGIN_IDENTITY", ""),
@@ -197,6 +199,12 @@ def load_config() -> dict:
     # The keys come from the plugin options only (see _env_file).
     config["api_key"] = cloud_key_option()
     config["llm_api_key"] = llm_key_option()
+    # So does the login for a server without an API key; the built-in default
+    # user of the plugin's own local server otherwise.
+    if login_email_option():
+        config["user_email"] = login_email_option()
+    if login_password_option():
+        config["user_password"] = login_password_option()
 
     raw_dataset = str(config.get("dataset") or "")
     if raw_dataset.strip().lower() == "auto":

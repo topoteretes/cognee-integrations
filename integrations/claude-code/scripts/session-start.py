@@ -44,6 +44,7 @@ from _plugin_common import (
     _VENV_READY_MARKER,
     PRESENCE_ABSENT,
     PRESENCE_READY,
+    _api_key,
     _https_context,
     _is_loopback_host,
     _reexec_into_venv,
@@ -51,11 +52,7 @@ from _plugin_common import (
     clear_server_pidfile,
     ensure_launch_record,
     get_session_key,
-    _api_key,
     hook_log,
-    set_process_api_key,
-    set_process_principal_key,
-    user_cloud_key,
     is_observer_child,
     managed_endpoint_enabled,
     phase_begin,
@@ -68,12 +65,15 @@ from _plugin_common import (
     server_ready_hint,
     service_url_is_local,
     set_launch_base_url,
+    set_process_api_key,
+    set_process_principal_key,
     set_session_key,
     touch_activity,
+    user_cloud_key,
     write_connection_state,
     write_server_pidfile,
 )
-from _proc import find_host_ancestor_windows
+from _proc import child_env, find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
 from config import (
     _cloud_http_request,
@@ -338,14 +338,16 @@ def _key_options_message() -> str:
 
     * Cloud with no Cognee API key option: said at every session start, since
       the plugin cannot work until the option is set.
-    * An LLM or embedding key that is ignored while its option is empty: said
-      once per set of names (local mode goes on without it, on the observer).
+    * An LLM key, an embedding key or a login that is ignored while its option
+      is empty: said once per set of names.
     """
     from _env_file import (
         cloud_key_option,
         embedding_key_option,
         ignored_key_names,
         llm_key_option,
+        login_email_option,
+        login_password_option,
     )
 
     ignored = ignored_key_names()
@@ -369,6 +371,8 @@ def _key_options_message() -> str:
         for name, option in (
             ("LLM_API_KEY", llm_key_option()),
             ("EMBEDDING_API_KEY", embedding_key_option()),
+            ("COGNEE_USER_EMAIL", login_email_option()),
+            ("COGNEE_USER_PASSWORD", login_password_option()),
         )
         if name in ignored and not option
     ]
@@ -379,8 +383,8 @@ def _key_options_message() -> str:
             seen = None
         if seen != local_names:
             lines.append(
-                "Cognee no longer reads %s from your shell or ~/.cognee/.env: the local "
-                "server gets its keys from this plugin's options. %s"
+                "Cognee no longer reads %s from your shell or ~/.cognee/.env: it takes "
+                "them from this plugin's options. %s"
                 % (" and ".join(local_names), _KEY_OPTIONS_HOW)
             )
             try:
@@ -676,7 +680,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
         installed_via_uv = False
 
         if uv:
-            env = os.environ.copy()
+            env = child_env()
             # uv must never fetch an interpreter: the runtime is built from what
             # is already installed (no binaries downloaded at setup). The install
             # dir is passed only so an interpreter an earlier plugin version put
@@ -927,7 +931,7 @@ def _ensure_local_server_running(
             _ready()
             return
 
-        server_env = os.environ.copy()
+        server_env = child_env()
         # The server's own keys: the LLM and embedding key options, or the
         # observer shim's token. They exist in the server's environment only.
         from _env_file import server_key_env
@@ -948,13 +952,13 @@ def _ensure_local_server_running(
         # DEFAULT_USER_PASSWORD is set, and never rewrites a stored password. Hand
         # the server the well-known local credentials so a fresh install gets the
         # same default user it always had and the owner-key bootstrap below can log
-        # in. The server binds localhost only. setdefault: an operator's own
-        # DEFAULT_USER_* export wins. COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD still
-        # pick the user the plugin logs in as; a non-default user must already exist.
-        if not os.environ.get("DEFAULT_USER_EMAIL", ""):
-            server_env["DEFAULT_USER_EMAIL"] = _LOCAL_DEFAULT_USER_EMAIL
-        if not os.environ.get("DEFAULT_USER_PASSWORD", ""):
-            server_env["DEFAULT_USER_PASSWORD"] = _LOCAL_DEFAULT_USER_PASSWORD
+        # in. The server binds localhost only. The login options, when set, name
+        # that user instead: the server creates it and the plugin logs in as it.
+        login = load_config()
+        server_env["DEFAULT_USER_EMAIL"] = str(login.get("user_email") or _LOCAL_DEFAULT_USER_EMAIL)
+        server_env["DEFAULT_USER_PASSWORD"] = str(
+            login.get("user_password") or _LOCAL_DEFAULT_USER_PASSWORD
+        )
         # The server's console output must not inherit this worker's stdio
         # (bootstrap.log — that is how it reached gigabytes: every line the
         # server printed for as long as it ran), but it must not vanish either:
@@ -1054,14 +1058,18 @@ def _login_failure_message(status: int, body: str) -> str:
             f"{head} The server's default user has no password: cognee >= 1.6.0 "
             "creates none unless the server is started with DEFAULT_USER_PASSWORD set. "
             "Start the server with DEFAULT_USER_PASSWORD set to the same value as "
-            "COGNEE_USER_PASSWORD, or set the Cognee API key option to skip the login."
+            "this plugin's login password option, or set the Cognee API key option "
+            "to skip the login."
         )
     if status == 400 and _BAD_CREDENTIALS_MARKER in body:
         return (
-            f"{head} The server rejected COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD; point "
+            f"{head} The server rejected this plugin's login email and password options; point "
             "them at a user that exists on that server, or set the Cognee API key option."
         )
-    return f"{head} Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly, or set the Cognee API key option."
+    return (
+        f"{head} Set this plugin's login email and password options correctly, "
+        "or set the Cognee API key option."
+    )
 
 
 async def _login_default_user_for_owner_api_key(service_url: str, config: dict) -> str:
@@ -1589,7 +1597,7 @@ def _spawn_idle_watcher(
         log_fh = subprocess.DEVNULL
 
     try:
-        env = os.environ.copy()
+        env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
@@ -1725,7 +1733,7 @@ def _spawn_exit_watcher(
     try:
         # The watcher works its key out for itself (the option, or the cached
         # one): no key travels in arguments or in the environment.
-        env = os.environ.copy()
+        env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
@@ -1843,7 +1851,7 @@ def _spawn_bootstrap(
         hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
         log_fh = subprocess.DEVNULL
     try:
-        env = os.environ.copy()
+        env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
