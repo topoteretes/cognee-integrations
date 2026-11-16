@@ -3363,6 +3363,9 @@ def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
     service_url = _normalize_service_url(service_url or _local_api_url())
     agent_key = load_cached_agent_key(service_url)
     option_key = user_cloud_key(service_url)
+    if option_key and option_key == agent_key:
+        # The agent's own key is not the user's, wherever it turns up.
+        option_key = ""
     principal = (
         str(_process_keys.get("principal") or "") or option_key or load_cached_api_key(service_url)
     )

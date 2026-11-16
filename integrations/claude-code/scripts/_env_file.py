@@ -262,11 +262,12 @@ def _drop_shell_keys() -> None:
         _note_ignored("COGNEE_USER_PASSWORD")
 
 
-def parse_env_file(path: Path, key_names: list | None = None) -> dict:
+def parse_env_file(path: Path, key_names: list | None = None, not_keys: tuple = ()) -> dict:
     """Parse a dotenv-style file into a dict. Malformed lines are skipped.
 
     A key (``OPTION_ONLY``) is never returned with its value. Pass a list as
     ``key_names`` to learn which keys the file sets: their names are appended.
+    A value listed in ``not_keys`` (a token of the plugin's own) does not count.
 
     Supported: ``KEY=VALUE``, blank lines, ``#`` comments, an optional leading
     ``export ``, and single/double quotes around the value. No interpolation,
@@ -297,7 +298,8 @@ def parse_env_file(path: Path, key_names: list | None = None) -> dict:
         # A key's value is dropped as it is parsed: only its name is kept, so
         # the notice can say that it is ignored.
         if name in OPTION_ONLY:
-            if key_names is not None and _unquote(value) and name not in key_names:
+            held = _unquote(value)
+            if key_names is not None and held and held not in not_keys and name not in key_names:
                 key_names.append(name)
             result[name] = ""
             continue

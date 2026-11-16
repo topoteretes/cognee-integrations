@@ -12,7 +12,7 @@ def test_build_env_isolates_and_targets_mock(suite, temp_home, mock_server):
     assert env["USERPROFILE"] == str(temp_home)
     assert env["COGNEE_BASE_URL"] == mock_server.url
     assert env["COGNEE_PLATFORM_API_URL"] == mock_server.url
-    assert env["COGNEE_API_KEY"] == "k"
+    assert env[suite.api_key_env] == "k"
     assert env[suite.cwd_env] == str(temp_home)
     for key, value in DETERMINISTIC_ENV.items():
         assert env[key] == value

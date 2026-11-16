@@ -312,7 +312,9 @@ def server_dotenv_values() -> dict:
         from _env_file import parse_env_file
 
         named: list = []
-        values = parse_env_file(path, named)
+        # The shim's own token there (older builds wrote it) is not a user's key.
+        ours = (PLACEHOLDER_KEY, observer_token(create=False) or PLACEHOLDER_KEY)
+        values = parse_env_file(path, named, ours)
         for name in named:
             values[name] = "set"
         return values

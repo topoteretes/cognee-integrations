@@ -149,10 +149,11 @@ def _shell_words(command: str) -> list[str]:
 def _command_reads_secret(params) -> bool:
     """Whether a shell command names a deny-listed path as one of its words.
 
-    A word-level check, not a shell interpreter: ``cat ~/.aws/credentials``,
-    ``less "$HOME/.ssh/id_rsa"`` and ``source .env.local`` are caught, but a
-    path built at run time (``cat $AWS_DIR/credentials``, ``cat ~/.aws/cred*``)
-    is not, and neither is a file read by a program without naming it.
+    A word-level check, not a shell interpreter. A command that names a
+    deny-listed file as one of its words is caught: printing a cloud provider's
+    credentials file, paging a private SSH key, sourcing a local env file. A
+    path built at run time (from a variable, or with a wildcard) is not caught,
+    and neither is a file read by a program without naming it.
     """
     command = params.get("command") if isinstance(params, dict) else None
     if not isinstance(command, str):
@@ -207,9 +208,10 @@ def _matches(tool: str, prefix: str | None, name: str, params) -> bool:
     command = params.get("command") if isinstance(params, dict) else None
     if not isinstance(command, str):
         return False
-    # The prefix has to end on a word boundary: ``Bash(git:*)`` keeps ``git status``
-    # and drops ``gitx weird``. Compound commands (``cd x && git status``) are
-    # matched on their first word only; this is a prefix test, not a shell parser.
+    # The prefix has to end on a word boundary: a rule for one program keeps that
+    # program's commands and drops those of another whose name merely starts the
+    # same. A compound command is matched on its first word only; this is a
+    # prefix test, not a shell parser.
     command = command.lstrip()
     if not command.startswith(prefix):
         return False

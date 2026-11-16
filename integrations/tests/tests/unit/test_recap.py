@@ -947,8 +947,8 @@ def test_doctor_hint_follows_the_tree(recap, suite):
 @pytest.mark.parametrize(
     "code, reason, needle",
     [
-        (401, "Unauthorized", "COGNEE_API_KEY"),
-        (403, "Forbidden", "COGNEE_API_KEY"),
+        (401, "Unauthorized", "the plugin identity"),
+        (403, "Forbidden", "the plugin identity"),
         (500, "boom", "answered HTTP 500"),
     ],
 )

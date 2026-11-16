@@ -10,6 +10,41 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.7]
+
+### Changed
+
+- **Keys are plugin options.** The Cognee API key, the LLM API key and the
+  embedding API key are options of the plugin (`/plugin`, Cognee Memory,
+  Configure options), kept in Claude Code's secure store. The plugin reads a key
+  nowhere else. `COGNEE_API_KEY`, `COGNEE_PRINCIPAL_API_KEY`, `LLM_API_KEY` and
+  `EMBEDDING_API_KEY` in the shell or in `~/.cognee/.env` are ignored, and
+  session start says so until the option is set. Everything that is not a key
+  (provider, model, dataset, tuning) still comes from `~/.cognee/.env`.
+- **The login is a pair of options.** A server without an API key is logged in
+  to with the login email and login password options. `COGNEE_USER_EMAIL`,
+  `COGNEE_USER_PASSWORD` and a `DEFAULT_USER_*` export are no longer read.
+- **No key in a variable or on disk.** Plugin processes no longer hand each other
+  the key in an environment variable, and the option is never written to
+  `api_key.json`. Only the key minted on the plugin's own local server is
+  cached, as before. The LLM and embedding keys exist in the environment of the
+  local server the plugin starts, and nowhere else.
+
+### Added
+
+- **Server URL option.** The Cognee server URL can be set in the options. A
+  `COGNEE_BASE_URL` in the shell or in `~/.cognee/.env` is used when it is empty.
+- **Relay for the skills' scripts.** Claude Code hands options to hooks only, so
+  a script a skill runs has no key. A hook starts a relay (`scripts/_relay.py`)
+  that runs the script as its own child and returns the output. It accepts only
+  the plugin's own scripts, on a Unix socket only the user can reach, or on a
+  loopback port with a one-time code where Unix sockets do not exist.
+
+### Upgrade note
+
+- Enter your keys once in the plugin's options. Until then Cognee Cloud is not
+  connected, and local mode runs on the Claude observer when it can.
+
 ## [1.8.6]
 
 Changes for the plugin directory's validator, on top of the restored 1.8.5. None changes

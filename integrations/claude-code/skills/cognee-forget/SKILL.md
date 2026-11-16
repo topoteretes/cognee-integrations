@@ -85,8 +85,8 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 
 ## Error handling
 
-- **Helper exits 2 ("no API key resolved")**: no key in `COGNEE_API_KEY`, `~/.cognee/.env`, or the local `api_key.json` cache. Cloud mode: add `COGNEE_API_KEY` to `~/.cognee/.env`. Local mode: the key is minted at session start — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
-- **HTTP 401**: a key was sent but rejected — it doesn't match this server. Check `COGNEE_API_KEY` against the target `COGNEE_BASE_URL`.
+- **Helper exits 2 ("no API key resolved")**: the plugin has no key for this server. Cloud mode: the Cognee API key is a plugin option (run `/plugin`, select Cognee Memory, then Configure options), and a script reaches it through the relay a session's hooks keep up, so send a prompt in a session first. Local mode: the key is minted at session start — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
+- **HTTP 401**: a key was sent but rejected — it doesn't match this server. Check the Cognee API key option against the server URL.
 - **HTTP 404 on a data id**: it was already deleted (possibly by an earlier step of this same run) — not an error, move on.
 - An `{"error": ...}` response body means the server was reachable but the request failed — surface it; do **not** conclude the data was deleted.
 
