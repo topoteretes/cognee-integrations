@@ -24,7 +24,6 @@ _DENY_PATHS = (
     "*.key",
     "id_rsa*",
     "id_ed25519*",
-    ".npmrc",
     ".netrc",
     "*/.aws/credentials",
     "*/.ssh/*",
