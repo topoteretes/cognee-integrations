@@ -99,7 +99,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
         "session_id": session_id,
         "dataset": dataset,
         "user_id": user_id,
-        "session_key": os.environ.get("COGNEE_SESSION_KEY", ""),
+        "session_key": os.environ.get("COGNEE_SESSION_REF", ""),
         "config": {
             "base_url": config.get("base_url", ""),
             "llm_model": config.get("llm_model", ""),

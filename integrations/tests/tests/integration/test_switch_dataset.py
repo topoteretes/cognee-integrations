@@ -30,6 +30,7 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     pc = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_ID", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
@@ -415,6 +416,7 @@ def test_main_list_json_and_missing_record(env, capsys, monkeypatch):
 
     # No flag, no hook env, and discovery finds nothing: a clear "no record" exit.
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.setattr(
         env.switch, "resolve_host_key_outside_hook", lambda cwd="": ("", "not_found")
     )

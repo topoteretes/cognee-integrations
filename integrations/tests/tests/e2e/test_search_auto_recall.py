@@ -42,7 +42,7 @@ def _launch(suite, home, *, pinned: bool, shared: bool = False) -> dict:
     sessions = home / ".cognee-plugin" / suite.state_subdir / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / f"{key}.json").write_text(json.dumps(record), encoding="utf-8")
-    return {"COGNEE_SESSION_KEY": key}
+    return {"COGNEE_SESSION_KEY": key, "COGNEE_SESSION_REF": key}
 
 
 def _run(suite, home, service_url, extra):

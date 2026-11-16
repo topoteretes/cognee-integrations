@@ -213,7 +213,7 @@ def _sanitize_session_key(value: str) -> str:
 
 def get_session_key() -> str:
     candidates = [
-        os.environ.get("COGNEE_SESSION_KEY"),
+        os.environ.get("COGNEE_SESSION_REF"),
     ]
     for value in candidates:
         text = _sanitize_session_key(str(value or "").strip())
@@ -225,7 +225,7 @@ def get_session_key() -> str:
 def set_session_key(session_key: str) -> str:
     normalized = _sanitize_session_key(session_key)
     if normalized:
-        os.environ["COGNEE_SESSION_KEY"] = normalized
+        os.environ["COGNEE_SESSION_REF"] = normalized
     return normalized
 
 
@@ -894,7 +894,7 @@ def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
     The switch command runs under the host's shell tool, which has no hook stdin.
     Resolution, in order — returns ``(host_key, source)``, ``("", reason)`` when
     nothing matched:
-      1. ``COGNEE_SESSION_KEY`` — already inside a hook.
+      1. ``COGNEE_SESSION_REF`` — already inside a hook.
       2. The host's own session-id export (Claude Code: ``CLAUDE_CODE_SESSION_ID``).
       3. The host's pid export or our process ancestry, matched against the
          ``host_pid`` each SessionStart stores in its record.
@@ -1969,7 +1969,7 @@ def outage_header(state: str, saves: dict, backlog: dict | None, joiner: str) ->
 
 
 def _pending_keys(session_id: str, turn_id: str = "") -> tuple[str, str]:
-    # Scope by the host-provided session key (COGNEE_SESSION_KEY, unique per
+    # Scope by the host-provided session key (COGNEE_SESSION_REF, unique per
     # Claude/Codex session) rather than the cwd-derived cognee session_id, so
     # two concurrent agents in the same project don't collide on one pending
     # slot and scramble each other's prompts. Falls back to session_id.

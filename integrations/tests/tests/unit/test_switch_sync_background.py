@@ -58,7 +58,8 @@ def test_local_starts_a_detached_sync_of_the_retiring_pair(switch, monkeypatch):
     assert seen["argv"][1].endswith("sync-session-to-graph.py") and len(seen["argv"]) == 2
     assert seen["start_new_session"] is True
     env = seen["env"]
-    assert env["COGNEE_SESSION_KEY"] == "host-1"
+    # Claude Code names it COGNEE_SESSION_REF (SDK-1411); the other hosts keep the old name.
+    assert (env.get("COGNEE_SESSION_REF") or env.get("COGNEE_SESSION_KEY")) == "host-1"
     assert env["COGNEE_SYNC_SESSION_ID"] == "sess-1"
     assert env["COGNEE_SYNC_DATASET"] == "agent_sessions"
 

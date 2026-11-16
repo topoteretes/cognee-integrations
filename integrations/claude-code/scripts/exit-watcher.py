@@ -72,7 +72,7 @@ def _spawn_sync(
         if dataset:
             env["COGNEE_SYNC_DATASET"] = dataset
         if session_key:
-            env["COGNEE_SESSION_KEY"] = session_key
+            env["COGNEE_SESSION_REF"] = session_key
         if agent_session_name:
             env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
         if api_key:

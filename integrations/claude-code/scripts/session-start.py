@@ -1474,7 +1474,7 @@ def _spawn_idle_watcher(
     try:
         env = os.environ.copy()
         if session_key:
-            env["COGNEE_SESSION_KEY"] = session_key
+            env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -1611,7 +1611,7 @@ def _spawn_exit_watcher(
         if api_key:
             env["COGNEE_API_KEY"] = api_key
         if session_key:
-            env["COGNEE_SESSION_KEY"] = session_key
+            env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
             [sys.executable, str(_EXIT_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -1729,7 +1729,7 @@ def _spawn_bootstrap(
     try:
         env = os.environ.copy()
         if session_key:
-            env["COGNEE_SESSION_KEY"] = session_key
+            env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _BOOTSTRAP_ARG, json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -2002,7 +2002,7 @@ async def _bootstrap_session(bootstrap: dict) -> None:
     dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
     agent_session_name = str(bootstrap.get("agent_session_name", "") or session_id)
     if session_key:
-        os.environ["COGNEE_SESSION_KEY"] = session_key
+        os.environ["COGNEE_SESSION_REF"] = session_key
     if session_id:
         os.environ["COGNEE_SESSION_ID"] = session_id
     service_url = _with_scheme(bootstrap.get("base_url", "") or _LOCAL_SERVICE_URL)
@@ -2625,7 +2625,7 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     if not session_key:
         # The mid-bootstrap venv re-exec (_run_heavy) replays this script after
         # stdin was already consumed, so the payload is gone — but the pre-exec
-        # run exported COGNEE_SESSION_KEY, which execv preserves.
+        # run exported COGNEE_SESSION_REF, which execv preserves.
         session_key = get_session_key()
         if session_key:
             session_source = "env_session_key"
@@ -2641,7 +2641,7 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
                 "systemMessage": "Cognee Memory: session key missing in SessionStart payload.",
             }
         }
-    os.environ["COGNEE_SESSION_KEY"] = session_key
+    os.environ["COGNEE_SESSION_REF"] = session_key
     if payload.get("source") in {"clear", "compact"}:
         from _injection_ledger import reset as reset_injection_ledger
         from _injection_ledger import session_dir as ledger_dir

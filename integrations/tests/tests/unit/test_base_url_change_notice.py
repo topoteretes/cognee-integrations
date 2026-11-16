@@ -18,6 +18,7 @@ def pc(suite, isolated_modules, monkeypatch, tmp_path):
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
     monkeypatch.delenv("COGNEE_LOCAL_API_URL", raising=False)
     monkeypatch.setenv("COGNEE_SESSION_KEY", "host-1")
+    monkeypatch.setenv("COGNEE_SESSION_REF", "host-1")
     common.ensure_launch_record("host-1", str(tmp_path))
     return common
 

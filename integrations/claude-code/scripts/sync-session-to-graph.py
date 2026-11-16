@@ -104,10 +104,10 @@ def _final_sync_identity() -> tuple[str, str]:
     """
     from _plugin_common import get_session_key, read_stored_seq
 
-    session_key = str(os.environ.get("COGNEE_SESSION_KEY", "") or "").strip()
+    session_key = str(os.environ.get("COGNEE_SESSION_REF", "") or "").strip()
     session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
     if session_key:
-        token, source = session_key, "COGNEE_SESSION_KEY"
+        token, source = session_key, "COGNEE_SESSION_REF"
     elif session_id:
         token, source = session_id, "COGNEE_SYNC_SESSION_ID"
     else:

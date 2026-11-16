@@ -223,7 +223,7 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
     kept stable across the launch's separate hook processes via the host-keyed
     map (see ``resolve_cognee_session_id``). It is the single scoping key for all
     saves/recalls. The host (Claude) session id is read from the in-process
-    ``COGNEE_SESSION_KEY`` purely as the local correlation key.
+    ``COGNEE_SESSION_REF`` purely as the local correlation key.
 
     Hooks call this after setting the host session key from their payload, so the
     resolver finds the launch's id in the map. An explicit ``COGNEE_SESSION_ID``

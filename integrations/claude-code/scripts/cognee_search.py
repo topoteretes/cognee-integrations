@@ -147,7 +147,7 @@ def _cached_api_key(service_url: str) -> str:
 def _connection_session_id(service_url: str, api_key: str, https_context) -> str:
     """The session id the server holds for this agent (GET /agents/connections/me)."""
     query = ""
-    session_key = (os.environ.get("COGNEE_SESSION_KEY") or "").strip()
+    session_key = (os.environ.get("COGNEE_SESSION_REF") or "").strip()
     if session_key:
         query = "?agent_session_name=" + urllib.parse.quote(session_key, safe="")
     req = urllib.request.Request(

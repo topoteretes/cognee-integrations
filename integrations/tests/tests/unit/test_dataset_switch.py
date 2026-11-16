@@ -31,6 +31,7 @@ def pc(suite, isolated_modules, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_ID", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
     return common
@@ -87,6 +88,7 @@ def test_config_get_dataset_follows_record(suite, pc, isolated_modules, monkeypa
     pc.ensure_launch_record(HOST, "/w", dataset="from-config")
     pc.switch_launch_record(HOST, session_id="s2", dataset="switched", conn_uuid="c2")
     monkeypatch.setenv("COGNEE_SESSION_KEY", HOST)
+    monkeypatch.setenv("COGNEE_SESSION_REF", HOST)
     assert config.get_dataset(cfg) == "switched"
 
 
@@ -270,6 +272,7 @@ def test_list_writable_never_asks_a_cloud_tenant_for_users_me(pc, monkeypatch):
 def test_host_key_from_env_session_key(pc, monkeypatch):
     pc.ensure_launch_record(HOST, "/w", dataset="a")
     monkeypatch.setenv("COGNEE_SESSION_KEY", HOST)
+    monkeypatch.setenv("COGNEE_SESSION_REF", HOST)
     assert pc.resolve_host_key_outside_hook() == (HOST, "env_session_key")
 
 

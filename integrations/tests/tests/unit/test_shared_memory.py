@@ -37,6 +37,7 @@ def pc(suite, isolated_modules, mock_server, monkeypatch):
     monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
     monkeypatch.delenv("COGNEE_SHARED_AGENT_MEMORY", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_ID", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
     return module
@@ -60,6 +61,7 @@ def bootstrap(suite, hook_module, mock_server, monkeypatch):
         config.setdefault("user_password", "default_password")
         sid, conn = ensure_launch_record(host, "/tmp/project", dataset=dataset)
         monkeypatch.setenv("COGNEE_SESSION_KEY", host)
+        monkeypatch.setenv("COGNEE_SESSION_REF", host)
         return asyncio.run(
             module._ensure_agent_credentials_and_register(config, "/tmp/project", sid, conn, host)
         )

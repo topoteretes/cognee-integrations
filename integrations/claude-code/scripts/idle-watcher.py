@@ -105,10 +105,10 @@ def _check_llm_key(config: dict) -> None:
 
     Writes the shared llm-state marker: ``ok`` / ``auth_failed`` / ``not_set``.
     Local mode only (LLM_API_KEY is unused against a remote server). Throttled via
-    the marker's ``checked_at``. Honors COGNEE_LLM_KEY_CHECK=off.
+    the marker's ``checked_at``. Honors COGNEE_LLM_CHECK=off.
     """
     try:
-        if os.environ.get("COGNEE_LLM_KEY_CHECK", "").strip().lower() in (
+        if os.environ.get("COGNEE_LLM_CHECK", "").strip().lower() in (
             "0",
             "false",
             "no",
@@ -328,7 +328,7 @@ def main():
         os.environ["COGNEE_USER_ID"] = user_id
     if session_key:
         config["session_key"] = session_key
-        os.environ["COGNEE_SESSION_KEY"] = session_key
+        os.environ["COGNEE_SESSION_REF"] = session_key
 
     try:
         _PIDFILE.write_text(str(os.getpid()), encoding="utf-8")
