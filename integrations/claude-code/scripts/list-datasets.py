@@ -38,9 +38,7 @@ from _plugin_common import (  # noqa: E402
     hook_log,
     list_readable_datasets,
     other_readable_datasets,
-    require_shell_auth,
     resolve_active_dataset,
-    resolved_http_endpoint_auth,
     shell_runtime_overrides,
 )
 
@@ -74,10 +72,6 @@ def main(argv: list[str] | None = None) -> int:
     if "--session-key" in args:
         i = args.index("--session-key")
         explicit_key = args[i + 1] if i + 1 < len(args) else ""
-    # Runs from a shell (the cognee-search skill), where Claude Code passes no
-    # Cloud key option: stop before any request a remote server could only 401.
-    service_url, api_key = resolved_http_endpoint_auth()
-    require_shell_auth(service_url, api_key, "list-datasets")
     try:
         current = active_dataset(explicit_key)
         rows = list_readable_datasets()

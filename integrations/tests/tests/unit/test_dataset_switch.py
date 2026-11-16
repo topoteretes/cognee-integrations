@@ -329,7 +329,7 @@ def test_codex_status_reads_auto_when_recall_is_routed(suite, statusline, monkey
     monkeypatch.setattr(statusline, "_active_dataset", lambda host_id="": "agent_sessions")
     monkeypatch.setattr(statusline, "_status_prefix", lambda host_id="": "● ")
     monkeypatch.setattr(statusline, "_active_mode", lambda: "local")
-    monkeypatch.setattr(statusline, "_credits_segment", lambda: "", raising=False)
+    monkeypatch.setattr(statusline, "_credits_segment", lambda: "")
     monkeypatch.setattr(statusline, "_update_segment", lambda: "")
     assert (
         statusline.render_status_for_host(HOST, True) == "● cognee: auto (agent_sessions) · local"

@@ -1,10 +1,8 @@
 """The skill scripts sanitize what they send, on the CLI fallback too (SDK-1100).
 
-Where ``cognee-remember.sh`` and ``cognee-search.sh`` fall back to
-``cognee-cli`` when the server cannot be reached, a stub ``cognee-cli`` on PATH
-records the argv it was handed: a ``<private>`` span or a recognised secret
-must not be in it. A tree that ships no fallback (Claude Code, SDK-1411) must
-never start the CLI at all.
+``cognee-remember.sh`` and ``cognee-search.sh`` fall back to ``cognee-cli`` when
+the server cannot be reached. A stub ``cognee-cli`` on PATH records the argv it
+was handed: a ``<private>`` span or a recognised secret must not be in it.
 """
 
 from __future__ import annotations
@@ -14,22 +12,8 @@ import shutil
 import subprocess
 
 import pytest
-from utils.isolation import scrub_env_dict, with_plugin_options
 
 SECRET = "SENTINEL-6d1c"
-
-
-def _has_cli_fallback(suite, script: str) -> bool:
-    """Whether the wrapper (or the Python it runs) still invokes ``cognee-cli``."""
-    names = {
-        "cognee-remember.sh": ("cognee-remember.sh", "cognee_remember.py"),
-        "cognee-search.sh": ("cognee-search.sh", "cognee_search.py"),
-    }[script]
-    return any(
-        "cognee-cli" in (suite.scripts_dir / name).read_text(encoding="utf-8")
-        for name in names
-        if (suite.scripts_dir / name).is_file()
-    )
 
 
 @pytest.fixture
@@ -58,17 +42,13 @@ def test_cli_fallback_gets_the_sanitized_text(
     suite, temp_home, closed_port_url, cli_argv, script, argv
 ):
     bin_dir, log = cli_argv
-    # The Claude Code plugin reads the URL and key from its plugin options only.
-    env = with_plugin_options(
-        suite,
-        {
-            **scrub_env_dict(dict(os.environ)),
-            "HOME": str(temp_home),
-            "PATH": os.pathsep.join([str(bin_dir), os.environ.get("PATH", "")]),
-            "COGNEE_BASE_URL": closed_port_url,
-            "COGNEE_API_KEY": "test-key",
-        },
-    )
+    env = {
+        **os.environ,
+        "HOME": str(temp_home),
+        "PATH": os.pathsep.join([str(bin_dir), os.environ.get("PATH", "")]),
+        "COGNEE_BASE_URL": closed_port_url,
+        "COGNEE_API_KEY": "test-key",
+    }
     result = subprocess.run(
         ["bash", str(suite.scripts_dir / script), *argv],
         env=env,
@@ -76,12 +56,6 @@ def test_cli_fallback_gets_the_sanitized_text(
         text=True,
         timeout=60,
     )
-    if not _has_cli_fallback(suite, script):
-        # No fallback: the text goes nowhere, and the run says it was not done.
-        assert result.returncode == 1, result.stderr
-        assert not log.exists(), "cognee-cli was started"
-        assert "server unreachable" in result.stderr
-        return
     assert log.exists(), f"cognee-cli never ran: {result.stderr}"
     sent = log.read_text()
     assert "[private]" in sent

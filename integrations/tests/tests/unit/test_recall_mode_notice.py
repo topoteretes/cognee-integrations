@@ -34,7 +34,7 @@ def _plain_status(statusline, monkeypatch):
     monkeypatch.setattr(statusline, "_active_mode", lambda: "local")
     if hasattr(statusline, "_mode_label"):
         monkeypatch.setattr(statusline, "_mode_label", lambda: "local")
-    monkeypatch.setattr(statusline, "_credits_segment", lambda: "", raising=False)
+    monkeypatch.setattr(statusline, "_credits_segment", lambda: "")
     monkeypatch.setattr(statusline, "_update_segment", lambda: "")
     return statusline
 

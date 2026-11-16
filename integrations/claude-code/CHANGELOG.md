@@ -10,157 +10,6 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.8.2]
-
-A conservative release to meet Anthropic's plugin directory policy (SDK-1411). Since
-1.7.0 every version has been held by that policy, and since Nov 4 the listed 1.6.6 no
-longer meets its credential rule. The plugin now reads no credential from the
-machine, stores none, writes nothing into Claude Code's settings, installs nothing
-and sends nothing anywhere but the Cognee server. **Existing users: enter your Cloud URL
-and key, or your local LLM settings, once in the plugin's options; in local mode,
-install Cognee with the command session start prints.**
-
-### Changed
-
-- **Credentials and connection settings are plugin options.** Claude Code asks for the
-  Cognee Cloud URL and API key, and the local server's LLM and embedding settings, when
-  the plugin is enabled (`userConfig`: `cognee_base_url`, `cognee_api_key`,
-  `llm_api_key`, `llm_provider`, `llm_model`, `embedding_provider`, `embedding_model`,
-  `embedding_dimensions`, `embedding_api_key`), and keeps the keys in its secure
-  credential store. The plugin reads them only from those options: `COGNEE_BASE_URL`,
-  `COGNEE_API_KEY`, `COGNEE_PRINCIPAL_API_KEY`, `COGNEE_USER_*`, `LLM_*` and
-  `EMBEDDING_*` in the shell or in `~/.cognee/.env` are ignored. The status line and
-  Bash-run skills, which get no options, read the URL option where Claude Code saves it
-  (`pluginConfigs` in `~/.claude/settings.json`).
-- **`~/.cognee/.env` holds only tuning settings.** The plugin loads only an allowlist of
-  its own non-secret `COGNEE_*` settings from the file, and keeps a value only for a
-  name on that allowlist: every other line's value is dropped as it is parsed, whatever
-  its name. `doctor.py` lists credential and connection names as "ignored (set in the
-  plugin options)" and the rest as "ignored (not a plugin setting)".
-  `COGNEE_LOCAL_API_URL` is honoured only for a loopback address: `localhost`, `::1`
-  or an address in `127.0.0.0/8` (a name that merely starts with `127.` is remote, and
-  `0.0.0.0` does not count). The plugin no longer
-  writes a commented template into the file. Session start says once when the file
-  still holds Cloud or LLM settings that the options lack, and on every start when the
-  Cloud URL option is set without its key, or the key without a URL (Cognee then runs
-  locally).
-- **The local server starts with an allowlisted environment.** Only path, home,
-  locale, temp, proxy, TLS and platform variables, the plugin's own settings and the
-  option-derived LLM and embedding values reach it: no provider key, database password
-  or token from the shell. It gets `COGNEE_ENV_FILE` pointing at an empty plugin-owned
-  file (`~/.cognee-plugin/claude-code/server.env`), so cognee never picks up another
-  `.env`, and `HASH_API_KEY=false`. Database, AWS, Azure and similar credentials are not
-  plugin options: run your own Cognee server for those backends and connect to it with
-  the URL and API key options. The login is always the local default user
-  (`COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` no longer apply). The server always keeps
-  its stores under `~/.cognee`: `DATA_ROOT_DIRECTORY`, `SYSTEM_ROOT_DIRECTORY` and
-  database provider settings in the shell or in `~/.cognee/.env` are ignored, and
-  session start says so once when it finds any (data stored elsewhere is untouched but
-  not used). Cognee's `TELEMETRY_DISABLED` opt-out is passed through. The driver
-  extras checked for are `fastembed` (embedding provider) and, for the LLM provider
-  option, `anthropic` and `mistral`, whose SDKs the base cognee install lacks: a venv
-  without them is refused and the printed command includes the extra.
-- **Ollama and custom LLM endpoints are not supported in this version.** There is no
-  endpoint option and `LLM_ENDPOINT` is ignored, so a local Ollama, Azure or other
-  OpenAI-compatible endpoint cannot be configured. This is the most restrictive version
-  on purpose; they will be added back shortly if the plugin directory accepts it.
-- **Requests to this machine never go through a proxy.** The local Cognee server and
-  the observer shim are reached directly even with `HTTP_PROXY` set, including the
-  code-graph indexing requests and the `cognee-forget.sh` commands (whose `env`
-  output also exempts this machine in `NO_PROXY`); a remote server uses the proxy as
-  before. The local server gets `127.0.0.1`, `localhost` and `::1` added to `NO_PROXY`
-  when a proxy setting is passed to it, so its calls to the observer shim stay on this
-  machine. The observer's health check sends no token.
-- **No request to the local server without its key.** When the local owner key is not
-  available yet (the server is busy, or still starting), the request is not sent, and
-  the prompt hook no longer reports that as a rejected key.
-- **`COGNEE_PLUGIN_DISABLED=true`** (shell or `~/.cognee/.env`) turns the whole plugin
-  off. The skill-routing eval scaffold uses it instead of pointing the plugin at an
-  unreachable server, which the env file can no longer do.
-- **The Cloud key never goes to a local server.** A server on this machine always gets
-  its own owner key, and the key is not even put in the environment of a process that
-  talks to one. The one exception is a terminal pinned with `COGNEE_BACKEND=cloud`
-  whose Cloud URL option is itself a loopback address (a self-hosted server used as
-  Cloud); the pin with no URL option sends the key nowhere. Every process picks the
-  same owner key: the first listed one that is a real key, skipping a masked one and a
-  stored hash, so a key minted at session start is the one the other hooks use. A
-  local server that hides its keys (`HASH_API_KEY=true`) is refused with a message
-  instead of getting a new key every session.
-- **No key is stored on disk.** `~/.cognee-plugin/api_key.json` and
-  `~/.cognee-plugin/claude-code/agent_key.json` are no longer read or written. In local
-  mode the plugin looks up its own server's owner key by logging in as the server's
-  default user. A found key is kept for the process; a failed lookup is retried after
-  5 seconds. The prompt-time recall and `Read` file-context hooks give up after 1.5
-  seconds; the lookup time is logged as `local_owner_key_lookup_ms`.
-- **Plugin identity is off.** Every request runs as the user's own key: no per-machine
-  agent key is minted, so there is no shared agent memory role and no agent key limit.
-  `COGNEE_PLUGIN_IDENTITY` is ignored. Registration still says `type: claude_code`.
-  The `shared_memory.json` an earlier version left is no longer read: writes go to the
-  user's own dataset by name, not to the canonical dataset UUID it recorded (which after
-  a storage change no longer exists, so every write was refused with HTTP 403).
-- **Local mode needs a Cognee you install.** Session start no longer installs Cognee
-  (no uv, no pip, no interpreter fallback). It uses `~/.cognee-plugin/venv` when that
-  holds cognee 1.6.6 or newer with the driver extras your providers need; otherwise it
-  prints the exact install command and local mode stays off.
-- **The status line is no longer installed.** Session start does not write a
-  `statusLine` entry into `~/.claude/settings.json`, and nothing removes or updates one.
-  An entry an earlier version wrote keeps working until a plugin update moves its
-  script path; `doctor.py` shows the connection state instead.
-- **Claude auto-memory is advised about, not changed.** In Cloud mode session start says
-  once that Claude Code's auto-memory is on alongside Cognee and how to turn it off; it
-  no longer sets `autoMemoryEnabled`. If an earlier version turned it off, it says so
-  once. `COGNEE_DISABLE_AUTO_MEMORY` no longer applies.
-- **The Claude observer passes no credential.** The `claude -p` child it runs gets only
-  an allowlisted environment (path, home, config dir, locale, proxy and certificate
-  settings). A login that lives only in `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
-  can no longer run the observer; set the LLM API key option instead. The observer no
-  longer opens the local server's `.env` to decide whether to start. When the observer
-  cannot answer, the status line and doctor say it can use only Claude Code's stored
-  login (not Bedrock, Vertex, a gateway or setup-token).
-- **Doctor reports what session start decided.** Run from a shell it has no plugin
-  options, so it shows the key source, LLM provider and model, and observer state from
-  the newest launch record ("as of session start"), which holds booleans and names
-  only.
-- **Skills stop early in Cloud mode.** A skill run from the shell with a remote URL and
-  no key exits with status 2 and "no API key" before sending any request, instead of
-  a 401 that pointed at the option the user had already set.
-
-### Removed
-
-- **The hooks module (`hooks/register.ts`)** and everything it drew: the status row above
-  the prompt with its dataset picker and `see fix` dialog, activity after the spinner, the
-  first-run tour (`/cognee-tour`), `/cognee-dataset`, and the direct tools
-  `mcp__cognee-memory__search` / `mcp__cognee-memory__remember`, with their options
-  (`icon`, `band`, `spinner`, `tools`, `tour`), and the helper that wrote a pasted key
-  into `~/.cognee/.env`. The skills and `cognee-switch-datasets` remain.
-- **The `cognee-keys` skill** and `scripts/plugin-keys.py`: there are no agent keys left
-  to list or revoke. Keys minted by earlier versions can be revoked from the Cognee
-  Cloud dashboard.
-- **The update check:** no daily request for the published version, and no update
-  notice on the status line or at session start. Claude Code's plugin updates cover it.
-- **The status line's credit balance** and its refresh (`credits-refresh.py`, the
-  `StopFailure` hook, `COGNEE_STATUSLINE_CREDITS`, `COGNEE_BILLING_URL`): no request to
-  the Cognee platform API.
-- **The local LLM key check** (`COGNEE_LLM_KEY_CHECK`, `COGNEE_LLM_CHECK_INTERVAL`): the
-  plugin no longer validates your LLM key with a provider call; only the Claude
-  observer is checked.
-- **The `cognee-cli` fallback** of the search and remember skills.
-- **From `cognee-report`:** the `--server` check, the Notion export
-  (`--export-notion`, which read `NOTION_TOKEN`) and the `outcomes` command. The outcome
-  harness moved to `integrations/tests/claude_outcome_eval/` in the repository and no
-  longer ships with the plugin.
-
-### Known limitations
-
-- Claude Code passes plugin options only to hook processes. Skills that call the server
-  through the Bash tool (search, remember, forget, code indexing, the recaps, the
-  dataset switch's listing, the doctor's auth check, the `cognee-recall` agent) cannot
-  authenticate in Cloud mode. Automatic recall and capture work in both modes.
-- Local mode logs in to its own server in each hook process (median about 40 ms
-  against an idle server), adding a little latency; the key is never passed to child
-  processes through the environment.
-- Upgrading users re-enter their Cloud or LLM settings once in the plugin options.
-
 ## [1.8.1] - 2026-11-14
 
 ### Fixed
@@ -1016,7 +865,7 @@ install Cognee with the command session start prints.**
 - **Local mode no longer downloads anything but the pinned `cognee` package.** The
   Claude Code plugin directory admits only code that is in the reviewed repository or a
   package pinned to an exact version, and the bootstrap broke that rule twice: when uv
-  was missing it downloaded and ran uv's installer script, and it let uv fetch a
+  was missing it ran `curl https://astral.sh/uv/install.sh | sh`, and it let uv fetch a
   standalone Python 3.12 from GitHub when none was installed. Both are gone.
   `session-start.py` now builds the runtime venv only from tooling already on the
   machine: an existing uv (invoked with `UV_PYTHON_DOWNLOADS=never` and a `>=3.10,<3.15`
@@ -1078,7 +927,7 @@ install Cognee with the command session start prints.**
   cache itself. New hook event `readable_datasets_refresh_deferred`.
 
 ### Removed
-- `_install_uv()` and the URL of uv's installer script. uv found under
+- `_install_uv()` and the `https://astral.sh/uv/install.sh` constant. uv found under
   `~/.cognee-plugin/uv` from an earlier plugin version, or on PATH, is still used.
 
 ## [1.6.4]

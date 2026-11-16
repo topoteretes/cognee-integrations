@@ -32,8 +32,6 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from _net import open_url
-
 UNREACHABLE = "UNREACHABLE"
 
 
@@ -138,7 +136,7 @@ def _poll_status(
     dataset_id,
     deadline_seconds,
     *,
-    opener=open_url,
+    opener=urllib.request.urlopen,
     interval_seconds=3.0,
     request_timeout=10.0,
 ):
@@ -200,7 +198,7 @@ def do_remember(
     *,
     file_path=None,
     dataset_id="",
-    opener=open_url,
+    opener=urllib.request.urlopen,
     timeout=120.0,
 ):
     """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
@@ -272,7 +270,7 @@ def do_remember(
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — the server rejected the key" % e.code
+            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
         else:
             msg = "server returned HTTP %s for /api/v1/remember" % e.code
         sys.stderr.write("[cognee-remember] %s — NOT falling back to local CLI\n" % msg)
@@ -364,8 +362,32 @@ def main(argv):
 
 
 def report(result) -> None:
-    """Print a remember's result."""
+    """Print a remember's result, and note a server answer on the status line."""
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
+    if result != UNREACHABLE:
+        # Refresh the status-line credits marker, attributing the spend delta
+        # to this remember (cloud-only; the fetch itself no-ops on a local
+        # server). Lazy, guarded import: this module is standalone by design,
+        # and the opt-out env stops _plugin_common's venv re-exec — an execv
+        # here would re-run main() and double-submit the remember.
+        try:
+            os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _plugin_common import (
+                clear_payment_required,
+                record_payment_required,
+                refresh_credits,
+            )
+
+            # A 402 is the server refusing to pay for this remember; note it
+            # for the status line. A remember that got through clears the note.
+            if isinstance(result, dict) and result.get("status") == 402:
+                record_payment_required("remember")
+            elif isinstance(result, dict) and not result.get("error"):
+                clear_payment_required()
+            refresh_credits("remember")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

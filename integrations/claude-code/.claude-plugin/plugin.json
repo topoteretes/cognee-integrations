@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
-  "version": "1.8.2",
+  "version": "1.8.1",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -23,59 +23,35 @@
     "persistent-memory"
   ],
   "userConfig": {
-    "cognee_base_url": {
+    "icon": {
       "type": "string",
-      "title": "Cognee Cloud URL",
-      "description": "Your Cognee Cloud instance, such as https://your-instance.cognee.ai, or your own Cognee server. Leave empty to run Cognee locally on this machine.",
-      "default": ""
+      "title": "Cognee logo",
+      "description": "Show the Cognee logo on the status row and on the credit line under answers. Set to none to hide it.",
+      "default": "wave"
     },
-    "cognee_api_key": {
-      "type": "string",
-      "title": "Cognee Cloud API key",
-      "description": "The ck_… key from your Cognee Cloud account (or your own server). Needed only with a Cloud URL; a local server needs none.",
-      "sensitive": true
+    "band": {
+      "type": "boolean",
+      "title": "Status row above the prompt",
+      "description": "Show Cognee's status row above the prompt: dataset picker, counters and current memory activity.",
+      "default": true
     },
-    "llm_api_key": {
-      "type": "string",
-      "title": "LLM API key (local mode)",
-      "description": "The model provider key the local Cognee server builds memory with (OpenAI unless LLM provider is set). Leave empty to use your Claude subscription through the claude CLI instead.",
-      "sensitive": true
+    "spinner": {
+      "type": "boolean",
+      "title": "Show memory activity in the spinner",
+      "description": "Add what Cognee is doing (recalling, saving, consolidating) after the spinner while Claude works.",
+      "default": true
     },
-    "llm_provider": {
-      "type": "string",
-      "title": "LLM provider (local mode)",
-      "description": "The local server's LLM provider, such as openai, anthropic or gemini. Leave empty for OpenAI with an LLM API key, or the Claude subscription without one.",
-      "default": ""
+    "tools": {
+      "type": "boolean",
+      "title": "Give Claude direct memory tools",
+      "description": "Register search and remember as tools Claude can call directly (mcp__cognee-memory__search / remember) instead of going through a skill and a shell command.",
+      "default": true
     },
-    "llm_model": {
-      "type": "string",
-      "title": "LLM model (local mode)",
-      "description": "The model the local server uses, such as openai/gpt-4o-mini. Leave empty for the provider's default.",
-      "default": ""
-    },
-    "embedding_provider": {
-      "type": "string",
-      "title": "Embedding provider (local mode)",
-      "description": "The local server's embedding provider, such as openai or fastembed. Leave empty for Cognee's default. A dataset built with one embedder can't be searched with another.",
-      "default": ""
-    },
-    "embedding_model": {
-      "type": "string",
-      "title": "Embedding model (local mode)",
-      "description": "The embedding model, such as openai/text-embedding-3-large. Leave empty for Cognee's default.",
-      "default": ""
-    },
-    "embedding_dimensions": {
-      "type": "string",
-      "title": "Embedding dimensions (local mode)",
-      "description": "The embedding model's vector size, such as 3072. Leave empty for Cognee's default.",
-      "default": ""
-    },
-    "embedding_api_key": {
-      "type": "string",
-      "title": "Embedding API key (local mode)",
-      "description": "The embedding provider's key. Leave empty to reuse the LLM API key.",
-      "sensitive": true
+    "tour": {
+      "type": "boolean",
+      "title": "First-run tour",
+      "description": "On the first session on this machine, show three short hints under the status row about what it shows and does (/cognee-tour replays them).",
+      "default": true
     }
   }
 }

@@ -1,12 +1,10 @@
 """Shared configuration for the Cognee Claude Code plugin.
 
 Loads settings from (in priority order):
-  1. The plugin options in Claude Code (credentials, Cloud URL, LLM and
-     embedding settings), mapped onto the environment by _env_file
-  2. Environment variables (runtime overrides of tuning settings)
-  3. Env file (~/.cognee/.env — the plugin's non-secret COGNEE_* tuning
-     settings only, injected into os.environ with setdefault)
-  4. Defaults
+  1. Environment variables (runtime overrides)
+  2. Env file (~/.cognee/.env — one-time setup, injected into os.environ
+     with setdefault, so it sits just below real shell exports)
+  3. Defaults
 
 There is deliberately no config file. An earlier ``~/.cognee-plugin/config.json``
 layer was read by SessionStart but not by the per-turn hooks, so a stale
@@ -14,18 +12,18 @@ layer was read by SessionStart but not by the per-turn hooks, so a stale
 (SDK-466); the env file covers every key it held, from one place every process
 reads. SessionStart deletes a leftover file so it cannot mislead anyone.
 
-Cloud mode is on when the Cloud URL option is set. `export COGNEE_BACKEND=local`
-(or `=cloud`) flips one terminal — COGNEE_CLAUDE_BACKEND does the same for this
-plugin only, beating the shared name. A forced mode is pinned: forced local
-scrubs the cloud connection vars from the process environment (see
-_env_file), and forced cloud keeps is_cloud_mode() true even when connection
-vars are missing, so the plugin attempts the cloud connection and the status
-line reports what is wrong instead of silently falling back to local.
+The env file may hold both modes' variables at once; cloud wins when both are
+configured. `export COGNEE_BACKEND=local` (or `=cloud`) flips one terminal —
+COGNEE_CLAUDE_BACKEND does the same for this plugin only, beating the shared
+name. A forced mode is pinned: forced local scrubs the cloud connection vars
+from the process environment (see _env_file), and forced cloud keeps
+is_cloud_mode() true even when connection vars are missing, so the plugin
+attempts the cloud connection and the status line reports what is wrong
+instead of silently falling back to local.
 
 Two modes, both over HTTP — the hooks never import cognee in-process:
   - Local: the plugin boots a Cognee server on localhost and talks to it
-  - Cloud: connect to a remote Cognee server via the Cloud URL and API key
-    options (COGNEE_BASE_URL + COGNEE_API_KEY in the environment)
+  - Cloud: connect to a remote Cognee server via COGNEE_BASE_URL + COGNEE_API_KEY
 """
 
 from __future__ import annotations
@@ -56,10 +54,6 @@ _DEFAULTS = {
     "session_prefix": "claude",  # agent name; session id is "{agent}_{host_session_id}"
     "top_k": 3,
     "backend": "auto",
-    # The local server's default user, which the plugin always logs in as to
-    # look up its owner key. Not configurable: a server this plugin starts is
-    # given exactly these (session-start), and any other server is reached
-    # with the URL and API-key options.
     "user_email": "default_user@example.com",
     "user_password": "default_password",
     # Cloud / remote
@@ -131,6 +125,8 @@ _ENV_MAP = {
     # base_url is an externally managed deployment: never boot a local fallback
     # server on its port; fail loudly when it is unreachable.
     "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",
+    "COGNEE_USER_EMAIL": "user_email",
+    "COGNEE_USER_PASSWORD": "user_password",
     "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",

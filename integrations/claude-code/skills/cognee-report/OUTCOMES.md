@@ -1,7 +1,3 @@
-> Moved out of the Claude Code plugin in 1.8.2 (SDK-1411): this harness reads
-> model and Cognee keys from the environment, so it is a developer tool kept in
-> the repository rather than shipped with the plugin.
-
 # Controlled task outcomes
 
 The operational report measures delivery and latency. This runner tests whether
@@ -15,9 +11,9 @@ Run the included offline protocol smoke suite (seven cases, three variants, thre
 repetitions = 63 trials). Use a new output directory for each run:
 
 ```bash
-python3 integrations/tests/claude_outcome_eval/outcome_eval.py run \
-  --suite integrations/tests/claude_outcome_eval/fixtures/outcome-smoke.json \
-  --runner '["python3", "integrations/tests/claude_outcome_eval/outcome_smoke_runner.py"]' \
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/cognee-report/scripts/plugin_eval.py" outcomes run \
+  --suite "${CLAUDE_PLUGIN_ROOT}/skills/cognee-report/fixtures/outcome-smoke.json" \
+  --runner '["python3", "/absolute/plugin/path/skills/cognee-report/scripts/outcome_smoke_runner.py"]' \
   --repetitions 3 --out /tmp/cognee-outcomes-smoke
 ```
 
@@ -116,7 +112,7 @@ memory citation must never receive correctness credit.
 Rebuild a report without running models:
 
 ```bash
-python3 integrations/tests/claude_outcome_eval/outcome_eval.py report \
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/cognee-report/scripts/plugin_eval.py" outcomes report \
   --trials /tmp/cognee-outcomes-smoke/trials.jsonl
 ```
 

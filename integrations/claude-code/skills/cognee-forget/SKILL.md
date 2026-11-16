@@ -27,7 +27,7 @@ Forgetting is a four-step process against the **running Cognee server**: sync th
 
 Deleting a document removes its raw data, its derived graph knowledge, and — best-effort — the session memory *contaminated* by it: Q&A turns whose answers actually cited the deleted graph elements, plus the feedback and distilled guidance that descend from those turns. This is **targeted, not whole-session**: a turn that merely discussed the topic without citing the deleted elements survives, and agent **trace** entries are not matched at all. So deleting the documents is what makes forgetting durable — say that plainly when confirming, and don't promise the session cache is now free of the topic.
 
-All server access goes through the `cognee-forget.sh` helper. It resolves the server URL from the plugin's options and the key from the plugin's own local server (local mode). In Cloud mode the key reaches the plugin's hooks only, so the helper exits 2 with an explanation. It **always** sends `X-Api-Key` — in cloud and local mode alike, since the server enforces auth even on localhost. Do not bypass it with raw `curl`: in local mode the key is never exported to your shell, so raw requests 401.
+All server access goes through the `cognee-forget.sh` helper. It resolves the base URL and API key the same way the other skills do (shell env → `~/.cognee/.env` → the auto-minted local key in `api_key.json`) and **always** sends `X-Api-Key` — in cloud and local mode alike, since the server enforces auth even on localhost. Do not bypass it with raw `curl`: in local mode the key is never exported to your shell, so raw requests 401.
 
 Every helper API command prints the JSON response followed by a final `HTTP <status>` line — always check it. The underlying endpoints are documented in the server's Swagger UI at `$COGNEE_BASE_URL/docs` (local: `http://localhost:8011/docs`) — consult it if a response shape doesn't match your server version.
 
@@ -85,8 +85,8 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 
 ## Error handling
 
-- **Helper exits 2 ("no API key resolved")**: Cloud mode: the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only, so this helper cannot authenticate from a shell — tell the user to delete the data from the Cognee Cloud dashboard instead. Local mode: the key comes from the local server, which may be down — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
-- **HTTP 401**: a key was sent but rejected — it doesn't match this server.
+- **Helper exits 2 ("no API key resolved")**: no key in `COGNEE_API_KEY`, `~/.cognee/.env`, or the local `api_key.json` cache. Cloud mode: add `COGNEE_API_KEY` to `~/.cognee/.env`. Local mode: the key is minted at session start — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
+- **HTTP 401**: a key was sent but rejected — it doesn't match this server. Check `COGNEE_API_KEY` against the target `COGNEE_BASE_URL`.
 - **HTTP 404 on a data id**: it was already deleted (possibly by an earlier step of this same run) — not an error, move on.
 - An `{"error": ...}` response body means the server was reachable but the request failed — surface it; do **not** conclude the data was deleted.
 
@@ -95,7 +95,7 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 The `/api/v1/forget` endpoint can also delete more than a single document (see `$COGNEE_BASE_URL/docs`). The helper deliberately supports only single-document deletion; for a broader scope, resolve credentials with the helper's `env` command and call the endpoint directly **in the same shell invocation** (exports do not persist across separate Bash calls):
 
 ```bash
-creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
+eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
 curl -sS -X POST "${COGNEE_BASE_URL}/api/v1/forget" \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: ${COGNEE_API_KEY}" \

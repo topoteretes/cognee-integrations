@@ -42,6 +42,12 @@ Token counts are estimates at four characters per token. Older audit logs are
 clipped; say so if exact context counters are unavailable. A recalled or injected
 item is not proof that it changed an answer.
 
+For controlled comparisons of memory behavior, use the separate `outcomes` command
+and [OUTCOMES.md](OUTCOMES.md). It runs repeated matched task trials and reports
+task success, citation correctness, false-memory adoption, tokens/cost and P50/P95
+latency. Keep the 45-second cloud recall limit. Distinguish the offline smoke
+adapter from live model results; missing usage is unmeasured, not zero.
+
 Keep recommendations tied to measured failures. Compare equal windows when
 possible. Do not infer seven-day post-release results from a short smoke test.
 Do not use export flags unless the user asks to export the report.

@@ -18,8 +18,6 @@ Answer "what did I work on?" from the sessions the Cognee server recorded —
 every Claude Code / Codex / Antigravity session this identity ran, with their
 prompts, tool calls and edited files — grouped by project.
 
-In Cloud mode this skill can't authenticate from the shell; automatic recall and capture still work. The command then exits 2 and says why (the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only): pass that on and stop.
-
 ## Instructions
 
 1. Run the recap wrapper (server-only, no LLM call; a few seconds):
@@ -70,7 +68,8 @@ In Cloud mode this skill can't authenticate from the shell; automatic recall and
 - Windows are by **last activity**: a session started days ago that was
   touched this morning is in today's standup.
 - The wrapper exits 1 with one stderr line when the server is unreachable,
-  answers with an HTTP status (401/403: the server rejected the key) or refuses the identity. Say so and point at
+  answers with an HTTP status (401/403: check `COGNEE_API_KEY` / the plugin
+  identity) or refuses the identity. Say so and point at
   `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`; do not answer from
   memory of this conversation as if it were the record.
 - Several Claude Code sessions in the same directory? Add

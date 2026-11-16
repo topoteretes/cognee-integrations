@@ -18,8 +18,6 @@ Put one topic on a time axis: the knowledge-graph learnings about it (each
 dated by the session it was distilled from) merged with the prompts that
 mentioned it, oldest first.
 
-In Cloud mode this skill can't authenticate from the shell; automatic recall and capture still work. The command then exits 2 and says why (the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only): pass that on and stop.
-
 ## Instructions
 
 1. Run the recap wrapper with the topic as the argument (server-only, no LLM
@@ -79,7 +77,8 @@ In Cloud mode this skill can't authenticate from the shell; automatic recall and
 - `--json` returns `{topic, events[]}` with `time`, `kind` (`learning`,
   `context` or `prompt`), `session_id`, `project`, `agent`, `text`.
 - The wrapper exits 1 with one stderr line when the server is unreachable,
-  answers with an HTTP status (401/403: the server rejected the key) or refuses the identity; point at
+  answers with an HTTP status (401/403: check `COGNEE_API_KEY` / the plugin
+  identity) or refuses the identity; point at
   `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`.
 - Several Claude Code sessions in the same directory? Add
   `--session-key <host session id>`.

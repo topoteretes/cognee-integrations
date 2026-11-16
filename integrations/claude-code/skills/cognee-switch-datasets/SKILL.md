@@ -33,8 +33,6 @@ where they are and start no new session. `auto` is reserved: no dataset can be
 named so. `pin` names the action, so a dataset called `pin` is switched to by
 its id.
 
-In Cloud mode this skill can't authenticate from the shell; automatic recall and capture still work. The command then exits 2 and says why (the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only): pass that on and stop.
-
 ## Faster, with the hooks module loaded
 
 Where Claude Code loads the plugin's hooks module (2.1.287+), the user can switch

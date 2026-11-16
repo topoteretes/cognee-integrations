@@ -126,10 +126,11 @@ def test_counts_modes(sl, monkeypatch, mode):
 def test_failure_and_semantic_colors(sl, monkeypatch):
     monkeypatch.setenv("COLUMNS", "120")
     monkeypatch.setattr(sl, "_status_prefix", lambda _: sl._fail_glyph("server_error"))
+    monkeypatch.setattr(sl, "_credits_segment", lambda: " · \033[32mcredits: $5.00\033[0m")
     monkeypatch.setattr(sl, "_update_segment", lambda: " · \033[33mupdate\033[0m")
     line = sl._tetris_line(SESSION)
     assert "\033[1;31m✕ (server_error)" in line
-    assert "\033[33mupdate" in line
+    assert "\033[32mcredits: $5.00" in line and "\033[33mupdate" in line
     # A failure leads the line with the red verdict, then the wordmark.
     assert plain(sl, line).startswith("✕ (server_error) cognee manual")
 
@@ -192,30 +193,17 @@ def test_ascii_fallback_when_stdout_cannot_be_switched(sl, monkeypatch):
     assert line.isascii() and "cognee" in line
 
 
-def test_update_notice_survives_without_a_reported_width(sl, monkeypatch):
+def test_credit_and_update_notices_survive_without_a_reported_width(sl, monkeypatch):
     # Claude Code does not normally export COLUMNS to the status line command.
     monkeypatch.delenv("COLUMNS", raising=False)
+    monkeypatch.setattr(sl, "_credits_segment", lambda: " · credits: $0.40 · top up: x.test")
     monkeypatch.setattr(sl, "_update_segment", lambda: " · ⬆ update available")
     line = sl._tetris_line(SESSION)
-    assert "update available" in line
-    # A real narrow terminal may lose decorations and counts, never the notice.
+    assert "credits: $0.40" in line and "update available" in line
+    # A real narrow terminal may lose decorations and counts, never the notices.
     monkeypatch.setenv("COLUMNS", "60")
     narrow = sl._tetris_line(SESSION)
-    assert "update available" in narrow
-
-
-def test_no_credits_segment_or_setting(sl, monkeypatch):
-    """Credits are gone from Claude Code (SDK-1411): no segment, no billing link,
-    and the old settings change nothing."""
-    assert not hasattr(sl, "_credits_segment")
-    assert not hasattr(sl, "_billing_url")
-    monkeypatch.setenv("COGNEE_STATUSLINE_CREDITS", "exhausted")
-    monkeypatch.setenv("COGNEE_BILLING_URL", "https://billing.example")
-    line = sl._tetris_line(SESSION)
-    assert "credits" not in line and "top up" not in line
-    snap = sl._snapshot(SESSION, enabled=True)
-    assert not {"credits", "credits_exhausted", "billing_url"} & set(snap)
-    assert "credits" not in snap["text"]
+    assert "credits: $0.40" in narrow and "update available" in narrow
 
 
 @pytest.mark.parametrize("counts", ["true", "full", "false"])

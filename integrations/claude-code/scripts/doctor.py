@@ -23,17 +23,10 @@ import time
 import urllib.error
 import urllib.request
 
-from _net import open_url
-
 # Ensure the scripts directory is on sys.path so sibling modules resolve.
 _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-
-# The settings layer, first: it applies the plugin options (or, from a shell,
-# the saved URL option) and the env file's tuning names before anything below
-# reads the environment.
-import config  # noqa: E402,F401
 
 
 def _resolve_local_cognee_version() -> str:
@@ -97,7 +90,7 @@ def _mode_annotation() -> str:
         return ""
     note = f" — forced by {var}={forced}"
     if forced == "cloud" and not str(load_config().get("base_url") or "").strip():
-        note += " (the Cloud URL option is empty — nothing to connect to)"
+        note += " (missing COGNEE_BASE_URL — nothing to connect to)"
     return note
 
 
@@ -120,67 +113,65 @@ def _resolve_server_url() -> tuple:
 
 
 _KEY_SOURCE_LABELS = {
-    "env_api_key": "Plugin option",
-    "plugin_option": "Plugin option",
-    "local_owner_key": "Local server",
-    "missing": "Not set",
+    "plugin_agent_key": "Plugin identity",
+    "env_api_key": "ENV",
+    "cache_single_key": "Config",
+    "missing": "Default",
 }
-#: Shown for a setting only the plugin options hold when no session has
-#: recorded it yet: doctor runs from a shell, which Claude Code gives no options.
-NOT_VISIBLE = (
-    "set in the plugin options (not visible from a shell); start a session to see the current state"
-)
-
-
-def _has_options() -> bool:
-    """True when this process got the plugin options (run from a hook)."""
-    from _env_file import OPTION_PREFIX, is_hook_process
-
-    return is_hook_process() or any(name.startswith(OPTION_PREFIX) for name in os.environ)
-
-
-def _launch_facts() -> dict:
-    """What the newest session start recorded for this project (or any), or {}."""
-    from _plugin_common import latest_launch_facts
-
-    cwd = os.environ.get("CLAUDE_CWD", "") or os.getcwd()
-    try:
-        return latest_launch_facts(cwd)
-    except Exception:
-        return {}
-
-
-def _as_of(facts: dict) -> str:
-    stamp = float(facts.get("recorded_at") or 0)
-    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else "unknown time"
-    return f"(as of session start, {when})"
 
 
 def _resolve_api_key_source() -> str:
-    """Return a human-friendly label for where the API key came from.
+    """Return a human-friendly label for where the API key came from."""
+    from _env_file import env_file_path, parse_env_file
+    from _plugin_common import _api_key_with_source
 
-    Run from a shell, doctor has no plugin options, so it reports what the
-    newest session start decided rather than recomputing it without them.
-    """
-    if _has_options():
-        from _plugin_common import _api_key_with_source
-
-        _key, source = _api_key_with_source()
-        return _KEY_SOURCE_LABELS.get(source, source)
-    facts = _launch_facts()
-    source = str(facts.get("key_source") or "")
-    if not source:
-        return NOT_VISIBLE
-    return f"{_KEY_SOURCE_LABELS.get(source, source)} {_as_of(facts)}"
+    key, source = _api_key_with_source()
+    label = _KEY_SOURCE_LABELS.get(source, source)
+    if source == "env_api_key" and key:
+        # The env layer is fed by both real exports and ~/.cognee/.env
+        # (setdefault); tell them apart for debuggability.
+        file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
+        if file_key and file_key == key:
+            label = "Env file"
+    return label
 
 
 def _resolve_memory_sharing() -> str:
     """How this plugin's memory relates to the user's other agents.
 
-    The Claude Code plugin runs as the user's own key (no plugin identity), so
-    it sees every dataset the user can; there is no shared agent role.
+    ``shared (role: cognee-agent)`` when the agent is wired into the shared
+    role; otherwise ``separated`` with the reason: the user opted out, the
+    plugin runs as the principal (no agent identity — the principal sees
+    everything anyway), or the wiring was skipped (older server, not the
+    tenant owner, tenant-less install that already owns data).
     """
-    return "principal (no plugin identity)"
+    from _plugin_common import (
+        AGENT_ROLE_NAME,
+        active_agent_key,
+        key_limit_message,
+        load_shared_memory_marker,
+        shared_memory_enabled,
+    )
+
+    if not shared_memory_enabled():
+        return "separated (opt-out)"
+    marker = load_shared_memory_marker()
+    if not active_agent_key() and key_limit_message():
+        return "principal (plugin key limit reached: free a slot with the cognee-keys skill)"
+    if not active_agent_key():
+        # An install that could not be wired (or whose identity is blocked or
+        # bound to another principal) runs as the principal; say why, so "no
+        # agent identity" is not mistaken for a broken install.
+        reason = str(marker.get("reason") or "").replace("_", " ")
+        return (
+            f"principal (shared memory unavailable: {reason})"
+            if reason
+            else ("principal (no agent identity)")
+        )
+    if marker.get("mode") == "shared":
+        return f"shared (role: {AGENT_ROLE_NAME})"
+    reason = str(marker.get("reason") or "not wired yet").replace("_", " ")
+    return f"separated ({reason})"
 
 
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:
@@ -196,7 +187,9 @@ def _check_health(server_url: str, timeout: float = 5.0) -> dict:
 
     try:
         t0 = time.monotonic()
-        with open_url(f"{base}/health", timeout=timeout, context=_https_context()) as resp:
+        with urllib.request.urlopen(
+            f"{base}/health", timeout=timeout, context=_https_context()
+        ) as resp:
             latency = (time.monotonic() - t0) * 1000  # ms
             body_text = resp.read().decode("utf-8", errors="replace")
             try:
@@ -307,160 +300,55 @@ def _resolve_embedding() -> tuple[str, str]:
     return model, dims
 
 
-def _stored_login_note(reason: str) -> str:
-    try:
-        from _observer import STORED_LOGIN_ONLY_MESSAGE, STORED_LOGIN_ONLY_REASON
-    except ImportError:
-        return ""
-    return STORED_LOGIN_ONLY_MESSAGE if reason == STORED_LOGIN_ONLY_REASON else ""
-
-
-# How long an observer health verdict speaks for the present: the status
-# line's own limit, so the two never disagree about a stale marker.
-try:
-    from cognee_statusline_render import _LLM_STATE_STALE_SECONDS
-except Exception:  # pragma: no cover - the renderer is always shipped alongside
-    _LLM_STATE_STALE_SECONDS = 30 * 60
-
-# How the LLM row starts when the observer is the LLM in use (both the
-# computed and the recorded form), and so when its health note applies.
-_OBSERVER_ROW_PREFIX = "Claude Code observer"
-
-
-def _observer_health_note() -> str:
-    """The "stored login only" note for the observer's last health check, or "".
-
-    Shown only for a verdict that speaks for this session now: this session's
-    own marker, or the machine-wide one when it is unattributed or ours, and
-    only while it is younger than the status line's limit. Another session's
-    verdict, or one from days ago, says nothing about this one. Never raises.
-    """
-    try:
-        from _plugin_common import (
-            _LLM_STATE_DIR,
-            _LLM_STATE_MARKER,
-            _session_key_path_safe,
-            get_session_key,
-            resolve_host_key_outside_hook,
-        )
-
-        def _read(path) -> dict:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                return data if isinstance(data, dict) else {}
-            except Exception:
-                return {}
-
-        key = get_session_key() or resolve_host_key_outside_hook()[0]
-        marker = _read(_LLM_STATE_DIR / f"{key}.json") if _session_key_path_safe(key) else {}
-        if not marker:
-            marker = _read(_LLM_STATE_MARKER)
-            owner = str(marker.get("session_key") or "")
-            if owner and owner != key:
-                return ""
-        age = time.time() - float(marker.get("checked_at") or 0)
-        if age < 0 or age > _LLM_STATE_STALE_SECONDS:
-            return ""
-        note = _stored_login_note(str(marker.get("reason") or ""))
-        return f"{note} (checked {int(age // 60)} min ago)" if note else ""
-    except Exception:
-        return ""
-
-
 def _resolve_llm() -> str:
     """Where the local server's LLM calls go: a configured provider key, or the
     Claude observer (Claude Code's own subscription via ``claude -p``).
 
-    Local mode only — a remote server owns its own LLM. The LLM settings are
-    plugin options, which a shell does not have, so without them this reports
-    what session start recorded; the shim's ``/health`` is still asked live.
-    Read-only: it never starts the shim or touches the environment.
+    Local mode only — a remote server owns its own LLM. Read-only: decides as
+    session-start would (``resolve_observer``) and asks the shim's ``/health``;
+    it never starts the shim or touches the environment.
     """
+    from _observer import observer_alive, resolve_observer
+    from config import load_config
+
+    cfg = load_config()
     mode = _resolve_mode()
     if mode == "Cloud":
         return "Remote server (not applicable)"
-    result = _computed_llm() if _has_options() else _recorded_llm()
-    if result.startswith(_OBSERVER_ROW_PREFIX):
-        # Only while the observer is the LLM in use: with the LLM options set
-        # its past login failures are not this session's concern.
-        health_note = _observer_health_note()
-        if health_note:
-            result += f" {health_note}"
-    return result
-
-
-def _recorded_llm() -> str:
-    from _observer import observer_alive, port
-
-    facts = _launch_facts()
-    if not facts:
-        return NOT_VISIBLE
-    observer = facts.get("observer") if isinstance(facts.get("observer"), dict) else {}
-    reason = str(observer.get("reason") or "")
-    as_of = _as_of(facts)
-    if observer.get("active"):
-        shim = "shim running" if observer_alive(port()) else "shim not running"
-        return (
-            f"{_OBSERVER_ROW_PREFIX} (`claude -p`, model {observer.get('model') or 'default'}, "
-            f"{shim}) {as_of}"
-        )
-    note = _stored_login_note(reason)
-    if note:
-        return f"None — {note} {as_of}"
-    if facts.get("llm_key_option_set") or facts.get("llm_provider"):
-        provider = str(facts.get("llm_provider") or "") or "openai (default)"
-        model = str(facts.get("llm_model") or "") or "Default"
-        return f"Configured provider ({provider}, model {model}) {as_of}"
-    if reason == "claude_cli_missing":
-        return f"None — no LLM API key option and no `claude` executable for the observer {as_of}"
-    if reason == "disabled":
-        return (
-            f"None — no LLM API key option; observer disabled (COGNEE_LLM_OBSERVER=false) {as_of}"
-        )
-    return f"None — no LLM API key option set {as_of}"
-
-
-def _computed_llm() -> str:
-    """The observer decision made here, with this process's plugin options."""
-    from _observer import resolve_observer
-    from config import load_config
-
     try:
-        decision = resolve_observer(load_config())
+        decision = resolve_observer(cfg)
     except Exception as exc:
         return f"Unknown ({str(exc)[:80]})"
     if decision.get("active"):
-        from _observer import SPEND_WARNING, embedding_warning, observer_alive
+        from _observer import SPEND_WARNING, embedding_warning
 
         shim = "shim running" if observer_alive(decision.get("port")) else "shim not running"
         return (
-            f"{_OBSERVER_ROW_PREFIX} (`claude -p`, model {decision.get('model')}, "
+            f"Claude Code observer (`claude -p`, model {decision.get('model')}, "
             f"{decision.get('endpoint')}, {shim}). {SPEND_WARNING} {embedding_warning()}"
             + (f" Warning: {decision['model_warning']}" if decision.get("model_warning") else "")
         )
     if decision.get("error"):
         return f"None — {decision['error']}"
     reason = str(decision.get("reason") or "")
-    note = _stored_login_note(reason)
-    if note:
-        return f"None — {note}"
     if reason in ("llm_key_configured", "llm_provider_configured"):
         provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
         return f"Configured provider ({provider}, model {model})"
+    if reason == "server_dotenv_configured":
+        return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
     if reason == "claude_cli_missing":
-        return "None — no LLM API key option and no `claude` executable for the observer"
+        return "None — no LLM_API_KEY and no `claude` executable for the observer"
     if reason == "disabled":
-        return "None — no LLM API key option; observer disabled (COGNEE_LLM_OBSERVER=false)"
-    return "None — no LLM API key option set"
+        return "None — no LLM_API_KEY; observer disabled (COGNEE_LLM_OBSERVER=false)"
+    return "None — no LLM_API_KEY configured"
 
 
 def _resolve_env_file() -> str:
-    """Tuning file (~/.cognee/.env): presence, the names it sets, what is ignored.
+    """One-time config file (~/.cognee/.env): presence, key names, overrides.
 
-    Values are never shown — only which settings the file defines, which of
-    them are shadowed by a real shell export, and which it holds that the
-    plugin no longer reads (credentials, the Cloud URL, LLM settings).
+    Values are never shown — only which keys the file defines, and which of
+    them are shadowed by a real shell export (exports win over the file).
     """
     from _env_file import env_file_status
 
@@ -469,16 +357,10 @@ def _resolve_env_file() -> str:
     if not status.get("exists"):
         return f"Not found ({path})"
     keys = status.get("keys") or []
-    desc = f"{path} ({len(keys)} setting{'s' if len(keys) != 1 else ''}: {', '.join(keys)})"
+    desc = f"{path} ({len(keys)} key{'s' if len(keys) != 1 else ''}: {', '.join(keys)})"
     overridden = status.get("overridden") or []
     if overridden:
         desc += f" — overridden by shell env: {', '.join(overridden)}"
-    refused = status.get("refused") or []
-    if refused:
-        desc += f" — {', '.join(refused)} ignored (set in the plugin options)"
-    ignored = status.get("ignored") or []
-    if ignored:
-        desc += f" — {', '.join(ignored)} ignored (not a plugin setting)"
     return desc
 
 

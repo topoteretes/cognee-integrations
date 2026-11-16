@@ -80,8 +80,6 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from _net import open_url
-
 # The one line that differs between the claude-code and codex copies.
 _INTEGRATION = "claude-code"
 
@@ -466,7 +464,7 @@ def do_index_repo(
     *,
     index_vectors=False,
     run_in_background=True,
-    opener=open_url,
+    opener=urllib.request.urlopen,
     timeout=120.0,
 ):
     """Submit one repository for code-graph indexing.
@@ -507,7 +505,7 @@ def do_index_repo(
         except Exception:
             pass
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — the server rejected the key" % e.code
+            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
         elif e.code == 400 and "unsupported content_type" in detail.lower():
             # An older server rejects the content_type value outright, and says
             # so in those words. Matching on a bare "content_type" substring
@@ -581,7 +579,7 @@ def poll_code_graph_status(
     dataset_id,
     deadline_seconds,
     *,
-    opener=open_url,
+    opener=urllib.request.urlopen,
     interval_seconds=3.0,
     request_timeout=10.0,
 ):
@@ -639,7 +637,7 @@ def index_repo(
     *,
     index_vectors=False,
     wait_seconds=0.0,
-    opener=open_url,
+    opener=urllib.request.urlopen,
 ):
     """Index one repo AND record its state file (the opt-in the hooks honor).
 
@@ -750,7 +748,7 @@ def _clear_retry_failure(state: dict) -> None:
         state.pop(field, None)
 
 
-def reingest_if_changed(cwd, service_url, api_key, *, opener=open_url) -> dict:
+def reingest_if_changed(cwd, service_url, api_key, *, opener=urllib.request.urlopen) -> dict:
     """Stop-hook freshness pass: re-submit the cwd's indexed repo if it changed.
 
     Returns a small outcome dict for logging; {} when there is nothing to do
@@ -874,7 +872,7 @@ def autoindex_on_session_start(
     api_key,
     *,
     is_local_server=True,
-    opener=open_url,
+    opener=urllib.request.urlopen,
 ) -> dict:
     """Index (or refresh) the repo a session opened in. Never raises.
 

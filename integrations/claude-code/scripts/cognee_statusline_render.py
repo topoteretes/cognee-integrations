@@ -22,7 +22,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from _env_file import forced_backend, load_env_file
-from _net import is_loopback_host
 
 # ~/.cognee/.env is pure-local too, so loading it here keeps the renderer's
 # no-network/no-_plugin_common contract while honoring one-time config.
@@ -48,6 +47,7 @@ _PHASE_DIR = _SHARED_ROOT / "claude-code" / "phase"
 # above the prompt (the band); this renderer then prints nothing for that
 # session, so the row is never shown twice. Keyed by host session id.
 _BAND_DIR = _SHARED_ROOT / "claude-code" / "band"
+_CREDITS_PATH = _SHARED_ROOT / "claude-code" / "credits.json"
 # Per-session copies (see _plugin_common._write_session_marker): the shared files
 # above are coordination state, these are what THIS terminal observed.
 _LLM_STATE_DIR = _SHARED_ROOT / "claude-code" / "llm-state"
@@ -63,12 +63,78 @@ _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 # gone. Treat it as unknown rather than keep flagging a key the user may have fixed.
 _LLM_STATE_STALE_SECONDS = 30 * 60
 
-# Disabled plugin: when the plugin is uninstalled/disabled but its files still
-# linger in the version cache (Claude Code does not remove a statusLine key the
-# user, or an earlier plugin version, wrote into ~/.claude/settings.json), this
-# renderer would otherwise keep drawing a status line for a plugin that is no
-# longer active. On each run we check whether the plugin is still enabled in
-# any settings scope; if not, we render nothing. Settings are only read.
+# Credits balance age. The marker is written only when this machine does
+# something billable (prompt start, turn end, remember, improve) — there is no
+# background poll, so an idle terminal makes no billing calls. The balance
+# cannot move from here while idle, so an old reading is still the right
+# number for this session; past this age it carries an "Nm ago" hint so the
+# user knows it predates the idle stretch. Hidden only once older than the
+# marker's own prune horizon (`_plugin_common._CREDITS_ENTRY_MAX_AGE_SECONDS`).
+_CREDITS_AGE_HINT_SECONDS = 15 * 60
+_CREDITS_MAX_AGE_SECONDS = 7 * 24 * 3600
+# A balance at or below this is "running out": the number turns red and the
+# top-up link appears. Not zero — the cloud stops serving before the balance
+# reaches zero (a 402 arrives with cents left), so zero is never observed.
+_CREDITS_LOW_USD = 1.0
+# Where to top up. Shown next to a low balance and next to a 402 refusal that
+# arrived without any balance reading. The production billing page, hardcoded:
+# the web frontend's host cannot be derived from the tenant's data-plane host
+# (``tenant-<id>.aws.cognee.ai`` pairs with ``platform.cognee.ai``, but
+# ``tenant-<id>.dev-aws.cognee.ai`` pairs with ``staging.cognee.ai`` — a lookup,
+# not a rule). Staging/dev sessions set ``COGNEE_BILLING_URL``.
+_BILLING_URL_DEFAULT = "https://platform.cognee.ai/billing"
+
+
+def _billing_url() -> str:
+    return os.environ.get("COGNEE_BILLING_URL", "").strip() or _BILLING_URL_DEFAULT
+
+
+def _payment_required_op(entry: dict) -> str:
+    """The operation the server last refused with HTTP 402, or "".
+
+    The hooks stamp ``payment_required: {op, at}`` on the tenant's entry when a
+    billable request comes back 402 and remove it on the next success. Stale
+    notes (older than the marker's prune horizon) are ignored: nothing has been
+    tried against this tenant for a week, so nothing is known about it.
+    """
+    note = entry.get("payment_required")
+    if not isinstance(note, dict):
+        return ""
+    op = str(note.get("op") or "").strip()
+    if not op:
+        return ""
+    try:
+        if time.time() - float(note.get("at", 0) or 0) > _CREDITS_MAX_AGE_SECONDS:
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return op
+
+
+def _credits_age_hint(age_seconds: float) -> str:
+    """``"16m ago"`` / ``"3h ago"`` / ``"2d ago"`` once a reading is older than
+    ``_CREDITS_AGE_HINT_SECONDS``; ``""`` while it is recent enough to read as
+    current. Coarse on purpose — it says "this number predates your idle
+    stretch", not a timestamp."""
+    if age_seconds <= _CREDITS_AGE_HINT_SECONDS:
+        return ""
+    minutes = int(age_seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+
+# Self-eviction: when the plugin is uninstalled/disabled but its files still
+# linger in the version cache (Claude Code does not remove the statusLine key we
+# wrote into ~/.claude/settings.json, and may keep the cached script on disk),
+# this renderer would otherwise keep drawing a status line for a plugin that is
+# no longer active. On each run we check whether the plugin is still enabled in
+# any settings scope; if not, we remove our own statusLine entry and render
+# nothing. SessionStart re-adds it whenever the plugin is genuinely active, so a
+# transient mismatch self-heals on the next launch.
 #
 # The enabledPlugins key is ``<plugin>@<marketplace>``, and the marketplace half
 # depends on where the user installed from: ``cognee-memory@cognee`` from this
@@ -137,6 +203,9 @@ def _dataset_label(host_id: str = "", recall_auto: bool = False) -> str:
     return f"auto ({dataset})" if recall_auto else dataset
 
 
+_LOOPBACK = {"localhost", "127.0.0.1", "::1", ""}
+
+
 def _active_mode() -> str:
     # 0. explicit backend switch: forced local always reads local (the env
     # scrub in load_env_file guarantees it, this is just the direct answer);
@@ -148,8 +217,7 @@ def _active_mode() -> str:
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
     if not url:
         return "cloud" if forced == "cloud" else "local"
-    host = urlparse(url).hostname or ""
-    return "local" if not host or is_loopback_host(host) else "cloud"
+    return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
 
 
 # Where your memory actually lives is the one thing in this line worth a
@@ -368,12 +436,46 @@ def _health_prefix(session_id: str = "") -> str:
 
 
 def _update_segment() -> str:
-    """No update segment: the plugin no longer checks for updates (SDK-1411).
+    """Amber 'update available' segment, or '' — read purely from the marker.
 
-    Claude Code's own plugin updates cover directory and marketplace installs; a
-    marker an earlier version left behind is ignored.
+    The background idle watcher writes the marker; this stays network-free and
+    plugin-runtime-free (no ``_plugin_common`` import), consistent with the
+    renderer's pure-local design. Uses `\\033[1;33m` (bold + amber); terminals
+    that ignore bold still apply the amber, and the trailing reset prevents
+    color bleed into the rest of the bar.
     """
-    return ""
+    if os.environ.get("COGNEE_UPDATE_CHECK", "").strip().lower() in ("0", "false", "no", "off"):
+        return ""
+    try:
+        marker = json.loads(_UPDATE_CHECK_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not (isinstance(marker, dict) and marker.get("update_available")):
+        return ""
+    installed = str(marker.get("installed_version") or "")
+    latest = str(marker.get("latest_version") or "")
+    if not (installed and latest):
+        return ""
+    # Marker staleness guard, mirroring _plugin_common.read_update_status: the
+    # marker is a snapshot from the last background check, so after an update it
+    # keeps claiming an update is available until the next one runs. Since this
+    # renders every refresh, comparing against the running version clears the
+    # segment within one refresh instead of within an hour.
+    running = _running_plugin_version()
+    if running and running != installed:
+        return ""
+    # Mid-session update guard: `/plugin update` installs the new version into
+    # its own version-pinned cache dir, but settings.json keeps pointing the
+    # status line at THIS (old) copy until the next SessionStart — so the
+    # running-version check above never trips in the session where the update
+    # happened. Claude Code does rewrite installed_plugins.json immediately,
+    # so a recorded install at or past `latest` means the user already
+    # updated: clear the nudge on this refresh instead of after a restart.
+    recorded = _parse_semver(_recorded_install_version())
+    published = _parse_semver(latest)
+    if recorded and published and recorded >= published:
+        return ""
+    return f"   \033[1;33m⬆ Cognee update available {installed}→{latest}\033[0m"
 
 
 def _running_plugin_version() -> str:
@@ -481,21 +583,44 @@ def _plugin_enabled(cwd: str) -> bool:
     return any(_enabled_in(p) is True for p in paths)
 
 
-def _llm_prefix(session_id: str = "") -> str:
-    """Amber LLM failure glyph, or '' — local mode only, read from marker.
+def _evict_own_statusline() -> None:
+    """Remove our statusLine entry from user settings (best-effort, never raises).
 
-    The local server's LLM matters only in local mode, so this is suppressed in
-    cloud mode. The verdict comes from the background idle watcher, which checks
-    only the Claude observer (SDK-1411): `auth_failed` with reason
-    `observer_needs_stored_login` = the observer's `claude` could not log in.
-    `not_set` is still read from markers older watchers wrote. Distinct reasons
-    from the server-connection ones so the two aren't confused. Amber (`\\033[1;33m`)
+    Only removes it when the entry is recognizably ours, so a status line the
+    user set themselves is never touched. Atomic replace to avoid a torn file.
+    """
+    try:
+        from _auto_memory import restore as restore_auto_memory
+
+        restore_auto_memory()
+        settings = _read_json(_USER_SETTINGS)
+        sl = settings.get("statusLine")
+        cmd = sl.get("command", "") if isinstance(sl, dict) else ""
+        if _OWNED_STATUSLINE_MARKER not in str(cmd):
+            return  # not ours (or already gone) — leave it alone
+        settings.pop("statusLine", None)
+        tmp = _USER_SETTINGS.with_name(f".settings-{os.getpid()}.json.tmp")
+        tmp.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, _USER_SETTINGS)
+    except Exception:
+        pass
+
+
+def _llm_prefix(session_id: str = "") -> str:
+    """Amber 'LLM key' failure glyph, or '' — local mode only, read from marker.
+
+    LLM_API_KEY is only used by the local server, so this is suppressed in cloud
+    mode. Both verdicts come from the background idle watcher, which resolves the
+    key exactly as the server does: `not_set` = no key configured anywhere,
+    `auth_failed` = key rejected by the provider. Distinct reasons from the
+    server-connection ones so the two keys aren't confused. Amber (`\\033[1;33m`)
     so a broken LLM key reads differently at a glance from an uncolored
     server-connection failure; the reset lands before the trailing space so no
     color bleeds into the rest of the bar.
 
-    Per terminal, because the answer can differ per terminal: each launch decides
-    from its own environment whether the observer serves it. We read THIS session's record
+    Per terminal, because the answer genuinely differs per terminal: the key is
+    resolved from the checking session's own environment, so one launch can have it
+    exported and another not. We read THIS session's record
     (``llm-state/<session_key>.json``) first; the shared marker is consulted only
     when we have none of our own, and then only if it is unattributed — another
     terminal's "not_set" must not red a bar whose key is fine, and its "ok" must not
@@ -504,8 +629,8 @@ def _llm_prefix(session_id: str = "") -> str:
     Verdicts expire (`_LLM_STATE_STALE_SECONDS`): the marker is shared by every
     session, so without a TTL one stale write could keep accusing a key that has
     since been fixed. The watcher refreshes it when it launches (session start, or
-    a prompt that finds no live watcher), throttled to at most once per five
-    minutes — so an active session stays well inside the window,
+    a prompt that finds no live watcher), throttled to at most once per
+    COGNEE_LLM_CHECK_INTERVAL — so an active session stays well inside the window,
     while a session quiet for longer simply drops the glyph until the next check.
     """
     if _active_mode() != "local":
@@ -526,7 +651,7 @@ def _llm_prefix(session_id: str = "") -> str:
         return ""
     state = str(marker.get("llm_state") or "")
     if state in ("not_set", "auth_failed"):
-        # The watcher may name a more specific cause (``observer_needs_stored_login``
+        # The watcher may name a more specific cause (e.g. ``claude_not_logged_in``
         # when the LLM is the Claude observer and there is no key to be incorrect).
         reason = str(marker.get("reason") or "").strip()
         if not reason or not reason.replace("_", "").isalnum():
@@ -823,6 +948,92 @@ def _recall_diagnostic_segment(marker: dict, hits: dict) -> str:
     return f" \033[2m· recall {recall}\033[0m"
 
 
+def _credits_segment() -> str:
+    """Cloud credits balance.
+
+    Pure-local like everything here: reads only ``credits.json``, which the
+    hooks write around each billable operation (see
+    ``_plugin_common.refresh_credits``). Renders nothing unless ALL of: cloud
+    mode, marker present with a numeric balance, marker younger than
+    ``_CREDITS_MAX_AGE_SECONDS``, marker written for the server this session
+    talks to, and not opted out. A reading older than
+    ``_CREDITS_AGE_HINT_SECONDS`` renders with a faint age hint. Balance is green —
+    red once negative, which is exactly the state the user most needs to see
+    (a negative balance is real unfunded spend). The marker's ``last_op``
+    (the approximate cost of the last memory operation) is not shown: in cloud
+    mode it was mostly a stale, sub-cent remember reading ("~$0.00").
+    """
+    choice = os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower()
+    if choice in ("0", "false", "no", "off"):
+        return ""
+    if choice == "exhausted":
+        # A preview of the out-of-credits state, for checking how the segment
+        # and the row's billing link look without an empty balance: never
+        # read from a marker, never written anywhere.
+        return f" · \033[31mcredits: -$0.40\033[0m{_top_up_hint()}"
+    if _active_mode() != "cloud":
+        return ""
+    # The marker is a MAP keyed by tenant id (several terminals can be on
+    # different tenants at once); each entry carries the service base_url it
+    # was observed under. Select OUR tenant's entry by that binding — an
+    # old-format flat marker has no dict values with a matching base_url, so
+    # it simply renders nothing until the first new-format refresh.
+    marker = _read_json(_CREDITS_PATH)
+    active = _active_base_url().rstrip("/")
+    entry = None
+    for candidate in marker.values():
+        if (
+            isinstance(candidate, dict)
+            and str(candidate.get("base_url") or "").rstrip("/") == active
+        ):
+            entry = candidate
+            break
+    if entry is None:
+        return ""
+    remaining = entry.get("remaining_usd")
+    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        remaining = None
+    age = 0.0
+    if remaining is not None:
+        try:
+            age = time.time() - float(entry.get("checked_at", 0) or 0)
+        except (TypeError, ValueError):
+            remaining = None
+        if age > _CREDITS_MAX_AGE_SECONDS:
+            remaining = None
+    refused_op = _payment_required_op(entry)
+    if remaining is None:
+        if not refused_op:
+            return ""
+        # The server refused to pay for an operation but there is no balance to
+        # show (the billing fetch itself failed): the refusal is the segment, and
+        # the way out is the same as for a low balance — top up.
+        return f" · \033[31mcredits: not enough for {refused_op}\033[0m{_top_up_hint()}"
+    # Red from a dollar down: a balance about to run out is exactly the state the
+    # user most needs to see, and the cloud refuses requests before it reaches
+    # zero. Above that the number stays green even when the server refused an
+    # operation — the refusal is the red part, not the balance.
+    exhausted = remaining <= _CREDITS_LOW_USD
+    color = "\033[31m" if exhausted else "\033[32m"
+    sign = "-" if remaining < 0 else ""
+    seg = f" · {color}credits: {sign}${abs(remaining):,.2f}\033[0m"
+    if refused_op and not exhausted:
+        seg += f" \033[31m(not enough for {refused_op})\033[0m"
+    hint = _credits_age_hint(age)
+    if hint:
+        seg += f" \033[2m({hint})\033[0m"
+    if exhausted:
+        seg += _top_up_hint()
+    return seg
+
+
+def _top_up_hint() -> str:
+    """Green so it reads as the way out, next to the red (low) balance. A plain URL:
+    terminals linkify it themselves, and Claude Code's status line is not
+    known to pass OSC 8 hyperlink escapes through."""
+    return f" · \033[32mtop up: {_billing_url()}\033[0m"
+
+
 def _forced_cloud_unconfigured() -> bool:
     """Forced cloud (backend switch) with no URL anywhere: nothing to connect
     to — a definitive misconfiguration this renderer can see directly from
@@ -889,7 +1100,7 @@ def _classic_line(session_id: str) -> str:
     return (
         f"{_status_prefix(session_id)}{items}{_icon()}"
         f"cognee: {_dataset_label(session_id, _recall_auto(session_id))} · {_mode_label()}"
-        f"{_recall_segment(session_id)}{_activity_segment(session_id)}"
+        f"{_credits_segment()}{_recall_segment(session_id)}{_activity_segment(session_id)}"
         f"{_update_segment()}"
     )
 
@@ -999,7 +1210,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     core = health + brand
     # No counters: the activity segment says what the last recall did. (The
     # classic line keeps its own.)
-    update = _update_segment()
+    credits, update = _credits_segment(), _update_segment()
     # What memory is doing right now, in the brand purple at rest (an active
     # phase keeps its accent colour).
     emphasis = f"{purple}\033[1m"
@@ -1009,19 +1220,19 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     # Keep the badge at every width: compact the spacing before dropping the
     # activity.
     candidates = [
-        core + activity + update,
-        core.replace(" · ", "·") + activity + update,
+        core + activity + credits + update,
+        core.replace(" · ", "·") + activity + credits + update,
     ]
-    # An update notice is never dropped to save width: it is the segment a user
-    # has to act on.
-    if not update:
+    # A credit warning or update notice is never dropped to save width: they are
+    # the segments a user has to act on.
+    if not credits and not update:
         candidates += [core, core.replace(" · ", "·")]
     else:
         candidates += [
-            core.replace(" · ", "·") + update,
-            badge + " " + update.lstrip(" ·"),
-            # Narrowest form with a notice: health plus the notice alone.
-            health + update.lstrip(" ·"),
+            core.replace(" · ", "·") + credits + update,
+            badge + " " + (credits + update).lstrip(" ·"),
+            # Narrowest form with a notice: health plus the notices alone.
+            health + (credits + update).lstrip(" ·"),
         ]
     if wide:
         # Prefer breathing room, then compact spacing before dropping data.
@@ -1062,11 +1273,19 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
     else:
         state, reason = "", ""
     activity = _activity(session_id)
+    raw_credits = _credits_segment()
+    credits = _plain(raw_credits).strip(" ·")
+    # The text line paints the balance green, or red once exhausted or refused;
+    # the row above the prompt reads the verdict here rather than the colour.
+    credits_exhausted = "\033[31m" in raw_credits
+    # The way out, as a link the row above the prompt can draw: present only
+    # while the text line shows its top-up hint.
+    billing_url = _billing_url() if "top up: " in credits else ""
     update = _plain(_update_segment()).strip(" ·")
     dataset = _active_dataset(session_id)
     mode = _active_mode()
     line = f"cognee: {dataset} · {mode}"
-    for segment in (activity.get("text", ""), update):
+    for segment in (credits, activity.get("text", ""), update):
         if segment:
             line += f" · {segment}"
     return {
@@ -1078,6 +1297,9 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         # "auto (<dataset>)" from its first draw, before the server's listing.
         "recall": "auto" if _recall_auto(session_id) else "pinned",
         "mode": mode,
+        "credits": credits,
+        "credits_exhausted": credits_exhausted,
+        "billing_url": billing_url,
         "activity": activity,
         "update": update,
         "text": line,
@@ -1115,9 +1337,9 @@ def main() -> None:
                 # report rather than evict (the settings entry is the bar's, not ours).
                 sys.stdout.write(json.dumps(_snapshot(session_id, enabled=False)))
                 return
-            # Plugin uninstalled/disabled but files linger: render nothing. The
-            # settings entry is the user's to remove; the plugin never writes
-            # Claude Code's settings (SDK-1411).
+            # Plugin uninstalled/disabled but files linger: drop our own statusLine
+            # entry and render nothing so the line disappears.
+            _evict_own_statusline()
             return
         if as_json:
             sys.stdout.write(json.dumps(_snapshot(session_id, enabled=True)))

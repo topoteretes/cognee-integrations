@@ -2,10 +2,9 @@
 # Cognee forget helper — server access for the cognee-forget skill.
 #
 # Wraps the endpoints used to inspect and delete documents so every request
-# carries resolved credentials. In local mode the key belongs to the plugin's
-# own server and is looked up from it; nothing is stored on disk. A Cognee
-# Cloud key is a plugin option that Claude Code gives to hooks only, so in
-# Cloud mode these commands cannot authenticate from a shell.
+# carries resolved credentials. Raw curl with $COGNEE_API_KEY breaks in local
+# mode: the key is auto-minted at bootstrap into ~/.cognee-plugin/api_key.json
+# and is never exported to the user's shell.
 #
 # Usage:
 #   cognee-forget.sh sync                            Flush the live session into documents (run before listing)
@@ -21,7 +20,7 @@
 #
 # Configuration:
 #   Resolves auth like cognee-search.sh / cognee-remember.sh:
-#   the local server's owner key, looked up from that server.
+#   shell env > ~/.cognee/.env > cached api_key.json (local auto-minted key).
 #   Exits 2 when no API key resolves: the server enforces auth even on
 #   localhost, so an unauthenticated request can only ever 401.
 
@@ -50,35 +49,24 @@ try:
     from _env_file import load_env_file
     load_env_file()
 except Exception:
-    # Without the loader the environment is still the one the shell exported:
-    # that URL and key are not plugin settings, so resolve nothing rather than
-    # use them. (No apostrophes in this heredoc: bash 3.2 parses them.)
-    print(json.dumps({"service_url": "", "api_key": ""}))
-    raise SystemExit(0)
-# After the loader these hold plugin settings only: the URL option (or a
-# loopback COGNEE_LOCAL_API_URL), and the Cloud key only in a process Claude
-# Code gave it to. A shell export of either was dropped.
-service_url = (os.environ.get("COGNEE_LOCAL_API_URL") or os.environ.get("COGNEE_BASE_URL") or "http://localhost:8011").strip()
+    pass
+service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
 if not api_key:
-    # No key is stored on disk: against the plugin local server its owner
-    # key is looked up from that server. A Cloud key reaches hooks only.
-    # The opt-out keeps _plugin_common from re-execing this heredoc into the
-    # plugin venv (stdin is the script): nothing here needs it.
-    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
-    try:
-        from _plugin_common import load_cached_api_key
-        api_key = load_cached_api_key(service_url)
-    except Exception:
-        pass
+    cache_path = plugin_dir.parent / "api_key.json"
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text())
+            if isinstance(cache, dict):
+                key = str(cache.get("api_key") or "").strip()
+                cached_url = str(cache.get("base_url") or "").strip().rstrip("/")
+                if key and (not cached_url or cached_url == service_url.rstrip("/")):
+                    api_key = key
+        except Exception:
+            pass
 
-try:
-    from _net import is_loopback_url
-    loopback = is_loopback_url(service_url)
-except Exception:
-    loopback = False
-print(json.dumps({"service_url": service_url, "api_key": api_key, "loopback": loopback}))
+print(json.dumps({"service_url": service_url, "api_key": api_key}))
 PY
 )"
 
@@ -98,23 +86,8 @@ except Exception:
     pass
 PY
 )"
-# "1" when the server is on this machine: such a request never goes through a
-# proxy (curl would otherwise send it, with the key, to ALL_PROXY/http_proxy).
-LOOPBACK="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
-import json, sys
-try:
-    print("1" if json.loads(sys.argv[1] or "{}").get("loopback") else "")
-except Exception:
-    pass
-PY
-)"
-# Never fall back to the shell's COGNEE_BASE_URL: it is not the plugin's
-# setting, and with a shell COGNEE_API_KEY next to it a request would carry
-# that key to that server.
-if [ -z "$SERVICE_URL" ]; then
-    echo "Error: could not resolve the Cognee server URL from the plugin's settings (is python3 available?)." >&2
-    exit 1
-fi
+[ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
+[ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 SERVICE_URL="${SERVICE_URL%/}"
 
 usage() {
@@ -141,22 +114,14 @@ validate_uuid() {
 }
 
 if [ -z "$API_KEY" ]; then
-    echo "Error: no API key resolved." >&2
-    echo "Cloud mode: the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only, so this command cannot use it. Local mode: the key comes from the local server, which may not be running — start a new session or run cognee-doctor.sh." >&2
+    echo "Error: no API key resolved (checked COGNEE_API_KEY, ~/.cognee/.env, ${PLUGIN_DIR%/*}/api_key.json)." >&2
+    echo "Cloud mode: set COGNEE_API_KEY in ~/.cognee/.env. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
     exit 2
 fi
 
 CMD="${1:-}"
-# Every request goes through here: a local server is reached directly.
-server_curl() {
-    if [ -n "$LOOPBACK" ]; then
-        curl --noproxy '*' "$@"
-    else
-        curl "$@"
-    fi
-}
 api_get() {
-    server_curl -sS "$1" -H "X-Api-Key: ${API_KEY}" -w '\nHTTP %{http_code}\n'
+    curl -sS "$1" -H "X-Api-Key: ${API_KEY}" -w '\nHTTP %{http_code}\n'
 }
 
 case "$CMD" in
@@ -183,7 +148,7 @@ case "$CMD" in
         # Python source. Belt and braces with validate_uuid above: this helper
         # must only ever be able to express a single-document delete.
         payload="$(FORGET_DATASET_ID="$2" FORGET_DATA_ID="$3" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "dataId": os.environ["FORGET_DATA_ID"]}))')"
-        server_curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
+        curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
             -H "Content-Type: application/json" \
             -H "X-Api-Key: ${API_KEY}" \
             -d "$payload" \
@@ -193,14 +158,6 @@ case "$CMD" in
         # For manual/broader calls only (see SKILL.md) — eval in the same shell
         # as the curl that uses it; exports do not persist across Bash calls.
         printf 'export COGNEE_BASE_URL=%q\nexport COGNEE_API_KEY=%q\n' "$SERVICE_URL" "$API_KEY"
-        # A curl to a local server must not go through a proxy: exempt this
-        # machine for the shell that evals these lines, keeping the user's own
-        # entries. (curl reads no_proxy; Python reads either spelling.)
-        if [ -n "$LOOPBACK" ]; then
-            no_proxy_value="${no_proxy:-${NO_PROXY:-}}"
-            no_proxy_value="${no_proxy_value:+${no_proxy_value},}127.0.0.1,localhost,::1"
-            printf 'export NO_PROXY=%q no_proxy=%q\n' "$no_proxy_value" "$no_proxy_value"
-        fi
         ;;
     *)
         echo "Error: unknown command '${CMD}'" >&2
