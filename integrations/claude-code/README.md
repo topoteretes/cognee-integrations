@@ -24,6 +24,12 @@ The integration:
 Everything below is the plugin's own readable Python and shell under this folder; it
 runs no code from anywhere else.
 
+**What runs.** One process does the plugin's work: its MCP server,
+`scripts/mcp_server.py`, which Claude Code starts when a session starts and stops when
+the session ends. Claude Code hands the plugin options, the keys included, to that
+server and to nothing else the plugin uses. The hooks only pass each event to the
+server; they read no option and make no network call. See [Hooks](#hooks).
+
 **Captured.** Your prompts, the tool calls Claude makes (name, arguments and output,
 filtered by the [capture controls](#automatic-capture-controls)), and Claude's
 answers, plus a short memory anchor before compaction. Credentials, private keys and
@@ -145,7 +151,7 @@ Then set the plugin's options. Claude Code asks for them when the plugin is enab
 | Embedding dimensions (local mode) | `embedding_dimensions` | The model's vector size, such as `3072`. Empty: Cognee's default. |
 | Embedding API key (local mode) | `embedding_api_key` (sensitive) | The embedding provider's key. Empty: the LLM API key is reused. |
 
-Claude Code keeps the keys in its secure credential store and passes the options only to the plugin's hook processes. Every credential and connection setting comes **only** from these options: `COGNEE_BASE_URL`, `COGNEE_API_KEY`, `LLM_*` and `EMBEDDING_*` in your shell or in `~/.cognee/.env` are ignored. The plugin never writes a key to disk. Pick one of the two modes below, or configure **both** and flip a terminal with a single export (see [Which mode wins, and how to switch](#which-mode-wins-and-how-to-switch)).
+Claude Code keeps the keys in its secure credential store and passes the options to the plugin's MCP server through the manifest (`mcpServers` → `env`); the hooks read none of them. Every credential and connection setting comes **only** from these options: `COGNEE_BASE_URL`, `COGNEE_API_KEY`, `LLM_*` and `EMBEDDING_*` in your shell or in `~/.cognee/.env` are ignored. The plugin never writes a key to disk. Pick one of the two modes below, or configure **both** and flip a terminal with a single export (see [Which mode wins, and how to switch](#which-mode-wins-and-how-to-switch)).
 
 **Upgrading from 1.8 or earlier.** Earlier versions read the Cloud URL and key, and the LLM settings, from `~/.cognee/.env`. This version does not: enter them once in the plugin options (`/plugin` → cognee-memory). Until you do, Cognee runs locally with defaults, and the first session start says so once. A Cloud URL option set without its key is named at every session start, and so is a key without a URL (Cognee then runs locally).
 
@@ -223,8 +229,8 @@ and `~/.cognee-plugin/claude-code/agent_key.json`; this version neither reads no
 writes them (the Codex plugin may still use `api_key.json`).
 
 **Skills that call the server from the shell cannot authenticate in Cloud mode.**
-Claude Code passes plugin options only to hook processes, not to commands Claude runs
-with the Bash tool (nor to the status line command). So in Cloud mode the scripts
+The plugin options reach only the plugin's MCP server and the scripts it runs, not
+commands Claude runs with the Bash tool (nor to the status line command). So in Cloud mode the scripts
 behind the skills get no key: search, remember, forget, code indexing, the recaps and
 the dataset switch, doctor's auth check, and the search of the `cognee-recall` agent.
 They stop before any request with "no API key", and exit with status 2.
@@ -480,19 +486,32 @@ delays the send, never the session. Events are logged as `coding.*` (see `EVENTS
 
 ## Hooks
 
-| Hook | Behavior |
-|---|---|
-| `SessionStart` | mode select, key resolution, dataset readiness, watcher bootstrap |
-| `UserPromptSubmit` | dataset-scoped context lookup + async prompt staging |
-| `PreToolUse` (`Read`) | [file-scoped context](#file-context-on-read): code-graph facts about the file about to be read, injected as `additionalContext` |
-| `PostToolUse` | async trace write |
-| `Stop` | assistant answer write; in [coding memory](#coding-memory-opt-in), `send-unit.py` sends the request instead |
-| `PreCompact` | memory anchor build before compaction |
-| `SessionEnd` | trigger detached final sync worker |
+Hooks hand each event to the plugin's MCP server (`cognee`, `scripts/mcp_server.py`),
+and the server runs the script for it. `hooks/hooks.json` holds what Claude Code runs;
+`scripts/server-hooks.json` lists the script the server runs for each event.
 
-Claude-specific contracts are preserved:
-- `hookSpecificOutput` payload format
-- async hook behavior for write hooks
+| Event | How it reaches the server | What the server runs |
+|---|---|---|
+| `SessionStart` | request file (`hook-relay.py`) | mode select, key resolution, dataset readiness, watcher bootstrap |
+| `UserPromptSubmit` | `mcp_tool` hook | dataset-scoped context lookup, and prompt staging in the background |
+| `PreToolUse` (`Read`) | `mcp_tool` hook | [file-scoped context](#file-context-on-read): code-graph facts about the file about to be read, injected as `additionalContext` |
+| `PostToolUse` | `mcp_tool` hook | trace write, in the background |
+| `Stop` | `mcp_tool` hook | assistant answer write, in the background; in [coding memory](#coding-memory-opt-in), `send-unit.py` sends the request instead |
+| `PreCompact` | `mcp_tool` hook | memory anchor build before compaction |
+| `SessionEnd` | request file (`hook-relay.py --no-wait`) | trigger detached final sync worker |
+
+- **`mcp_tool` hooks** call the server's one tool, `cognee_hook`, with the event's
+  fields. The tool's answer is the hook's output (`hookSpecificOutput`), so recall
+  reaches Claude as before. The tool is for the hooks; Claude has no reason to call it.
+- **Request files** cover the two events where Claude Code cannot call a server: at
+  launch, before servers are connected, and at exit, when the server is being stopped.
+  `hook-relay.py` writes the event to `~/.cognee-plugin/claude-code/relay/` and, at
+  session start, waits for the server's answer. It reads no plugin option.
+- **After the session ends** the server starts one short detached process that runs
+  the final sync, because Claude Code stops the server before the sync can finish.
+- **If the server is off** (disabled in `/mcp`, or `python3` is missing), session start
+  says so once and nothing is captured or recalled. The server's own log is
+  `~/.cognee-plugin/claude-code/mcp-server.log`.
 
 ## Memory value
 

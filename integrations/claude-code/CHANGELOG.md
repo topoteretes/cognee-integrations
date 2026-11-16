@@ -10,6 +10,37 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0]
+
+### Changed
+
+- **The plugin's work moved from the hooks into its own MCP server** (SDK-1411). The
+  plugin now ships `scripts/mcp_server.py`, which Claude Code starts with each session.
+  The manifest hands it every plugin option through `mcpServers` → `env`, the keys
+  included, and it runs the same scripts the hooks ran, as its own child processes. The
+  hooks only pass each event on: five are `mcp_tool` hooks that call the server's
+  `cognee_hook` tool, and `SessionStart` and `SessionEnd` leave a request file through
+  `hook-relay.py`, because Claude Code cannot call a server at launch or at exit. No
+  process Claude Code runs as a hook reads a plugin option or makes a network call.
+  `scripts/server-hooks.json` (the former `hooks/hooks.json`) lists what the server runs
+  for each event. Recall, capture and sync behave as before.
+- **Session end.** Claude Code stops the server before the final sync can finish, so on
+  stop the server starts one short detached process that runs the `SessionEnd` script.
+  A server that is only restarted (`/reload-plugins`, a changed option) ends nothing.
+
+### Added
+
+- **A notice when the server is off.** If the server did not start (disabled in `/mcp`,
+  or no `python3` on `PATH`), session start says once that Cognee memory is off.
+- `~/.cognee-plugin/claude-code/mcp-server.log`, the server's own log, and
+  `~/.cognee-plugin/claude-code/relay/`, the request files, removed after the session.
+
+### Known limits
+
+- The skills still run their scripts through Bash, as in 1.8.5.
+- The server command is `python3` with no fallback to `python`.
+- Claude Code must support `mcp_tool` hooks.
+
 ## [1.8.5]
 
 ### Changed

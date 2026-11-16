@@ -2,8 +2,10 @@
 
 Every credential and connection setting comes from the plugin's options
 (``userConfig`` in .claude-plugin/plugin.json). Claude Code keeps the sensitive
-ones in its secure store and hands all of them to hook processes as
-``CLAUDE_PLUGIN_OPTION_<KEY>``. A key is read from its option where it is used
+ones in its secure store. The manifest hands all of them to the plugin's MCP
+server (``mcp_server.py``) as ``CLAUDE_PLUGIN_OPTION_<KEY>``, and the scripts
+the server runs inherit them; the hooks themselves read none. A key is read
+from its option where it is used
 (``cloud_key``, ``server_secret_env``) and is never copied into another
 environment variable of a plugin process: the plugin reads no credential from
 the environment except the options themselves. ``_apply_plugin_options`` maps
@@ -202,8 +204,9 @@ _TUNING_NAMES = frozenset(
     }
 )
 
-# Claude Code exports the options to hook processes only (and their children);
-# CLAUDE_PLUGIN_ROOT marks those. The status line and the Bash-run skills get
+# The options reach the plugin's MCP server and the scripts it runs (and hook
+# processes, which read none); CLAUDE_PLUGIN_ROOT marks those. The status
+# line and the Bash-run skills get
 # no options, so they read the URL option from a file in the plugin's own state
 # directory, which every hook process keeps equal to the option. Only the URL is
 # saved there, never a key. Claude Code's settings files are not read.
@@ -299,8 +302,9 @@ def _loadable(name: str, value: str) -> bool:
 def _option_readers() -> dict:
     """Each plugin option read by its full, literal variable name.
 
-    Claude Code exports ``userConfig`` option ``<key>`` to hook processes as
-    ``CLAUDE_PLUGIN_OPTION_<KEY>``. The names are spelled out, not built from a
+    The manifest gives the plugin's MCP server ``userConfig`` option ``<key>`` as
+    ``CLAUDE_PLUGIN_OPTION_<KEY>``, and the scripts it runs inherit it. The
+    names are spelled out, not built from a
     prefix, so that anyone reading this file (a reviewer, or a check of the
     plugin's files) sees which variables are read: the plugin's own options and
     nothing else from the environment.

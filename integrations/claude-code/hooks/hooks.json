@@ -1,12 +1,12 @@
 {
-  "description": "Cognee memory: recall, capture, session learning and sync.",
+  "description": "Cognee memory: recall, capture, session learning and sync. Each hook hands its event to the plugin's MCP server (scripts/mcp_server.py), which runs the scripts in scripts/server-hooks.json.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-relay.py\" --timeout 110 || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-relay.py\" --timeout 110",
             "timeout": 120,
             "statusMessage": "Initializing Cognee memory..."
           }
@@ -17,15 +17,21 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/session-context-lookup.py\"",
+            "type": "mcp_tool",
+            "server": "plugin:cognee-memory:cognee",
+            "tool": "cognee_hook",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "cwd": "${cwd}",
+              "permission_mode": "${permission_mode}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt": "${prompt}"
+            },
             "timeout": 120,
             "statusMessage": "Searching session memory..."
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-user-prompt.py\"",
-            "async": true
           }
         ]
       }
@@ -35,8 +41,21 @@
         "matcher": "Read",
         "hooks": [
           {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/file-context.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/file-context.py\"",
+            "type": "mcp_tool",
+            "server": "plugin:cognee-memory:cognee",
+            "tool": "cognee_hook",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "cwd": "${cwd}",
+              "permission_mode": "${permission_mode}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_use_id": "${tool_use_id}"
+            },
             "timeout": 10,
             "statusMessage": "Cognee: file context..."
           }
@@ -48,9 +67,23 @@
         "matcher": "Bash|Agent|Read|Write|Edit|Grep|Glob",
         "hooks": [
           {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\"",
-            "async": true
+            "type": "mcp_tool",
+            "server": "plugin:cognee-memory:cognee",
+            "tool": "cognee_hook",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "cwd": "${cwd}",
+              "permission_mode": "${permission_mode}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "tool_use_id": "${tool_use_id}"
+            },
+            "timeout": 30
           }
         ]
       }
@@ -59,15 +92,21 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/store-to-session.py\" --stop",
-            "async": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/send-unit.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/send-unit.py\"",
-            "async": true,
-            "timeout": 60
+            "type": "mcp_tool",
+            "server": "plugin:cognee-memory:cognee",
+            "tool": "cognee_hook",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "cwd": "${cwd}",
+              "permission_mode": "${permission_mode}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "stop_hook_active": "${stop_hook_active}",
+              "last_assistant_message": "${last_assistant_message}"
+            },
+            "timeout": 30
           }
         ]
       }
@@ -76,8 +115,20 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py\" || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.py\"",
+            "type": "mcp_tool",
+            "server": "plugin:cognee-memory:cognee",
+            "tool": "cognee_hook",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "cwd": "${cwd}",
+              "permission_mode": "${permission_mode}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "trigger": "${trigger}",
+              "custom_instructions": "${custom_instructions}"
+            },
             "timeout": 120,
             "statusMessage": "Building memory anchor..."
           }
@@ -89,7 +140,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/sync-session-to-graph.py\" --session-end"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-relay.py\" --no-wait || python \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-relay.py\" --no-wait"
           }
         ]
       }

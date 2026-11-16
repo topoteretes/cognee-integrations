@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally (with your own LLM API key) or on Cognee Cloud.",
-  "version": "1.8.5",
+  "version": "1.9.0",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -22,6 +22,25 @@
     "session",
     "persistent-memory"
   ],
+  "mcpServers": {
+    "cognee": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_server.py"
+      ],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": "${user_config.cognee_base_url}",
+        "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY": "${user_config.cognee_api_key}",
+        "CLAUDE_PLUGIN_OPTION_LLM_API_KEY": "${user_config.llm_api_key}",
+        "CLAUDE_PLUGIN_OPTION_LLM_PROVIDER": "${user_config.llm_provider}",
+        "CLAUDE_PLUGIN_OPTION_LLM_MODEL": "${user_config.llm_model}",
+        "CLAUDE_PLUGIN_OPTION_EMBEDDING_PROVIDER": "${user_config.embedding_provider}",
+        "CLAUDE_PLUGIN_OPTION_EMBEDDING_MODEL": "${user_config.embedding_model}",
+        "CLAUDE_PLUGIN_OPTION_EMBEDDING_DIMENSIONS": "${user_config.embedding_dimensions}",
+        "CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY": "${user_config.embedding_api_key}"
+      }
+    }
+  },
   "userConfig": {
     "cognee_base_url": {
       "type": "string",
