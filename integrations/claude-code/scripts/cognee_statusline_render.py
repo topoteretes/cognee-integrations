@@ -485,17 +485,17 @@ def _llm_prefix(session_id: str = "") -> str:
     """Amber LLM failure glyph, or '' — local mode only, read from marker.
 
     The local server's LLM matters only in local mode, so this is suppressed in
-    cloud mode. The verdict comes from the background idle watcher, which only
-    knows whether an LLM is configured at all (SDK-1411): `not_set` = no LLM key
-    or provider option. `auth_failed` is still read from markers the watcher of
-    1.8.3 or older wrote about the Claude observer. Distinct reasons
+    cloud mode. The verdict comes from the background idle watcher, which checks
+    only the Claude observer (SDK-1411): `auth_failed` with reason
+    `observer_needs_stored_login` = the observer's `claude` could not log in.
+    `not_set` is still read from markers older watchers wrote. Distinct reasons
     from the server-connection ones so the two aren't confused. Amber (`\\033[1;33m`)
     so a broken LLM key reads differently at a glance from an uncolored
     server-connection failure; the reset lands before the trailing space so no
     color bleeds into the rest of the bar.
 
     Per terminal, because the answer can differ per terminal: each launch decides
-    from its own options whether an LLM is configured. We read THIS session's record
+    from its own environment whether the observer serves it. We read THIS session's record
     (``llm-state/<session_key>.json``) first; the shared marker is consulted only
     when we have none of our own, and then only if it is unattributed — another
     terminal's "not_set" must not red a bar whose key is fine, and its "ok" must not
@@ -503,9 +503,10 @@ def _llm_prefix(session_id: str = "") -> str:
 
     Verdicts expire (`_LLM_STATE_STALE_SECONDS`): the marker is shared by every
     session, so without a TTL one stale write could keep accusing a key that has
-    since been fixed. The watcher renews its verdict at launch and every five
-    minutes while it runs, so a live session stays well inside the window, and a
-    verdict left by a session whose watcher is gone drops off after it.
+    since been fixed. The watcher refreshes it when it launches (session start, or
+    a prompt that finds no live watcher), throttled to at most once per five
+    minutes — so an active session stays well inside the window,
+    while a session quiet for longer simply drops the glyph until the next check.
     """
     if _active_mode() != "local":
         return ""
@@ -525,7 +526,8 @@ def _llm_prefix(session_id: str = "") -> str:
         return ""
     state = str(marker.get("llm_state") or "")
     if state in ("not_set", "auth_failed"):
-        # A marker may name a more specific cause.
+        # The watcher may name a more specific cause (``observer_needs_stored_login``
+        # when the LLM is the Claude observer and there is no key to be incorrect).
         reason = str(marker.get("reason") or "").strip()
         if not reason or not reason.replace("_", "").isalnum():
             reason = _LLM_KEY_REASON

@@ -122,9 +122,11 @@ def test_every_loopback_check_gives_the_same_answer(
     _as_hook(monkeypatch, suite)
     pc = isolated_modules(suite, "_plugin_common")
     env_file = isolated_modules(suite, "_env_file")
+    observer = isolated_modules(suite, "_observer")
     session_start = hook_module(suite, "session-start.py")
     assert env_file.is_loopback_url(url) is expected
     assert pc.service_url_is_local(url) is expected
+    assert observer._is_local_url(url) is expected
     assert session_start._is_local_url(url) is expected
 
 
@@ -481,6 +483,21 @@ def test_a_request_to_this_machine_never_goes_through_the_proxy(
     assert any(c["path"] == "/api/v1/datasets" for c in mock_server.calls)
 
 
+def test_the_observer_health_check_skips_the_proxy_and_sends_no_token(
+    suite, isolated_modules, monkeypatch, proxy
+):
+    shim = _Listener()
+    try:
+        monkeypatch.setenv("COGNEE_OBSERVER_PORT", str(shim.port))
+        observer = isolated_modules(suite, "_observer")
+        observer.observer_health(shim.port)
+    finally:
+        shim.close()
+    assert proxy.requests == []
+    assert shim.requests and "GET /health" in shim.requests[0]
+    assert "authorization" not in shim.requests[0].lower()
+
+
 def test_a_remote_request_still_uses_the_proxy(suite, isolated_modules, proxy):
     net = isolated_modules(suite, "_net")
     request = urllib.request.Request("http://tenant-x.cognee.invalid/health")
@@ -579,10 +596,12 @@ _NOT_FROM_THE_FILE = {
     "COGNEE_USER_ID",
     "COGNEE_PLUGIN_IN_VENV",
     "COGNEE_PLUGIN_LLM_ENV_APPLIED",
+    "COGNEE_LLM_OBSERVER_ACTIVE",
     # shell-only by design: which file to read, a session to resume, a path to
     # an executable, and the local URL (loopback only, checked separately)
     "COGNEE_ENV_FILE",
     "COGNEE_SESSION_ID",
+    "COGNEE_OBSERVER_CLAUDE",
     "COGNEE_LOCAL_API_URL",
 }
 

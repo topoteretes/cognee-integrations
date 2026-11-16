@@ -32,11 +32,6 @@ Explain the paths relevant to the question:
   options that Claude Code asks for when the plugin is enabled (the key is kept in
   Claude Code's secure storage and never written to disk by the plugin). Local mode
   uses a local server.
-- Local mode needs the LLM API key plugin option to build memory into the graph: the
-  local server sends captured text to that LLM provider (and to the embedding
-  provider) to build it. Without the key, existing memory is still recalled and
-  sessions are still captured, but nothing new is built; session start says so, and
-  the LLM row of `cognee-doctor.sh` shows what the server has.
 - Recall injects selected memory into Claude's context. The injection budget drops
   whole entries and the session ledger avoids repeating cloud memory until context
   is cleared or compacted.

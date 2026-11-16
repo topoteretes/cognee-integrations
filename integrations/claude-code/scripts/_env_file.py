@@ -110,8 +110,8 @@ _SHELL_STORAGE_IGNORED_VAR = "COGNEE_PLUGIN_SHELL_STORAGE_IGNORED"
 _LOCAL_URL_VAR = "COGNEE_LOCAL_API_URL"
 # Set once the first plugin process has replaced the shell's LLM_* /
 # EMBEDDING_* values with the options. A child inherits what its parent
-# applied (the embedder kept for an install that ran on the removed Claude
-# observer included) and must keep it rather than strip it again.
+# applied (the Claude observer's provider, endpoint and token included) and
+# must keep it rather than strip it again.
 _LLM_ENV_APPLIED = "COGNEE_PLUGIN_LLM_ENV_APPLIED"
 
 # The plugin's own non-secret tuning settings: the only names ~/.cognee/.env
@@ -150,9 +150,16 @@ _TUNING_NAMES = frozenset(
         "COGNEE_IMPROVE_SUBMIT_TIMEOUT",
         "COGNEE_INJECT_MAX_CHARS",
         "COGNEE_LAZY_BOOTSTRAP",
+        "COGNEE_LLM_OBSERVER",
         "COGNEE_LOG_EVENT_SCHEMA",
         "COGNEE_LOG_MAX_BYTES",
         "COGNEE_MANAGED_ENDPOINT",
+        "COGNEE_OBSERVER_CONCURRENCY",
+        "COGNEE_OBSERVER_MODEL",
+        "COGNEE_OBSERVER_PORT",
+        "COGNEE_OBSERVER_PROBE_TTL",
+        "COGNEE_OBSERVER_RETIRE_AFTER",
+        "COGNEE_OBSERVER_TIMEOUT",
         "COGNEE_PLUGIN_CITE_MEMORY",
         "COGNEE_PLUGIN_DATASET",
         "COGNEE_PLUGIN_LOG_MAX_BYTES",

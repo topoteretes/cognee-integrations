@@ -37,8 +37,7 @@ capture off; recall and explicit remember keep working.
   to `localhost:8011`. Memory is stored on this machine. To build the graph, that
   server sends captured text to the LLM and embedding provider you configured
   in the plugin options (LLM provider, model and key; embedding provider, model,
-  dimensions and key). Without an LLM API key option the server has no LLM and
-  cannot build new memory into the graph.
+  dimensions and key), or to Claude Code through the observer below.
 - *Cloud mode*: your Cognee Cloud instance at the Cognee Cloud URL plugin option,
   over HTTPS, authenticated with the Cognee Cloud API key plugin option.
 
@@ -73,8 +72,8 @@ hook commands, skills and an agent, and every script they start is a separate
 process from this folder.
 
 **Background processes.** Detached helpers that outlive a hook: the idle watcher and
-exit watcher (session sync and status), and in local mode the cognee server. All
-are scripts from this folder.
+exit watcher (session sync and status), and in local mode the cognee server and,
+when enabled, the Claude observer shim. All are scripts from this folder.
 
 **Credentials it reads.** Every credential and connection setting comes only from
 the plugin's options: the Cognee Cloud URL and API key, and the local server's LLM
@@ -90,10 +89,14 @@ server you configured; the LLM and embedding keys only to the local server's
 process, which starts with an allowlisted environment (no provider key, database
 password or token from your shell reaches it).
 
-**Your Claude login.** The plugin does not use it. Versions up to 1.8.3 could run
-the local server's LLM calls as `claude -p` under your Claude Code login (the Claude
-observer); 1.8.4 removed that. See
-[Local mode needs an LLM key](#local-mode-needs-an-llm-key-the-claude-observer-is-gone).
+**Your Claude subscription.** In local mode with no LLM API key set and the
+`claude` CLI on PATH, the server's own LLM calls (cognify, improve) run as
+`claude -p --safe-mode` under your Claude Code login and count against your
+subscription usage. The child gets only an allowlisted environment, with no token or
+key variables, and signs in with the login Claude Code keeps in its own store. Your
+login never goes to any server. Session start says so every time it is in use;
+`COGNEE_LLM_OBSERVER=false` turns it off. Details under
+[Claude observer](#claude-observer-local-mode-on-your-claude-subscription).
 
 ## Install
 
@@ -112,8 +115,8 @@ py -3.12 -m venv "%USERPROFILE%\.cognee-plugin\venv" && "%USERPROFILE%\.cognee-p
 ```
 
 If `python3` is older than 3.10, use a newer one by name (for example `python3.12`).
-With fastembed embeddings (the embedding provider option, also what an install that
-ran on the removed Claude observer keeps) the
+With fastembed embeddings (the embedding provider option, also what the
+[Claude observer](#claude-observer-local-mode-on-your-claude-subscription) uses) the
 requirement gains that extra: `cognee[fastembed]==1.6.6`. The `anthropic` and
 `mistral` LLM providers need their SDK the same way: `cognee[anthropic]==1.6.6` or
 `cognee[mistral]==1.6.6`. Session start prints the
@@ -137,8 +140,8 @@ Then set the plugin's options. Claude Code asks for them when the plugin is enab
 |---|---|---|
 | Cognee Cloud URL | `cognee_base_url` | Your Cognee Cloud instance, such as `https://your-instance.cognee.ai`, or your own Cognee server. Leave empty to run Cognee locally on this machine. |
 | Cognee Cloud API key | `cognee_api_key` (sensitive) | The `ck_…` key from your Cognee Cloud account (or your own server). Needed only with a remote URL; it is never sent to a server on this machine. |
-| LLM API key (local mode) | `llm_api_key` (sensitive) | The model provider key the local Cognee server builds memory with (OpenAI unless the LLM provider is set). Local mode needs it to build memory into the graph. |
-| LLM provider (local mode) | `llm_provider` | Such as `openai`, `anthropic` or `gemini`. Empty: OpenAI. Needs the LLM API key option. |
+| LLM API key (local mode) | `llm_api_key` (sensitive) | The model provider key the local Cognee server builds memory with (OpenAI unless the LLM provider is set). Leave empty to use your Claude subscription through the `claude` CLI instead. |
+| LLM provider (local mode) | `llm_provider` | Such as `openai`, `anthropic` or `gemini`. Empty: OpenAI with a key, or the Claude observer without one. |
 | LLM model (local mode) | `llm_model` | Such as `openai/gpt-4o-mini`. Empty: the provider's default. |
 | Embedding provider (local mode) | `embedding_provider` | Such as `openai` or `fastembed`. Empty: Cognee's default. |
 | Embedding model (local mode) | `embedding_model` | Such as `openai/text-embedding-3-large`. Empty: Cognee's default. |
@@ -155,13 +158,13 @@ Claude Code keeps the keys in its secure credential store and passes the options
 
 **Storage location is fixed.** The plugin's local server always keeps its stores under `~/.cognee`. `DATA_ROOT_DIRECTORY`, `SYSTEM_ROOT_DIRECTORY` and database provider settings (`DB_PROVIDER`, `GRAPH_DATABASE_PROVIDER`, `VECTOR_DB_PROVIDER`) in your shell or in `~/.cognee/.env` are ignored; session start says so once when it finds any. Data you stored elsewhere with an earlier version is untouched but not used. Cognee's own `TELEMETRY_DISABLED` opt-out in your shell is passed to the local server.
 
-**Ollama and custom LLM endpoints are not supported in this version.** There is no endpoint option, and `LLM_ENDPOINT` in the shell or in `~/.cognee/.env` is ignored, so a local Ollama, Azure or other OpenAI-compatible endpoint cannot be configured (Ollama embeddings included). This is deliberate: 1.8.2 is the most restrictive version of the plugin, built to pass Anthropic's plugin directory review. They will be added back shortly if the directory accepts this version. Until then, local mode uses a hosted provider through the LLM options.
+**Ollama and custom LLM endpoints are not supported in this version.** There is no endpoint option, and `LLM_ENDPOINT` in the shell or in `~/.cognee/.env` is ignored, so a local Ollama, Azure or other OpenAI-compatible endpoint cannot be configured (Ollama embeddings included). This is deliberate: 1.8.2 is the most restrictive version of the plugin, built to pass Anthropic's plugin directory review. They will be added back shortly if the directory accepts this version. Until then, local mode uses a hosted provider through the LLM options, or the Claude observer.
 
 > The plugin is an HTTP client in both modes; the hooks never import cognee in-process. Cloud mode needs no local Cognee runtime. The virtualenv (`~/.cognee-plugin/venv`) is needed only in local mode, where it runs the local Cognee server the hooks talk to; you build it yourself.
 >
 > In Cloud mode the skills that call the server from the shell cannot authenticate; automatic recall and capture work. See [Auth](#auth).
 
-**Local mode** (default when no Cloud URL is set). Build the venv first (see [Requirements](#install) above). The plugin then starts a local Cognee API from it at `http://localhost:8011` and looks up that server's key itself; a fresh install mints it once at session start. The server needs an LLM for cognify: set the LLM API key option to a provider key of your own. Without one the server has no LLM and cannot build new memory into the graph (see [Local mode needs an LLM key](#local-mode-needs-an-llm-key-the-claude-observer-is-gone)).
+**Local mode** (default when no Cloud URL is set). Build the venv first (see [Requirements](#install) above). The plugin then starts a local Cognee API from it at `http://localhost:8011` and looks up that server's key itself; a fresh install mints it once at session start. The server needs an LLM for cognify: either set the LLM API key option to a provider key of your own, or leave it empty and let it run on your **Claude subscription**: with no LLM API key configured and the `claude` CLI on PATH, session start switches the local server's LLM calls to the [Claude observer](#claude-observer-local-mode-on-your-claude-subscription) (`claude -p` behind a loopback OpenAI-compatible shim) and embeddings to a local model. No key, no extra account.
 
 **Default user and its password.** The local server is started with `DEFAULT_USER_EMAIL=default_user@example.com` and `DEFAULT_USER_PASSWORD=default_password`, which is how cognee 1.6.0 and later create the default user at all (a server started without `DEFAULT_USER_PASSWORD` creates no default account, and the password is set once and never rewritten). The plugin always logs in as that user to look up its owner API key (and mints one on a fresh install), so a fresh install needs no manual step and an existing install keeps working. The user is not configurable. The server is also started with `HASH_API_KEY=false`, so the owner key it lists is usable; a key an earlier server stored hashed is rejected by the authenticated check at session start, and a fresh owner key is minted and used instead (the old one stays in the database, unused). A server on this machine always gets its owner key, never the Cloud API key option. If a server you run yourself answers on a loopback address and rejects the default user's login, session start says so; give it a non-loopback address and an API key in the options, or stop it so the plugin starts its own.
 
@@ -242,11 +245,11 @@ Every request runs as your own key, `COGNEE_PLUGIN_IDENTITY` is ignored, and the
 no key limit or key management skill. `cognee-doctor` reports **API Key Source** as
 `Plugin option`, `Local server` or `Not set`, and **Memory Sharing** as
 `principal (no plugin identity)`. Run from a shell, doctor has no plugin options, so
-it shows the key source and the LLM provider and model that the newest
+it shows the key source, LLM provider and model, and observer state that the newest
 session start recorded for the project, marked "(as of session start, <time>)"; with
 no session recorded yet it says the settings are not visible from a shell. The
-recorded facts are booleans and names only, never a key. Server reachability and the
-venv version are still checked live.
+recorded facts are booleans and names only, never a key. Server reachability, the
+venv version and the observer shim are still checked live.
 
 Use dataset UUIDs for shared write targets. Dataset switching checks effective write
 permissions. Set `COGNEE_PLUGIN_READ_DATASET_IDS` to a JSON array of allowed UUIDs for
@@ -817,55 +820,90 @@ the data from the Cognee Cloud dashboard instead. Deletion is
 irreversible; the dataset-wide and delete-everything commands require an explicit, unambiguous
 user request, and the skill confirms with the user before running one.
 
-## Local mode needs an LLM key (the Claude observer is gone)
+## Claude observer: local mode on your Claude subscription
 
-Up to 1.8.3, local mode with no LLM API key ran the server's LLM calls through Claude
-Code itself (`claude -p` under your stored Claude login, behind a loopback shim): the
-*Claude observer*. 1.8.4 removed it (SDK-1411). The plugin no longer starts `claude`,
-no longer runs a shim, and keeps no shim token. `COGNEE_LLM_OBSERVER` and the
-`COGNEE_OBSERVER_*` settings are ignored.
+> **It spends your Claude usage.** With the observer on, every cognify/improve call the
+> local server makes is a real `claude -p` run billed to your Claude subscription and
+> counted against its usage limits — and building the graph is token-heavy. Session
+> start announces it every time it is in use. Set the LLM API key plugin option to use
+> a provider of your own, or `COGNEE_LLM_OBSERVER=false` to turn it off.
 
-**What changes for you.** In local mode the server's LLM comes only from the plugin
-options: set the LLM API key option (`/plugin`, cognee-memory, Configure options) and
-start a new session. Until you do:
+Local mode needs an LLM for cognify, improve and graph completion. When neither the LLM
+API key option nor the LLM provider option is set, session start runs those calls
+through **Claude Code itself** instead of asking for a key:
 
-- memory already in the graph is still recalled (recall needs no LLM);
-- new sessions are still captured, but the server cannot build them into the graph;
-- session start says so every time, doctor's LLM row says
-  `None — no LLM API key option set`, and the status line shows
-  `✕ (incorrect_llm_api_key)` for as long as the session runs.
+1. `_observer.py` decides, before the local server boots, that this launch has no LLM
+   of its own (no LLM API key option, no LLM provider option) and the `claude` CLI is
+   available. The server it starts loads no `.env` of its own: it gets
+   `COGNEE_ENV_FILE` pointing at an empty plugin-owned file
+   (`~/.cognee-plugin/claude-code/server.env`), so a stray `LLM_API_KEY` in a `.env`
+   above the venv cannot override the observer's settings;
+2. it points cognee's `custom` provider at a loopback OpenAI-compatible shim
+   (`LLM_PROVIDER=custom`, `LLM_MODEL=openai/claude-observer`,
+   `LLM_ENDPOINT=http://127.0.0.1:8017/v1`) and, unless you configured an embedder of
+   your own, sets embeddings to a local model (`EMBEDDING_PROVIDER=fastembed`,
+   `BAAI/bge-small-en-v1.5`, 384 dims — the `fastembed` extra, which the install
+   command session start prints then includes);
+3. it starts the shim, `claude-observer.py`, detached. Every `/v1/chat/completions`
+   the server sends becomes one `claude -p --safe-mode --output-format json` run —
+   `--json-schema` carries cognee's structured-output schemas, `--safe-mode` keeps
+   your OAuth login but disables hooks, plugins and CLAUDE.md in the child so the
+   plugin never re-enters itself (every hook also exits at once when
+   `COGNEE_OBSERVER_CHILD` is set). The child gets only an allowlisted environment
+   (`_CHILD_ENV_ALLOWLIST` in `claude-observer.py`: path, home, locale, temp dir,
+   proxy and certificate settings, `CLAUDE_CONFIG_DIR` and the Windows basics). No
+   token, key or other credential variable is passed, so `ANTHROPIC_API_KEY` cannot
+   move the bill off the subscription. The child signs in with the login Claude Code
+   keeps in its own store (the keychain, or `.credentials.json` under
+   `CLAUDE_CONFIG_DIR`). A `claude setup-token` login that lives only in
+   `CLAUDE_CODE_OAUTH_TOKEN` therefore cannot run the observer; set the LLM API key
+   option instead. The shim retires itself a few minutes after the cognee server is
+   gone.
 
-The LLM provider option alone is not enough: every provider except `bedrock` and
-`llama_cpp` needs the key, and a provider set without one gets the same notices. The
-plugin also installs nothing in its place: without a usable LLM the server is started
-with `GLINER_AUTO_INSTALL=false`, so cognee does not download its local extractor
-(gliner2 and torch) and refuses to build the graph instead.
+The shim listens on loopback only and requires a bearer token on every route but
+`/health`: `~/.cognee-plugin/observer/token` (created once, mode 0600), which cognee
+receives as its `LLM_API_KEY` (set in the server's environment only, never in the
+plugin's own processes). Requests carrying an `Origin` header are refused, so a
+web page cannot drive it.
 
-A local server the plugin did not start (a managed endpoint, or your own Cognee on the
-port) has its own LLM settings, so none of this applies to it: no notice, and doctor's
-LLM row says the server's own settings apply.
+A running server keeps the LLM config it booted with. The server's pidfile records
+whether it was started on the observer, and a session joining it follows that record:
+a server booted on the observer keeps the shim running (and keeps using the
+subscription) even after you set a key, until it restarts — it stops on its own once
+every session using it has closed.
 
-Cloud mode is unaffected: the remote server owns its LLM.
+**Embeddings and datasets.** Vectors from different embedding models cannot be
+compared, so a dataset is tied to the embedder that built it. Turning the observer on
+switches embeddings to fastembed (384 dims), and turning it off (by setting the LLM
+API key option) switches them back to your provider's model. Either way, switch to a
+new dataset (`/cognee-memory:cognee-switch-datasets`, or `COGNEE_PLUGIN_DATASET`)
+rather than reusing one built with the other embedder. Session start and `doctor.py`
+repeat this whenever the observer is in use.
 
-**Your existing datasets stay searchable.** The observer ran embeddings on cognee's
-local CPU embedder (fastembed, `BAAI/bge-small-en-v1.5`, 384 dimensions), and vectors
-from different models cannot be compared, so a dataset is tied to the embedder that
-built it. An install whose last local session ran on the observer therefore keeps that
-embedder after the upgrade, also once you add an LLM key (which would otherwise switch
-embeddings to that provider's default and leave the existing datasets unsearchable).
-The choice is recorded once in `~/.cognee-plugin/claude-code/embedder.json`. An
-install is recognised whichever version it ran on the observer with (1.6.0 to 1.8.3).
-Setting any embedding option (provider, model, dimensions or key) is your own choice of
-embedder and replaces the kept one as a whole. To use
-another embedder, set the embedding options and switch to a new dataset
-(`/cognee-memory:cognee-switch-datasets` or `COGNEE_PLUGIN_DATASET`); delete the file to
-drop the pin.
+Session start says so in its system message (`⚠ LLM: Claude Code (observer) …`),
+`doctor.py` shows it in the `LLM` row, and the status line's key check asks the shim
+instead of litellm. When that check fails, the status line and `doctor.py` say: "The
+Claude observer can use only Claude Code's stored login (not Bedrock, Vertex, a gateway
+or setup-token); set the LLM options instead." The tokens are billed to your Claude subscription (`haiku` by
+default); each completion is logged with model, duration and token count in
+`~/.cognee-plugin/observer/observer-events.log`, the shim's own log is
+`observer.log` next to it. The server still needs the local runtime, so the
+requirements above (the venv you build, with cognee 1.6.6 or newer) are unchanged.
 
-**During the upgrade.** A local server that 1.8.3 started on the observer keeps running
-on it, with the shim that version started, until it restarts (it stops on its own once
-every session using it has closed); session start says so. This version no longer
-uses `~/.cognee-plugin/observer/` and does not touch it: once no such server is
-running you can delete the folder.
+Setting the LLM API key plugin option switches back to a provider of your own on the
+next launch (an `LLM_API_KEY` or `LLM_PROVIDER` in `~/.cognee/.env` or the shell is ignored); cloud mode never uses the observer (the remote server owns its LLM).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `COGNEE_LLM_OBSERVER` | `auto` | `auto`: observer when neither the LLM API key option nor the LLM provider option is set, and `claude` is found. `true`: always (a missing CLI is reported at session start). `false`: never — local mode then needs an LLM of its own (the LLM API key option). |
+| `COGNEE_OBSERVER_MODEL` | `haiku` | Claude model for the server's LLM calls (`haiku`, `sonnet`, `opus`, or a full model id). A value that cannot be a model name (spaces, a leading `-`, shell characters) is ignored with a warning at session start and in `doctor.py`, and `haiku` is used. |
+| `COGNEE_OBSERVER_CLAUDE` | found on PATH | Path to the `claude` executable (shell export only; not read from `~/.cognee/.env`). |
+| `COGNEE_OBSERVER_PORT` | `8017` | Loopback port of the shim. |
+| `COGNEE_OBSERVER_CONCURRENCY` | `2` | Parallel `claude -p` runs the shim allows. |
+| `COGNEE_OBSERVER_TIMEOUT` | `240` | Seconds per completion before the shim answers 504. |
+
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude-observer.py" status|probe|stop` inspects
+the shim, checks that `claude` can actually answer (one tiny real call), or stops it.
 
 ## Visible Cognee searches
 
@@ -944,26 +982,29 @@ A connection glyph precedes the line:
 ✕ (missing_cognee_base_url) cognee: … · cloud   # COGNEE_BACKEND=cloud is exported, but no COGNEE_BASE_URL is configured
 ```
 
-`●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `incorrect_cognee_api_key` (a missing, wrong, or expired Cognee API key; in Cloud mode, the plugin option), `unreachable` (server positively absent: connection refused or DNS failure, including a server that dies mid-session), `server_error` (5xx). Recall timeouts are recorded as latency diagnostics; even repeated timeouts do not mark the server down or block the next prompt. Legacy `not_responding` markers no longer gate recall. One reason is special: `missing_cognee_base_url` means the terminal was pinned to cloud with the `COGNEE_BACKEND` switch but the Cloud URL option is empty — a misconfiguration the renderer proves directly from the environment, shown immediately rather than after a failed connection attempt. `cognee_needs_python_3_10` is proven the same way: local mode, and an earlier plugin version recorded that it found no Python 3.10–3.14 for the Cognee server to run on. It clears once session start finds a usable venv; see [Install](#install). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh. It is **colour-coded**: a bold green `●` when the connection is confirmed good, and a bold red `✕ (<reason>)` — reason included, so the whole verdict reads as one unit — when it is confirmed bad. A missing local LLM is red as well — the two are told apart by the reason itself (`incorrect_cognee_api_key` for the key this plugin uses to reach the server, `incorrect_llm_api_key` for the local server's LLM) rather than by colour.
+`●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `incorrect_cognee_api_key` (a missing, wrong, or expired Cognee API key; in Cloud mode, the plugin option), `unreachable` (server positively absent: connection refused or DNS failure, including a server that dies mid-session), `server_error` (5xx). Recall timeouts are recorded as latency diagnostics; even repeated timeouts do not mark the server down or block the next prompt. Legacy `not_responding` markers no longer gate recall. One reason is special: `missing_cognee_base_url` means the terminal was pinned to cloud with the `COGNEE_BACKEND` switch but the Cloud URL option is empty — a misconfiguration the renderer proves directly from the environment, shown immediately rather than after a failed connection attempt. `cognee_needs_python_3_10` is proven the same way: local mode, and an earlier plugin version recorded that it found no Python 3.10–3.14 for the Cognee server to run on. It clears once session start finds a usable venv; see [Install](#install). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh. It is **colour-coded**: a bold green `●` when the connection is confirmed good, and a bold red `✕ (<reason>)` — reason included, so the whole verdict reads as one unit — when it is confirmed bad. The observer failure is red as well — the two are told apart by the reason itself (`incorrect_cognee_api_key` for the key this plugin uses to reach the server, `observer_needs_stored_login` for the local server's Claude observer) rather than by colour.
 
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_READY_PROBE_TIMEOUT` | `3.0` | Seconds the per-prompt readiness probe waits before giving up and skipping recall for that turn. It sits on the keystroke→answer path, so the default is deliberately tight; raise it on a slow or loaded server that is otherwise healthy. |
 
-**Local-mode LLM.** The plugin checks no LLM key of yours: it imports
+**Local-mode LLM (Claude observer).** The plugin checks no LLM key of yours: it imports
 no cognee or litellm code and calls no provider, so a bad LLM API key option shows up
-only as failures in the local server's log. The one thing it knows is whether an LLM
-is configured at all: with no LLM API key option (and a provider that needs one), the
-background idle watcher records that, and it shows **in the same leading glyph slot**:
+only as failures in the local server's log. The one LLM verdict it forms is about the
+[Claude observer](#claude-observer-local-mode-on-your-claude-subscription): the
+background idle watcher asks the plugin's own loopback shim whether `claude` can
+answer, and a refusal shows **in the same leading glyph slot**:
 
 ```
-✕ (incorrect_llm_api_key) cognee: agent_sessions · local
+✕ (observer_needs_stored_login) cognee: agent_sessions · local
 ```
 
-Set the LLM API key option and start a new session. The slot holds one sign, by
-precedence: a server-connection failure wins, otherwise the missing LLM is shown **in
-place of** the green `●`. The check runs at session start and again on any prompt that
-finds no live watcher, and expires after 30 minutes.
+The observer can use only Claude Code's stored login (not Bedrock, Vertex, a gateway or
+setup-token); set the LLM options instead. The slot holds one sign, by precedence: a
+server-connection failure wins, otherwise the observer failure is shown **in place of**
+the green `●`. The check runs at session start and again on any prompt that finds no
+live watcher; the verdict clears once the observer answers, and expires after 30
+minutes.
 
 **Activity.** The line ends with what memory is doing right now, and once it is done,
 what it did:
@@ -1048,7 +1089,7 @@ The status line reads only local state — no network calls on every refresh:
 2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then the Cloud URL option (read from `pluginConfigs` in `~/.claude/settings.json`)
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
-5. LLM configured: `llm-state/<session>.json`, then `llm-state.json`
+5. Observer check: `llm-state/<session>.json`, then `llm-state.json`
 6. Activity: `phase/<session>.json`
 7. Counts: `recall/<session>.json`, then `last_recall.json`; cumulative entries from `sessions/<host id>/stats.json`
 
@@ -1264,7 +1305,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | mode switch | `COGNEE_BACKEND` | unset | `local` or `cloud` — pins the terminal's mode, overriding the URL rule; flips the Claude Code **and** Codex plugins |
 | plugin-only mode switch | `COGNEE_CLAUDE_BACKEND` | unset | Same, for this plugin only; beats `COGNEE_BACKEND` |
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL; honoured only for a loopback address |
-| local LLM | `llm_api_key`, `llm_provider`, `llm_model` plugin options | unset | LLM for the local mode runtime; without a key the server has no LLM (see [Local mode needs an LLM key](#local-mode-needs-an-llm-key-the-claude-observer-is-gone)). Read only from the plugin options |
+| local LLM | `llm_api_key`, `llm_provider`, `llm_model` plugin options | unset | LLM for the local mode runtime; without a key or provider the [Claude observer](#claude-observer-local-mode-on-your-claude-subscription) is used. Read only from the plugin options |
 | local embeddings | `embedding_provider`, `embedding_model`, `embedding_dimensions`, `embedding_api_key` plugin options | Cognee's default | Embedder of the local server; an empty key reuses the LLM key. Read only from the plugin options |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
 | improve cooldown | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session |

@@ -193,7 +193,7 @@ def test_the_launch_record_holds_names_and_booleans_only(start, monkeypatch):
     )
     pc._write_map_record("sess-facts", {"session_id": "s", "conn_uuid": "c", "cwd": "/p"})
     monkeypatch.setattr(pc, "get_session_key", lambda: "sess-facts")
-    start._record_launch_facts({}, "https://tenant.cognee.ai")
+    start._record_launch_facts({}, "https://tenant.cognee.ai", {"active": False, "reason": "cloud"})
     text = (pc._SESSIONS_MAP_DIR / "sess-facts.json").read_text(encoding="utf-8")
     assert "ck_option_secret" not in text and "sk_option_secret" not in text
     facts = json.loads(text)["launch_facts"]
@@ -201,5 +201,5 @@ def test_the_launch_record_holds_names_and_booleans_only(start, monkeypatch):
     assert facts["llm_key_option_set"] is True
     assert facts["embedding_key_option_set"] is False
     assert facts["key_source"] == "plugin_option"
-    assert "observer" not in facts
+    assert facts["observer"] == {"active": False, "reason": "cloud", "model": ""}
     assert pc.latest_launch_facts("/p")["key_source"] == "plugin_option"

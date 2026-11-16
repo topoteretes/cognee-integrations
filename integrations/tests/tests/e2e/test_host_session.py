@@ -361,9 +361,6 @@ def test_configured_options_show_no_notice_and_the_shell_url_is_ignored(
     project.mkdir()
     extra = {
         **plugin_options(options_host, mock.url, DEFAULT_TEST_API_KEY),
-        # The mock is on this machine, so the session is a local one: with no
-        # LLM key option it is told that local mode has no LLM.
-        "CLAUDE_PLUGIN_OPTION_LLM_API_KEY": "sk-test-llm",
         # An exported URL from the user's shell: never followed.
         "COGNEE_BASE_URL": closed_port_url,
     }

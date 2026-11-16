@@ -6,8 +6,8 @@ Cognee server it is configured for, and reads no credential of its own.
 * No shipped script imports ``litellm`` or ``cognee.*``. Importing cognee runs
   its ``.env`` loader in the plugin's process (reading a project or ``~/.env``
   full of secrets), and a ``litellm`` call goes straight to the user's LLM
-  provider. The idle watcher's LLM-key check did both; it now only reads
-  whether an LLM key or provider option is set.
+  provider. The idle watcher's LLM-key check did both; it now asks only the
+  plugin's own loopback observer shim.
 * No shipped script references the cloud billing route or the production
   platform host: the credits fetch sent the Cloud key to
   ``api.aws.cognee.ai`` for any remote URL that was not a tenant host.
@@ -113,7 +113,7 @@ def _offending_imports(path: Path) -> list:
 
 def test_the_python_scan_finds_the_scripts():
     names = {p.name for p in _python_files()}
-    assert {"idle-watcher.py", "_cloud_worker.py", "session-start.py", "cognee-plugin"} <= names
+    assert {"idle-watcher.py", "_cloud_worker.py", "claude-observer.py", "cognee-plugin"} <= names
 
 
 @pytest.mark.parametrize("path", _python_files(), ids=lambda p: str(p.relative_to(_PLUGIN)))
