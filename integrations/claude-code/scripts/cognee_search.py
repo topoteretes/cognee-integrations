@@ -5,7 +5,6 @@ Usage:
   cognee_search.py <query> [top_k] [--graph]
   cognee_search.py <query> [top_k] --code [--dataset <name>] [--code-query '<json>']
   cognee_search.py <query> [top_k] --graph --dataset-id <uuid>
-  cognee_search.py <query> [top_k] --category <user_context|project_docs|agent_actions>
 
 --graph:   search the permanent knowledge graph (the default; the flag is
            accepted for callers that spell it out)
@@ -27,8 +26,6 @@ Usage:
            dataset is searched only with --user-picked: the person named it
            or chose it in the picker. Without it the search refuses (exit 2).
 --user-picked: the --dataset/--dataset-id target is the person's own choice.
---category: keep only one category of graph memory: user_context,
-           project_docs or agent_actions. Graph searches only.
 No flag:   same as --graph. Memory is read from the graph and the code graph
            only; the session cache is written, never searched.
 
@@ -55,7 +52,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from _env_file import cloud_key, load_env_file
+from _env_file import load_env_file
 from _net import open_url
 
 # One-time config from ~/.cognee/.env (shell exports still win).
@@ -88,7 +85,7 @@ def _runtime() -> dict:
         or os.environ.get("COGNEE_LOCAL_API_URL")
         or "http://localhost:8011"
     ).strip()
-    api_key = cloud_key(service_url)
+    api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
     session_id = ""
     dataset = _configured_dataset()
     dataset_ids = ""
@@ -200,23 +197,11 @@ def _code_dataset(cwd: str) -> str:
         return ""
 
 
-CATEGORIES = ("user_context", "project_docs", "agent_actions")
-
-
-def _recall(
-    rt: dict,
-    query: str,
-    scope: str,
-    top_k: str,
-    dataset: str,
-    code_query: str,
-    category: str = "",
-) -> str:
+def _recall(rt: dict, query: str, scope: str, top_k: str, dataset: str, code_query: str) -> str:
     """The server's answer as printed text, or "" when the client itself failed."""
     try:
         import _cognee_client
 
-        extra = {"node_name": [category]} if category else {}
         result = _cognee_client.recall(
             rt["service_url"],
             rt["api_key"],
@@ -227,7 +212,6 @@ def _recall(
             dataset,
             code_query,
             rt["dataset_ids"],
-            **extra,
         )
     except Exception as exc:
         print(f"[cognee-search] recall client failed: {exc}", file=sys.stderr)
@@ -250,7 +234,6 @@ def main(argv: list[str]) -> int:
     dataset = rt["dataset"]
     dataset_explicit = False
     user_picked = False
-    category = ""
     recall_auto = bool(rt["recall_auto"])
 
     # Parse flags from any position (value flags consume the next argument).
@@ -270,19 +253,7 @@ def main(argv: list[str]) -> int:
             dataset_explicit = True
         elif arg == "--user-picked":
             user_picked = True
-        elif arg == "--category":
-            i += 1
-            category = (argv[i] if i < len(argv) else "").strip()
         i += 1
-
-    if category and (category not in CATEGORIES or mode == "code"):
-        print(
-            "Error: --category takes one of "
-            + ", ".join(CATEGORIES)
-            + " and applies to graph searches only",
-            file=sys.stderr,
-        )
-        return 1
 
     # The resolved UUIDs belong to the launch's active dataset only: an
     # explicit --dataset or the code lane (the repo's own dataset) must search
@@ -377,7 +348,7 @@ def main(argv: list[str]) -> int:
     # never answered from another backend. The circuit breaker is the ONE at
     # ~/.cognee-plugin/recall-breaker.json that the per-prompt hooks, doctor and
     # the status line use (no COGNEE_PLUGIN_STATE_DIR override here).
-    recall_json = _recall(rt, query, scope, top_k, dataset, code_query, category)
+    recall_json = _recall(rt, query, scope, top_k, dataset, code_query)
 
     if recall_json and recall_json != UNREACHABLE:
         # Server answered — authoritative, even if the result is empty.

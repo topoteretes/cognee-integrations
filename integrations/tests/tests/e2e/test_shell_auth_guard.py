@@ -115,15 +115,8 @@ def _command(suite, name: str, home) -> list[str]:
         ]
     if name == "forget-datasets":
         return [BASH, str(scripts / "cognee-forget.sh"), "datasets"]
-    if name in ("forget-memory", "forget-dataset"):
-        return [
-            BASH,
-            str(scripts / "cognee-forget.sh"),
-            name,
-            "11111111-1111-5111-8111-111111111111",
-        ]
-    if name == "forget-everything":
-        return [BASH, str(scripts / "cognee-forget.sh"), name, "--confirm-delete-all"]
+    if name == "forget-env":
+        return [BASH, str(scripts / "cognee-forget.sh"), "env"]
     if name == "switch-dataset-list":
         return [
             sys.executable,
@@ -164,17 +157,12 @@ def _run(cmd, env, home):
         "evidence-index",
         "evidence-details",
         "forget-datasets",
-        "forget-memory",
-        "forget-dataset",
-        "forget-everything",
+        "forget-env",
     ],
 )
 def test_remote_url_without_a_key_exits_2_before_any_request(
-    claude_only, temp_home, private_mock_server, isolated_modules, assert_clean_real_home, name
+    claude_only, temp_home, mock_server, isolated_modules, assert_clean_real_home, name
 ):
-    # A server of its own: "no request at all" is asserted below, and a detached
-    # sync left by an earlier session test reaches the suite-wide server late.
-    mock_server = private_mock_server
     cmd = _command(claude_only, name, temp_home)
     if cmd[0] is None:
         pytest.skip("requires a working POSIX bash (wrapper is not run on Windows)")
@@ -191,9 +179,8 @@ def test_remote_url_without_a_key_exits_2_before_any_request(
 
 
 def test_evidence_explain_needs_no_server_and_still_runs_in_cloud_mode(
-    claude_only, temp_home, private_mock_server, assert_clean_real_home
+    claude_only, temp_home, mock_server, assert_clean_real_home
 ):
-    mock_server = private_mock_server  # see the test above
     """``explain`` reads a local file only, so the guard leaves it alone."""
     _with_url_option(temp_home, _remote_alias(mock_server.url))
     cmd = [
@@ -246,11 +233,12 @@ def test_every_script_the_skills_name_is_guarded_or_makes_no_keyed_call(claude_o
     assert sorted(named - _GUARDED_SCRIPTS - _NO_KEYED_CALL_SCRIPTS) == []
 
 
-# ── no shipped shell block handles a key ──────────────────────────────────
+# ── the shipped curl blocks stop when the helper fails ────────────────────
 
 
-def _shipped_bash_blocks(plugin) -> list[tuple[str, str]]:
-    """Every ```bash block in the skill and agent texts, as ``(where, shell code)``."""
+def _shipped_curl_blocks(plugin) -> list[tuple[str, str]]:
+    """Every ```bash block in the skill and agent texts that resolves its key
+    with ``cognee-forget.sh env``, as ``(where, shell code)``."""
     import re
 
     blocks = []
@@ -259,30 +247,37 @@ def _shipped_bash_blocks(plugin) -> list[tuple[str, str]]:
     ):
         text = path.read_text(encoding="utf-8")
         for index, code in enumerate(re.findall(r"```bash\n(.*?)```", text, flags=re.S)):
-            blocks.append((f"{path.relative_to(plugin)}#{index}", code))
+            if "cognee-forget.sh" in code and " env)" in code:
+                blocks.append((f"{path.relative_to(plugin)}#{index}", code))
     return blocks
 
 
-def test_no_shipped_shell_block_resolves_or_sends_a_key(claude_only):
-    """The skill and agent texts used to resolve the key into the shell
-    (``eval "$(cognee-forget.sh env)"``) and send it with a hand-written
-    ``curl``. Every request now goes through a plugin script that keeps the
-    key to itself: no block evals, curls, or names a key variable, and the
-    helper has no command that prints one."""
-    import re
-
+def test_the_shipped_curl_blocks_send_nothing_when_the_helper_fails(
+    claude_only, temp_home, mock_server, assert_clean_real_home
+):
+    """Cloud mode from a shell: the helper prints nothing and exits 2. Each
+    shipped block must stop there. With the earlier ``eval "$(… env)" && curl``
+    form, ``eval ""`` returned 0 and the curl ran with the shell's own
+    ``COGNEE_BASE_URL``/``COGNEE_API_KEY`` (a 1.8.x user still exports both),
+    sending that key to that URL."""
+    if BASH is None:
+        pytest.skip("requires a working POSIX bash")
     plugin = claude_only.scripts_dir.parent
-    blocks = _shipped_bash_blocks(plugin)
-    assert blocks, "no bash block found in the skill texts"
-    offenders = [
-        where
-        for where, code in blocks
-        if re.search(r"\beval\b|\bcurl\b|\bwget\b|_API_KEY|X-Api-Key|Authorization:", code)
-    ]
-    assert offenders == []
-    helper = (claude_only.scripts_dir / "cognee-forget.sh").read_text(encoding="utf-8")
-    assert "export COGNEE_API_KEY" not in helper
-    assert not re.search(r"^\s*env\)", helper, flags=re.M)
+    blocks = _shipped_curl_blocks(plugin)
+    assert len(blocks) >= 4, blocks
+    _with_url_option(temp_home, _remote_alias(mock_server.url))
+    env = _shell_env(claude_only, temp_home)
+    # What an upgraded user's shell still exports: it points at the mock, so a
+    # curl that runs is seen.
+    env["COGNEE_BASE_URL"] = mock_server.url
+    env["COGNEE_API_KEY"] = "ck-shell-legacy"
+    for where, code in blocks:
+        # Claude Code substitutes the plugin root into the skill text; the
+        # Bash tool's environment does not have the variable.
+        script = code.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin))
+        result = _run([BASH, "-c", script], env, temp_home)
+        assert result.returncode == 2, (where, result.stdout, result.stderr)
+        assert mock_server.calls == [], (where, mock_server.calls)
 
 
 def test_the_remote_alias_reaches_the_server_when_a_key_is_set(

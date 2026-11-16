@@ -158,6 +158,12 @@ def test_the_forget_script_reaches_a_local_server_without_the_proxy(
     assert proxy.requests == []
     assert any(c["path"] == "/api/v1/datasets" for c in mock_server.calls)
 
+    # The shipped curl blocks run in a shell that evals these lines.
+    exported = run("env")
+    assert exported.returncode == 0, exported.stderr
+    no_proxy = [line for line in exported.stdout.splitlines() if "no_proxy=" in line]
+    assert no_proxy and "127.0.0.1" in no_proxy[0] and "localhost" in no_proxy[0]
+
 
 # ── the local server's own calls to this machine ──────────────────────────
 

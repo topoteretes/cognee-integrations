@@ -991,12 +991,12 @@ def _require_shell_auth(url: str) -> None:
     request could only 401. The check and its message live in _plugin_common.
     """
     try:
-        from _env_file import cloud_key
         from _plugin_common import require_shell_auth
     except ImportError:
         return
     # A remote server's key is the option alone (no lookup, no request).
-    require_shell_auth(url, cloud_key(url), "cognee-recap")
+    key = os.environ.get("COGNEE_API_KEY") or os.environ.get("COGNEE_PRINCIPAL_API_KEY") or ""
+    require_shell_auth(url, key.strip(), "cognee-recap")
 
 
 def main(argv: list[str] | None = None) -> int:

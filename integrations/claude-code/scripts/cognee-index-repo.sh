@@ -60,25 +60,27 @@ try:
 except Exception:
     pass
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
+api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
-# Only the guard runs here: a remote server is authorized by the Cloud key
-# option alone (no lookup, no request), which reaches hooks only, and a local
-# server needs nothing from the shell. The opt-out keeps _plugin_common from
-# re-execing this heredoc into the plugin venv (stdin is the script): nothing
-# here needs it.
+# No key is stored on disk: against the plugin local server its owner key is
+# looked up from that server. A Cloud key reaches hooks only. The opt-out keeps
+# _plugin_common from re-execing this heredoc into the plugin venv (stdin is
+# the script): nothing here needs it.
 os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
 try:
     import _plugin_common
-    from _env_file import cloud_key
 except Exception:
     _plugin_common = None
+if not api_key and _plugin_common is not None:
+    try:
+        api_key = _plugin_common.load_cached_api_key(service_url)
+    except Exception:
+        pass
 guard = getattr(_plugin_common, "require_shell_auth", None)
 if guard is not None:
-    guard(service_url, cloud_key(service_url), "cognee-index-repo")
+    guard(service_url, api_key, "cognee-index-repo")
 
-# Only the address leaves this block: the request is authorized again, in
-# its own process, by _code_graph.py.
-print(json.dumps({"service_url": service_url}))
+print(json.dumps({"service_url": service_url, "api_key": api_key}))
 PY
 )" || runtime_status=$?
 if [ "$runtime_status" -eq 2 ]; then
@@ -89,6 +91,14 @@ SERVICE_URL="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
 import json, sys
 try:
     print((json.loads(sys.argv[1] or "{}").get("service_url") or "").strip())
+except Exception:
+    pass
+PY
+)"
+API_KEY="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print((json.loads(sys.argv[1] or "{}").get("api_key") or "").strip())
 except Exception:
     pass
 PY
@@ -127,8 +137,7 @@ if [ -z "$REPO" ]; then
     exit 1
 fi
 
-# The empty second argument: _code_graph.py authorizes the request itself.
-RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "" index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
+RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"

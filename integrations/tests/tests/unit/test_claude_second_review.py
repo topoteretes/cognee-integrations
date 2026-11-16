@@ -159,21 +159,13 @@ def test_the_cloud_key_is_not_exported_for_a_local_server(suite, isolated_module
     assert "COGNEE_API_KEY" not in os.environ
 
 
-def test_the_cloud_key_is_read_from_its_option_for_a_remote_server(
-    suite, isolated_modules, monkeypatch
-):
-    """Sent to a remote server straight from the option; never copied into
-    ``COGNEE_API_KEY``, where a shell value could stand in for it."""
+def test_the_cloud_key_is_exported_for_a_remote_server(suite, isolated_modules, monkeypatch):
     import os
 
     _as_hook(monkeypatch, suite, url=TENANT, key=OPTION_KEY)
     pc = isolated_modules(suite, "_plugin_common")
-    assert "COGNEE_API_KEY" not in os.environ
+    assert os.environ.get("COGNEE_API_KEY") == OPTION_KEY
     assert pc._api_key_with_source(TENANT) == (OPTION_KEY, "env_api_key")
-    pc.resolve_runtime_mode()
-    pc.resolved_http_endpoint_auth()
-    assert "COGNEE_API_KEY" not in os.environ
-    assert "COGNEE_PRINCIPAL_API_KEY" not in os.environ
 
 
 def test_no_script_takes_the_key_for_a_request_from_the_environment(suite):

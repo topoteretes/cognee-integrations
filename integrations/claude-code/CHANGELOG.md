@@ -10,67 +10,6 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.8.3]
-
-1.8.2 was still held by the plugin directory with the same findings as 1.8.1 (*Uses a
-credential from the user's machine*, *Update adds credential forward*). This release
-removes what a check of the plugin's files can still read as "a credential taken from
-the environment and sent to a server" (SDK-1411). The options and modes are unchanged.
-The broader deletions of the forget skill are now helper commands, and the helper's
-`env` command is gone.
-
-### Changed
-
-- **No key is copied into an environment variable.** 1.8.2 took every key from the
-  plugin options but then copied each one into `COGNEE_API_KEY`, `LLM_API_KEY` or
-  `EMBEDDING_API_KEY` and read it back from there in a dozen scripts, which looks the
-  same as reading the shell. The Cloud key is now read from its option
-  (`CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY`) where a request needs it; the resolvers return
-  it and no longer write it, or the local server's owner key, into the environment. No
-  key is handed to a detached watcher or sync process: each reads the option it
-  inherits, or looks the local owner key up itself. `COGNEE_API_KEY` and
-  `COGNEE_PRINCIPAL_API_KEY` from the shell are removed from every plugin process.
-- **The LLM and embedding keys reach only the server the plugin starts.** They are read
-  from their options when the server's environment is built and are no longer placed in
-  the plugin's own processes. The Claude observer's shim token is handled the same way:
-  it is read from its file when the server's environment is built, keeps priority
-  there, and is no longer written to `LLM_API_KEY` in the plugin's processes.
-  The observer decides "an LLM key is configured" from the option, not from a variable.
-  `LLM_API_KEY` and `EMBEDDING_API_KEY` are removed from every plugin process, whatever
-  put them there.
-- **The forget and index helpers send their requests from Python.** `cognee-forget.sh`
-  built each request with `curl` and passed the key on command lines; it now runs
-  `cognee_forget.py`, which resolves the server and authorizes the request in one
-  process. `cognee-index-repo.sh` no longer passes a key to `_code_graph.py`, which
-  resolves it itself. No shell script holds a key, and `curl` is no longer needed. The
-  commands, their arguments and their output (the response, then an `HTTP <status>`
-  line) are unchanged.
-- **Skill and agent texts no longer resolve a key into the shell.** The `cognee-search`
-  and `cognee-forget` skills and the `cognee-recall` agent had the model take the key
-  from the forget helper into its shell and send it in a hand-written request, for a
-  category search, a ground-truth check and the broader deletions. The helper's `env` command, which
-  printed the key as shell exports, is removed. No shipped text, the release history
-  included, evaluates helper output, sends a hand-written request with a key, or expands
-  a key variable.
-
-### Added
-
-- **`cognee-search.sh --category <user_context|project_docs|agent_actions>`** filters a
-  graph search to one category (the server's `node_name` filter), replacing the
-  hand-written `curl`.
-- **`cognee-forget.sh forget-memory <dataset_id>` and `forget-dataset <dataset_id>`**
-  clear a dataset's graph and vectors, or delete the whole dataset. Each takes exactly
-  one validated dataset id and keeps the key inside the helper; anything after the id
-  is refused, so a single-document delete typed under the wrong command cannot delete
-  a dataset.
-- **`cognee-forget.sh forget-everything --confirm-delete-all`** deletes all of a user's
-  data. It names no dataset, so it runs only with that one literal argument. The skill
-  asks the user before any of the three.
-
-### Removed
-
-- **`cognee-forget.sh env`**, which printed the server URL and the key as shell exports.
-
 ## [1.8.2]
 
 A conservative release to meet Anthropic's plugin directory policy (SDK-1411). Since
@@ -1671,12 +1610,12 @@ install Cognee with the command session start prints.**
   `store_buffered_after_error`, and `saves` counts only what the server received.
 - **The recommended "server-first" `curl` 401'd in local mode, which read as a
   server fault (SDK-622).** `cognee-search`'s category-filter and
-  ground-truth examples sent the key header from a shell variable, but in local
+  ground-truth examples sent `-H "X-Api-Key: ${COGNEE_API_KEY:-}"`, but in local
   mode that variable is empty: the key is minted into
   `~/.cognee-plugin/api_key.json` and never exported to the shell. The
   authoritative path therefore failed with a misleading 401, and the skill's own
   rule then sent the agent to the `cognee-cli` fallback. Both forms now resolve
-  credentials through the forget helper in the same shell
+  credentials with `eval "$(scripts/cognee-forget.sh env)"` in the same shell
   invocation, and the skill states that a `401` without the resolver proves
   nothing.
 - **`cognee-cli` fallbacks read as an equal alternative.** `cognee-search` and

@@ -37,11 +37,15 @@ Run **one** broad search via the wrapper and answer from it. It queries the **ru
 
 In Cloud mode the wrapper exits 2 before sending anything: the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only, so a search cannot authenticate from the shell (automatic recall still works). Report that and stop.
 
-**Category filter (only when asked for one category):** pass `--category` with `user_context`, `project_docs` or `agent_actions`:
+**Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm directly. Category filtering uses `node_name` (the wrapper doesn't expose it). Resolve the URL and key with the forget helper in the **same** shell invocation — exports do not persist across Bash calls:
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --category project_docs
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
+curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: ${COGNEE_API_KEY}" \
+  -d '{"query": "<query>", "top_k": 10, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"]}'
 ```
-Never call the server by hand with `curl`: the key is not printed or exported to the shell, so such a request can only 401.
+In Cloud mode the helper exits 2 (the key reaches hooks only); report that and stop.
 
 ## The server is the source of truth (read this before reporting "not found")
 

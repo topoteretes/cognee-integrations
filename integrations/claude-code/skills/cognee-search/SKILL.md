@@ -80,19 +80,31 @@ conceptual questions that name no symbol ("how does auth work here?").
 
 ### Filter by category (optional)
 
-Categories (`user_context` / `project_docs` / `agent_actions`) filter by node set. Pass one with `--category`:
+Categories (`user_context` / `project_docs` / `agent_actions`) filter by node set. The wrapper does not expose this — pass `node_name` to the server directly.
+
+**Resolve credentials first.** The key is not in your shell (in local mode it belongs to the plugin's own server and is looked up from it; a Cloud key reaches only the plugin's hooks, so in Cloud mode the resolver exits 2 — report that and stop), so a hand-rolled `curl` without the resolver 401s and looks like a server fault when nothing is wrong. Use the forget helper's resolver in the **same** shell invocation — exports do not persist across separate Bash calls:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 5 --category project_docs
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
+curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: ${COGNEE_API_KEY}" \
+  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
 ```
 
 ### Ground-truth a suspicious result (debugging)
 
-The wrapper's answer already comes from the server, which is authoritative: there is no second source to check it against. If a search returns empty but you expect content, widen it once with `--graph` and a larger `top_k`, and report what the server said.
+The server is authoritative. If a search returns empty but you expect content, confirm directly. Resolve credentials in the same invocation, as above:
 
-Do not call the server by hand with `curl`. The key is never printed or exported to your shell (in local mode it belongs to the plugin's own server and is looked up from it; a Cloud key reaches only the plugin's hooks), so a hand-rolled request 401s and looks like a server fault when nothing is wrong.
+```bash
+creds="$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && eval "$creds" && \
+curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: ${COGNEE_API_KEY}" \
+  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
+```
 
-(If the response is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results". A `401` means the server rejected the key.)
+(The server enforces auth in both modes, which is why the resolver is not optional. If the response is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results". A `401` *after* the resolver means the server rejected the key; a `401` without it means nothing.)
 
 ### Server unreachable
 
@@ -184,10 +196,10 @@ The session cache is never a search source; it reaches the graph through the syn
 | Need current session context | Already automatic, no action needed |
 | User explicitly says "search cognee" | `cognee-search.sh "<query>"` (server-first) |
 | "what does the codebase do" / "what did we do last time" | `cognee-search.sh "<query>" 10 --graph` |
-| Need a specific category | `cognee-search.sh "<query>" 5 --category <user_context\|project_docs\|agent_actions>` |
+| Need a specific category | use the `node_name` curl form above (`["user_context"\|"project_docs"\|"agent_actions"]`) |
 | Auto context insufficient | `cognee-search.sh "<query>" 10` (memory is graph + code only; the session cache is written, never searched) |
 | **Server says empty and the user is recalling something** | **Auto recall: report that nothing matched. Restricted: offer the other readable datasets (`list-datasets.py --others` + AskUserQuestion), then `cognee-search.sh "<query>" 10 --graph --dataset-id <id> --user-picked`** |
-| **Result empty but you expect content** | **Widen once (`--graph`, larger `top_k`) before concluding "not found"; never a hand-rolled `curl`** |
+| **Result empty but you expect content** | **Ground-truth via the credential-resolving `curl` above before concluding "not found"** |
 
 ### Inspectable evidence
 

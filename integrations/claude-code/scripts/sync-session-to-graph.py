@@ -214,8 +214,10 @@ def _load_resolved() -> tuple:
     env_session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
     env_dataset = str(os.environ.get("COGNEE_SYNC_DATASET", "") or "").strip()
     env_agent_session_name = str(os.environ.get("COGNEE_AGENT_SESSION_NAME", "") or "").strip()
+    env_api_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
     env_service_url = str(os.environ.get("COGNEE_BASE_URL", "") or "").strip()
-    resolved_service_url, env_api_key = resolved_http_endpoint_auth()
+    resolved_service_url, resolved_api_key = resolved_http_endpoint_auth()
+    env_api_key = env_api_key or resolved_api_key
     env_service_url = env_service_url or resolved_service_url
 
     if not session_key:
@@ -453,13 +455,12 @@ def _coding_flush(payload_raw: str) -> None:
 def _require_shell_auth() -> None:
     """Exit 2 when the server is remote and no key resolved in this process."""
     try:
-        from _env_file import cloud_key
         from _plugin_common import _local_api_url, require_shell_auth
     except ImportError:
         return
     # A remote server's key is the option alone (no lookup, no request).
-    url = _local_api_url()
-    require_shell_auth(url, cloud_key(url), "cognee-sync")
+    key = os.environ.get("COGNEE_API_KEY") or os.environ.get("COGNEE_PRINCIPAL_API_KEY") or ""
+    require_shell_auth(_local_api_url(), key.strip(), "cognee-sync")
 
 
 def main():
