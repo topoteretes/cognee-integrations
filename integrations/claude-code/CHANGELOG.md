@@ -45,6 +45,12 @@ what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK
   setting themselves and pass the value. The settings-file loader is the one exception:
   it copies whatever names `~/.cognee/.env` holds. No behaviour change.
 
+- **The hooks module writes no file** (SDK-1411). It wrote `band/<session>.json` so the
+  settings status line would not draw the row a second time. The status line renderer
+  keeps that marker now: the module passes `band` on the `--json` call it already
+  makes. Turning the `band` option off removes the marker, so the status line comes
+  back at once instead of staying hidden until the marker was swept.
+
 ### Removed
 
 - **From `cognee-report`: the Notion export and the `--server` check** (SDK-1411). The

@@ -678,6 +678,32 @@ _ACTIVE_LABELS = {
 }
 
 
+def _mark_band(session_id: str, band) -> None:
+    """Record whether the hooks module draws this session's row above the prompt.
+
+    The module passes ``band`` with every ``--json`` call. ``True`` writes this
+    session's marker, so the settings-file status line steps aside; ``False``
+    removes it, so the status line comes back when the band is turned off. A
+    call without the field (an older module) changes nothing. Never raises.
+    """
+    if not isinstance(band, bool) or not session_id or not _path_safe(session_id):
+        return
+    marker = _BAND_DIR / f"{session_id}.json"
+    try:
+        if not band:
+            marker.unlink(missing_ok=True)
+        elif not marker.is_file():
+            _BAND_DIR.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                json.dumps(
+                    {"session_id": session_id, "at": time.time(), "plugin": "cognee-memory"}
+                ),
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
+
+
 def _band_draws_row(session_id: str) -> bool:
     """True when the hooks module draws this session's row above the prompt.
 
@@ -1334,6 +1360,7 @@ def main() -> None:
             _evict_own_statusline()
             return
         if as_json:
+            _mark_band(session_id, ctx.get("band"))
             sys.stdout.write(json.dumps(_snapshot(session_id, enabled=True)))
             return
         if _band_draws_row(session_id):

@@ -8,8 +8,9 @@
 //     own status-line renderer in `--json` mode and lays the result out, so
 //     the band shows the row the settings-file status line shows (the badge
 //     included). In a
-//     terminal the module marks its session (`band/<session>.json`) and the
-//     renderer then prints nothing for it, so the row is never drawn twice;
+//     terminal the renderer marks the session (`band/<session>.json`) when
+//     this module asks, and then prints nothing for it, so the row is never
+//     drawn twice;
 //     with the `band` option off the settings status line is back below;
 //   * live activity: it reads the per-session marker the hooks write
 //     (`~/.cognee-plugin/claude-code/phase/<session>.json`) and shows it on
@@ -180,7 +181,6 @@ let adoptWatch: { cancel: () => void } | null = null
 // new conversation is not bound yet (the adopt watch's own window).
 let adoptUntil = 0
 let phasePath = ''
-let bandPath = ''
 let rendererPython: string | null = null
 let rendererFailures = 0
 // When the renderer last failed for the third time: the cutoff below expires
@@ -605,7 +605,8 @@ function datasetRows(value: unknown): DatasetRow[] {
 
 // ── helpers that reach the engine ───────────────────────────────────────────
 // The plugin's state folder, ~/.cognee-plugin/claude-code: the module reads
-// phase/<session>.json there and writes band/<session>.json (see markBand).
+// phase/<session>.json there. It writes nothing: the renderer keeps the
+// band/<session>.json marker (see refreshSnapshot).
 async function stateDir($: any): Promise<string> {
   const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
   return `${home}/.cognee-plugin/claude-code`
@@ -615,20 +616,6 @@ async function bindSession($: any): Promise<void> {
   sessionId = await $.session.id()
   const dir = await stateDir($)
   phasePath = `${dir}/phase/${sessionId}.json`
-  bandPath = `${dir}/band/${sessionId}.json`
-  await markBand($)
-}
-
-// Tell the settings-file status line that this session's row is drawn above
-// the prompt: the renderer prints nothing for a session with this marker, so
-// the row is not shown twice. Written only while the band is on.
-async function markBand($: any): Promise<void> {
-  if (!bandOn || !bandPath) return
-  try {
-    await $.fs.write(bandPath, JSON.stringify({ session_id: sessionId, at: (await $.clock.now()) / 1000, plugin: 'cognee-memory' }))
-  } catch {
-    // the status line then stays; nothing else depends on the marker
-  }
 }
 
 // After a /clear or /resume: bind the conversation that replaced the ended
@@ -850,7 +837,10 @@ async function refreshSnapshot($: any): Promise<void> {
   snapshotInFlight = true
   try {
     const script = `${$.plugin.root}/scripts/cognee_statusline_render.py`
-    const stdin = JSON.stringify({ session_id: sessionId })
+    // `band` tells the renderer whether this module draws the row above the
+    // prompt. The renderer keeps the marker that makes the settings-file
+    // status line step aside, so the row is not shown twice.
+    const stdin = JSON.stringify({ session_id: sessionId, band: bandOn })
     const ran = await runPython($, [script, '--json'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
     if (ran && ran !== 'timeout' && ran.exitCode === 0 && ran.stdout.trim()) {
       try {
@@ -1373,7 +1363,6 @@ export const register: Register = (on, options) => {
       }
       endedSessionId = (typeof e.sessionId === 'string' && e.sessionId) || sessionId
       phasePath = ''
-      bandPath = ''
       result = null
       snapshot = null
       namingDataset = false

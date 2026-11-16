@@ -382,7 +382,17 @@ test('after a /clear the band binds the new session without waiting for a prompt
   id = 's2'
   await $.session.end({ sessionId: SESSION, reason: 'clear' })
   await clock.advance(1100)
-  expect(writes.some(w => w.path === `${HOME}/.cognee-plugin/claude-code/band/s2.json`)).toBe(true)
+  // The module writes no file: it asks the renderer to keep the new session's
+  // band marker, on the same call that takes the snapshot.
+  expect(writes).toEqual([])
+  expect(
+    calls.some(
+      c =>
+        c.argv.some(a => a.endsWith('/scripts/cognee_statusline_render.py')) &&
+        JSON.parse(c.stdin ?? '{}').session_id === 's2' &&
+        JSON.parse(c.stdin ?? '{}').band === true,
+    ),
+  ).toBe(true)
   expect(await ui.find({ type: 'Text', text: /session saved/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
   await ui.unmount()
@@ -1352,9 +1362,12 @@ test('a terminal session is marked so the settings status line stays quiet for i
   const writes: Write[] = []
   wire(on, calls, {}, writes)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const marker = writes.find(w => w.path === `${HOME}/.cognee-plugin/claude-code/band/${SESSION}.json`)
-  expect(marker).toBeDefined()
-  expect(JSON.parse(marker!.text).session_id).toBe(SESSION)
+  // The renderer keeps the marker: the module asks for it on the snapshot call
+  // and writes no file of its own.
+  expect(writes).toEqual([])
+  const asked = calls.filter(c => c.argv.some(a => a.endsWith('/scripts/cognee_statusline_render.py')))
+  expect(asked.length).toBeGreaterThan(0)
+  expect(asked.every(c => JSON.parse(c.stdin ?? '{}').session_id === SESSION && JSON.parse(c.stdin ?? '{}').band === true)).toBe(true)
 })
 
 test('with the band off no session is marked: the settings status line stays', { options: { band: false } }, async ($, on) => {
@@ -1363,6 +1376,9 @@ test('with the band off no session is marked: the settings status line stays', {
   wire(on, calls, {}, writes)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   expect(writes).toEqual([])
+  // The renderer is told the band is off, so it removes a leftover marker.
+  const asked = calls.filter(c => c.argv.some(a => a.endsWith('/scripts/cognee_statusline_render.py')))
+  expect(asked.every(c => JSON.parse(c.stdin ?? '{}').band === false)).toBe(true)
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   expect(await ui.find({ type: 'Text', text: /cognee/ })).toBeUndefined()
   await ui.unmount()
