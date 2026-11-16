@@ -16,14 +16,6 @@ when_to_use: >-
 
 Store data permanently in the Cognee knowledge graph with category tagging.
 
-## The `remember` tool, when it is listed
-
-Where Claude Code loads the plugin's hooks module, `mcp__cognee-memory__remember`
-(`content` or `file`, `category` user|project|agent) runs the same wrapper as
-this skill with typed arguments and no Bash call. Prefer it when it is among your
-tools (load its schema through tool search); the category routing below applies
-to both. This skill is the path everywhere else.
-
 ## Rules
 
 - **Server first.** Writes go to the running Cognee server over HTTP through the

@@ -61,8 +61,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.8.6]
 
-Changes for the plugin directory's validator, on top of the restored 1.8.5. None changes
-what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK-1411).
+Changes for the plugin directory's validator, on top of the restored 1.8.5 (SDK-1411).
+The hooks module changes as described below, and `cognee-forget.sh env` is gone.
+
+### Changed
+
+- **The hooks module only draws.** `hooks/register.ts` starts no program, opens
+  no connection and writes no file. It reads the row's data, the dataset list
+  and the activity marker from files the hooks keep, and holds two values in its
+  own store.
+- **A dataset pick applies with the next message.** The picker and
+  `/cognee-dataset` save the pick; the prompt hook carries it out before it
+  recalls, and a toast reports the outcome. If a pick is not confirmed after two
+  messages the module says so and points at the `cognee-switch-datasets` skill.
+- **The fix dialog only explains.** Its **run doctor** button and its field for
+  saving a value are gone. Ask Claude to run `scripts/cognee-doctor.sh` instead.
+
+### Removed
+
+- **The module's `search` and `remember` tools** and the `tools` option. The
+  `cognee-search` and `cognee-remember` skills are the path for both.
 
 ### Changed
 

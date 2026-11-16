@@ -86,62 +86,30 @@ your transcript or Claude Code's memory files, and writes to neither.
 **Code that runs inside Claude Code.** `hooks/register.ts` is a hooks module (a
 [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview)) that draws
 the memory status row above the prompt (in a terminal and in the Desktop app),
-shows what memory is doing while it works, makes the dataset name a picker and
-serves two tools Claude can call directly. Everything it does, in full:
+shows what memory is doing while it works and makes the dataset name a picker. It
+only draws: it starts no program, opens no connection and writes no file.
+Everything it does, in full:
 
-- *Files it reads.* One: the plugin's own activity marker,
-  `~/.cognee-plugin/claude-code/phase/<session>.json`, which the settings hooks
-  write. Before the first prompt it reads nothing else of yours: not your
-  transcript, not your files, not Claude Code's memory. The `remember` tool reads
-  the size of a file Claude asks it to store, and the script it runs uploads that
-  file (see below).
-- *Files it writes.* One, `~/.cognee-plugin/claude-code/band/<session>.json`
-  (`{session_id, at, plugin}`), and only while the status row is on. It tells
-  the plugin's own settings-file status line (`cognee-statusline.sh`) to print
-  nothing for that session, so the row is not drawn twice; no other program reads
-  it. The state folder is the fixed path `~/.cognee-plugin/claude-code`; `HOME`
-  (`USERPROFILE` on Windows) is the only part read at runtime. In the fix dialog,
-  on your explicit action, a value you typed is appended to `~/.cognee/.env`
-  (created `0600`) through `scripts/_env_file.py --append <NAME>`, the value on
-  stdin, never on the command line.
-- *Programs it starts.* Only the plugin's own Python scripts, each named in full
-  at its call site and started directly, never through a shell, a
-  `-c` or heredoc script, or a script name built at runtime. The interpreter is
-  the first of `python3`, `python`, `py` that starts (the same order the settings
-  hooks use: `python3` on macOS and Linux, `python` or `py` on Windows); the one
-  that answered last is tried first. The scripts and when they run:
-
-  | Script | When | Network |
-  |---|---|---|
-  | `scripts/cognee_statusline_render.py --json` | on the events the hooks fire, to draw the row | none |
-  | `scripts/switch-dataset.py --list --json` | once when the row is first drawn | lists your datasets on the Cognee server |
-  | `scripts/switch-dataset.py <name> --json` | you pick a dataset or run `/cognee-dataset <name>` (`pin` for the dataset in use, `auto`, or a dataset's id when it is named `pin`) | moves the session to that dataset on the Cognee server; `pin` and `auto` only set the recall mode |
-  | `scripts/cognee_search.py <query> <top_k> --graph\|--code [--dataset-id <id> [--user-picked]]` | Claude calls the `search` tool | `POST /api/v1/recall` on the Cognee server, plus `GET /api/v1/agents/connections/me` first when no session id is on record for this launch |
-  | `scripts/recall-trim.py --query <query>` | on the search result, before Claude sees it | none |
-  | `scripts/cognee_remember.py <text>\|--file <path> --node-set <set>` | Claude calls the `remember` tool | `POST /api/v1/remember` on the Cognee server |
-  | `scripts/doctor.py` | you press **run doctor** in the fix dialog | `GET /health` on the Cognee server. Locally it also asks each candidate Python (the plugin venv's, then the `python3.x` on PATH) for its version with a fixed one-line `-c` probe |
-  | `scripts/_env_file.py --append <NAME>` | you save a value in the fix dialog | none |
-
-  "The Cognee server" is the one you configured: `http://localhost:8011` in local
-  mode, `COGNEE_BASE_URL` in cloud mode. When that server cannot be reached,
-  `cognee_search.py` and `cognee_remember.py` fall back to the local `cognee-cli`,
-  if it is installed. These are the same scripts the skills run
-  (`cognee-search.sh` and `cognee-remember.sh` are one-line wrappers around them),
-  with the same server traffic.
-- *What it sends, and where.* The module itself makes no network requests. What
-  leaves the machine is the traffic of the scripts above: the search query, or the
-  text or file Claude asked to remember, goes to the Cognee server you configured,
-  authenticated with your Cognee key; the dataset listing and switch go to the same
-  server. Nothing goes anywhere else.
-- *Tool calls it answers.* Only its own two tools, which it registers:
-  `mcp__cognee-memory__search` (runs `cognee_search.py`) and
-  `mcp__cognee-memory__remember` (runs `cognee_remember.py`), each when Claude calls
-  it. `tools: false` in the plugin options leaves both unregistered. Its catch-all
-  `tool.call` hook answers nothing: it hands every other call straight on to the
-  real tool (`next(e)`) and only watches the activity marker afterwards.
-- *Environment.* It reads `HOME`, `USERPROFILE` and `COGNEE_STATUSLINE_THEME`, and
-  writes nothing. It writes no settings. `claude plugin validate` lists exactly
-  this.
+- *Files it reads.* Three, all written by the plugin's own scripts under
+  `~/.cognee-plugin/claude-code`: `status/<session>.json` (the row's data),
+  `mod/<session>.json` (the datasets the picker offers, the recall mode and what
+  became of the last pick) and `phase/<session>.json` (what memory is doing right
+  now). It reads nothing else of yours: not your transcript, not your files, not
+  Claude Code's memory or settings.
+- *Files it writes.* None. It keeps two values in its own store, which Claude
+  Code holds for the plugin: `band:<session>` (it draws this session's row, so
+  the settings-file status line prints nothing for it) and `pick:<session>` (the
+  dataset you picked). Both are removed when the session ends.
+- *Programs it starts.* None. A dataset you pick is saved in the store, and the
+  plugin's prompt hook carries it out before it recalls, so the pick takes effect
+  with your next message. The row's data and the picker's list are kept current
+  by the hooks, not by the module.
+- *What it sends, and where.* Nothing. The module makes no network request.
+- *Tool calls it answers.* None. It registers no tool. Its catch-all `tool.call`
+  hook hands every call straight on to the real tool (`next(e)`) and only watches
+  the activity marker afterwards.
+- *Environment.* It reads `HOME` and `USERPROFILE`, to find the folder above, and
+  writes nothing. It writes no settings.
 
 **Background processes.** Detached helpers that outlive a hook: the idle watcher and
 exit watcher (session sync and status), and in local mode the cognee server and,
@@ -410,10 +378,10 @@ A Cognee session never spans two datasets, so the switch:
    the status line follow it.
 
 With the hooks module loaded there are two faster ways to the same switch, neither of
-which spends a model turn: `/cognee-dataset <name>` runs it from the prompt (alone, it
+which spends a model turn: `/cognee-dataset <name>` from the prompt (alone, it
 lists the datasets you can write to), and the dataset name in the status row above
-the prompt is a picker that switches on pick. Both run the same script and a toast
-reports the outcome. See [Dataset picker and tools](#dataset-picker-and-tools).
+the prompt, which is a picker. Either way the pick is carried out with your next
+message, and a toast reports the outcome. See [Dataset picker](#dataset-picker).
 
 The choice lives in the launch record (`~/.cognee-plugin/claude-code/sessions/<host id>.json`),
 so it survives `--resume` and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
@@ -724,10 +692,9 @@ The standup, digest and timeline recaps are covered in
 `claude plugin eval` suite that checks this routing: two requests per skill, plus four
 look-alike requests that should reach no Cognee skill.
 
-With the hooks module loaded (Claude Code 2.1.287+), two more commands and two tools
-join them: `/cognee-dataset [name]` and `/cognee-tour`, and the tools
-`mcp__cognee-memory__search` and `mcp__cognee-memory__remember`, described under
-[Dataset picker and tools](#dataset-picker-and-tools). The skills stay the path for the
+With the hooks module loaded (Claude Code 2.1.287+), two more commands join them:
+`/cognee-dataset [name]` and `/cognee-tour`, described under
+[Dataset picker](#dataset-picker). The skills stay the path for search, remember and the
 judgement-heavy work (forget, sync, code indexing, the recaps) and for every Claude
 Code that does not load mods.
 
@@ -1220,9 +1187,9 @@ connection reason and update nudge are the renderer's, so the row and a
 [line below the prompt](#a-line-below-the-prompt) cannot drift. While an
 operation runs a braille spinner leads the row; a failure leads it with the red
 `✕ (<reason>)`, and unknown health with a dim `○`, as on the text line. The module
-marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`) and the
-renderer, run as a settings-file status line, prints nothing for a marked session,
-so the row is never shown twice.
+records in its own store that it draws this session's row, and the renderer, run
+as a settings-file status line, prints nothing for such a session, so the row is
+never shown twice.
 
 The row is laid out in segments that are never split: in a terminal too narrow
 for all of them, the least useful go first (a healthy credit balance, then what
@@ -1275,7 +1242,7 @@ The module also adds, on both surfaces:
 The credit inside an answer that used memory (`> Cognee memory: …`) is the
 agent's own, asked for by the recall hook; see [Credit in the answer](#credit-in-the-answer).
 The module only redraws that line: the wave mark on the desktop, the display
-logotype in a terminal (see [Dataset picker and tools](#dataset-picker-and-tools)).
+logotype in a terminal (see [Dataset picker](#dataset-picker)).
 
 **A `see fix` button beside every red ✕.** When the row shows a failure, a small
 `[ see fix ]` button right after `✕ (<reason>)` opens a dialog above the prompt
@@ -1284,19 +1251,18 @@ reason the row can show:
 
 | Reason on the row | The dialog says |
 |---|---|
-| `incorrect_cognee_api_key` | the server rejected the plugin's key; cloud: paste the key from your account (saved to `~/.cognee/.env`); local: delete `~/.cognee-plugin/api_key.json` and start a new session |
+| `incorrect_cognee_api_key` | the server rejected the plugin's key; cloud: enter the key from your account as the Cognee API key option; local: delete `~/.cognee-plugin/api_key.json` and start a new session |
 | `incorrect_llm_api_key` | the local server cannot reach its LLM; set the LLM API key option, or leave it empty to run on your Claude subscription |
-| `missing_cognee_base_url` | cloud is forced but no URL is set; paste the URL, or `unset COGNEE_BACKEND` |
+| `missing_cognee_base_url` | cloud is forced but no URL is set; enter the server URL option, or `unset COGNEE_BACKEND` |
 | `cognee_needs_python_3_10` | install a Python 3.10–3.14 and start a new session, or use Cognee Cloud |
 | `unreachable` | local: a new session restarts the server, `hook.log` says why it died; cloud: check the URL and the network |
 | `server_error` | the server answers 5xx; restart locally, retry on cloud |
 | `not_responding` | the server is busy; wait, or raise `COGNEE_READY_PROBE_TIMEOUT` |
 
-Every dialog has a **run doctor** button that runs `scripts/doctor.py` (read-only)
-and shows its report in the dialog. Where one value is the fix (a key, a URL) the
-dialog has a field for it: Enter appends `NAME="value"` to `~/.cognee/.env`,
-where the last value of a key wins, with no shell history involved; a new session
-applies it. The dialog never edits anything else.
+The dialog only explains: it runs nothing and edits nothing. For a full check, ask
+Claude to run `scripts/cognee-doctor.sh` from this plugin. A key goes in the plugin's
+options (`/plugin`, Cognee Memory, Configure options), a server URL there or in
+`~/.cognee/.env`.
 
 **First-run tour.** The first session on a machine gets three short hints under
 the row, each about what is right above it, with `next` and `skip` buttons:
@@ -1337,41 +1303,33 @@ README works unchanged: the settings hooks run the memory pipeline. The status r
 is the module's, so there it is not drawn; add the
 [line below the prompt](#a-line-below-the-prompt) yourself if you want one.
 
-### Dataset picker and tools
+### Dataset picker
 
-The module also gives the dataset a control of its own and a direct line for
-Claude. All of it runs the scripts in this folder, with the same server traffic as
-the skills.
+The module gives the dataset a control of its own. It starts nothing itself: the
+plugin's hooks do the work.
 
 **The dataset picker.** The dataset name in the status row above the prompt is a
 picker of the datasets you can write to, with `auto (best-matching dataset)` first
 and `+ new dataset…` last for a name that does not exist yet. While recall is auto
-the row reads `auto (<active dataset>)` and the auto entry is selected. Picking
-another dataset runs `switch-dataset.py <name>` at once, with no model turn: the
-session it leaves is synced first, a new Cognee session starts on the chosen
-dataset, recall is restricted to it, and the row follows. Picking the active
-dataset runs `switch-dataset.py pin`: it only restricts recall to it; picking `auto` lifts that
-(`switch-dataset.py auto`), with no new session either way. `switching dataset…` shows while it
-runs; a toast reports the outcome in the script's own words (its `message`, the same sentences
-`switch-dataset.py` prints), for example `Recall is now pinned to 'agent_sessions', the active
-dataset; saves go there too.`, or the script's error (`✕ Selected dataset is not writable`).
+the row reads `auto (<active dataset>)` and the auto entry is selected.
 
-The list is read once when the row is first drawn, again after each switch
-and, in a terminal, each time a click gives the picker the focus; nothing polls. `/cognee-dataset <name>` (or `/cognee-dataset pin`, `/cognee-dataset auto`) does the same from the prompt
-on every surface, and `/cognee-dataset` alone prints the list and the script's sentence about the recall mode.
+A pick is carried out with your next message, with no model turn. The module saves
+the pick, the row shows `<current> → <target>`, and a toast says it applies with
+your next message. The prompt hook then runs `switch-dataset.py` before it recalls,
+so that message is already answered from the new dataset: the session it leaves is
+synced first, a new Cognee session starts on the chosen dataset, recall is
+restricted to it, and the row follows. Picking the active dataset only restricts
+recall to it (`pin`); picking `auto` lifts that, with no new session either way. A
+toast reports the outcome in the script's own words (its `message`, the same
+sentences `switch-dataset.py` prints), or the script's error
+(`✕ Selected dataset is not writable`). If a pick is not confirmed after two
+messages, the module says so and points at the `cognee-switch-datasets` skill.
 
-**Two tools Claude calls directly.** At session start the module registers
-`mcp__cognee-memory__search` and `mcp__cognee-memory__remember`. Both sit behind
-tool search, so they cost nothing on the turns Claude does not reach for them, and
-Claude loads the schema when it needs one. They replace the skill-file read and the
-Bash row the `cognee-search` and `cognee-remember` skills need, with typed
-arguments instead of a command line; the skills remain for every Claude Code that
-does not load mods and for the judgement the skill text carries.
-
-| Tool | Arguments | Runs | Returns |
-|---|---|---|---|
-| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one), `user_picked` (the person chose that dataset; required for another dataset while recall is restricted) | `cognee_search.py "<query>" <top_k> --graph\|--code [--dataset-id <id> [--user-picked]]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from memory.` (`from the active dataset.` once recall is restricted to it) then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
-| `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee_remember.py "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
+The list is written by the hooks at session start and refreshed with a prompt once
+it is ten minutes old, and after each switch. `/cognee-dataset <name>` (or
+`/cognee-dataset pin`, `/cognee-dataset auto`) does the same from the prompt on
+every surface, and `/cognee-dataset` alone prints the list and the sentence about
+the recall mode.
 
 The credit line the model writes under an answer that used memory
 (`> Cognee memory: …`) is drawn as the mark and the note alone, the

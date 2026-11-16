@@ -77,12 +77,6 @@
       "description": "Add what Cognee is doing (recalling, saving, consolidating) after the spinner while Claude works.",
       "default": true
     },
-    "tools": {
-      "type": "boolean",
-      "title": "Give Claude direct memory tools",
-      "description": "Register search and remember as tools Claude can call directly (mcp__cognee-memory__search / remember) instead of going through a skill and a shell command.",
-      "default": true
-    },
     "tour": {
       "type": "boolean",
       "title": "First-run tour",
