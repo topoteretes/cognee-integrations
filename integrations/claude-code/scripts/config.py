@@ -160,14 +160,43 @@ def sanitize_dataset_name(name: str, fallback: str = "agent_sessions") -> str:
     return cleaned
 
 
+def _env_settings() -> dict:
+    """Every setting in ``_ENV_MAP``, read by its own name, in the map's order.
+
+    Spelled out one by one so that the plugin's files show which variables it
+    reads; a test keeps this list and ``_ENV_MAP`` equal.
+    """
+    return {
+        "COGNEE_BACKEND": os.environ.get("COGNEE_BACKEND", ""),
+        "COGNEE_CLAUDE_BACKEND": os.environ.get("COGNEE_CLAUDE_BACKEND", ""),
+        "COGNEE_AGENT_NAME": os.environ.get("COGNEE_AGENT_NAME", ""),
+        "COGNEE_PLUGIN_DATASET": os.environ.get("COGNEE_PLUGIN_DATASET", ""),
+        "COGNEE_SESSION_STRATEGY": os.environ.get("COGNEE_SESSION_STRATEGY", ""),
+        "COGNEE_SESSION_PREFIX": os.environ.get("COGNEE_SESSION_PREFIX", ""),
+        "COGNEE_BASE_URL": os.environ.get("COGNEE_BASE_URL", ""),
+        "COGNEE_API_KEY": os.environ.get("COGNEE_API_KEY", ""),
+        "COGNEE_MANAGED_ENDPOINT": os.environ.get("COGNEE_MANAGED_ENDPOINT", ""),
+        "COGNEE_USER_EMAIL": os.environ.get("COGNEE_USER_EMAIL", ""),
+        "COGNEE_USER_PASSWORD": os.environ.get("COGNEE_USER_PASSWORD", ""),
+        "LLM_API_KEY": os.environ.get("LLM_API_KEY", ""),
+        "LLM_MODEL": os.environ.get("LLM_MODEL", ""),
+        "COGNEE_PREFER_MEMORY": os.environ.get("COGNEE_PREFER_MEMORY", ""),
+        "COGNEE_PLUGIN_IDENTITY": os.environ.get("COGNEE_PLUGIN_IDENTITY", ""),
+        "COGNEE_SHARED_AGENT_MEMORY": os.environ.get("COGNEE_SHARED_AGENT_MEMORY", ""),
+        "COGNEE_COGNIFY_POLL_INTERVAL": os.environ.get("COGNEE_COGNIFY_POLL_INTERVAL", ""),
+        "COGNEE_REMEMBER_WAIT_SECONDS": os.environ.get("COGNEE_REMEMBER_WAIT_SECONDS", ""),
+        "COGNEE_STATUS_REQUEST_TIMEOUT": os.environ.get("COGNEE_STATUS_REQUEST_TIMEOUT", ""),
+        "COGNEE_SESSION_ID": os.environ.get("COGNEE_SESSION_ID", ""),
+    }
+
+
 def load_config() -> dict:
     """Load merged config: defaults → env vars (the env file is already in os.environ)."""
     config = dict(_DEFAULTS)
 
-    for env_key, config_key in _ENV_MAP.items():
-        val = os.environ.get(env_key, "")
+    for env_key, val in _env_settings().items():
         if val:
-            config[config_key] = val
+            config[_ENV_MAP[env_key]] = val
 
     raw_dataset = str(config.get("dataset") or "")
     if raw_dataset.strip().lower() == "auto":

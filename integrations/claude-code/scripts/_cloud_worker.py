@@ -490,7 +490,9 @@ def improve_outcome(result) -> dict:
 def improve_submit_timeout() -> float:
     from _plugin_common import IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS, _float_env
 
-    return _float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS)
+    return _float_env(
+        os.environ.get("COGNEE_IMPROVE_SUBMIT_TIMEOUT", ""), IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS
+    )
 
 
 def _timed_out(exc: BaseException) -> bool:

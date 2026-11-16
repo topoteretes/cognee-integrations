@@ -184,14 +184,26 @@ _PROVIDER_EXTRAS = (
 )
 
 
+def _provider_settings() -> dict:
+    """The provider settings above, each read by its own name."""
+    return {
+        "DB_PROVIDER": os.environ.get("DB_PROVIDER", ""),
+        "VECTOR_DB_PROVIDER": os.environ.get("VECTOR_DB_PROVIDER", ""),
+        "GRAPH_DATABASE_PROVIDER": os.environ.get("GRAPH_DATABASE_PROVIDER", ""),
+        "EMBEDDING_PROVIDER": os.environ.get("EMBEDDING_PROVIDER", ""),
+        "LLM_PROVIDER": os.environ.get("LLM_PROVIDER", ""),
+    }
+
+
 def _detect_required_extras() -> list:
     """Detect the cognee extras actually needed from the configured backend
     providers, so the install below brings in exactly what's needed instead of
     either a bare install (missing drivers, #232) or unconditionally installing
     every possible extra regardless of what's actually configured."""
     extras: list[str] = []
+    settings = _provider_settings()
     for env_var, mapping in _PROVIDER_EXTRAS:
-        value = os.environ.get(env_var, "").strip().lower()
+        value = settings.get(env_var, "").strip().lower()
         extra = mapping.get(value)
         if extra and extra not in extras:
             extras.append(extra)

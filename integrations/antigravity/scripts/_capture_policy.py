@@ -79,8 +79,8 @@ def capture_enabled() -> bool:
     return os.environ.get("COGNEE_CAPTURE", "true").strip().lower() not in _FALSE
 
 
-def _list_env(name: str, *, separator: str = ",") -> list[str]:
-    raw = os.environ.get(name, "").strip()
+def _list_env(raw: str, name: str, *, separator: str = ",") -> list[str]:
+    raw = str(raw or "").strip()
     if not raw:
         return []
     if raw.startswith("["):
@@ -117,7 +117,12 @@ def _sensitive_path(value) -> bool:
     return any(
         _glob_match(name, pattern.lower())
         or _glob_match("/" + normalized.lstrip("/"), pattern.lower())
-        for pattern in (*_DENY_PATHS, *_list_env("COGNEE_CAPTURE_DENY_PATHS"))
+        for pattern in (
+            *_DENY_PATHS,
+            *_list_env(
+                os.environ.get("COGNEE_CAPTURE_DENY_PATHS", ""), "COGNEE_CAPTURE_DENY_PATHS"
+            ),
+        )
     )
 
 
@@ -182,10 +187,10 @@ def _parse_pattern(pattern: str) -> tuple[str, str | None]:
     return match.group("tool"), prefix
 
 
-def _tool_patterns(env_name: str, default: list[str]) -> list[tuple[str, str | None]]:
+def _tool_patterns(raw: str, env_name: str, default: list[str]) -> list[tuple[str, str | None]]:
     """Parse every entry up front so a bad one fails whether or not it is reached."""
     try:
-        entries = _list_env(env_name, separator="|") or default
+        entries = _list_env(raw, env_name, separator="|") or default
     except ValueError as exc:  # a JSON array that does not parse, or holds non-strings
         raise CapturePatternError(f"{env_name} is not a valid JSON array: {exc}") from exc
     try:
@@ -219,8 +224,12 @@ def allow_tool(name: str, params) -> bool:
     """
     if not capture_enabled():
         return False
-    allowed = _tool_patterns("COGNEE_CAPTURE_TOOLS", ["*"])
-    denied = _tool_patterns("COGNEE_CAPTURE_DENY_TOOLS", [])
+    allowed = _tool_patterns(
+        os.environ.get("COGNEE_CAPTURE_TOOLS", ""), "COGNEE_CAPTURE_TOOLS", ["*"]
+    )
+    denied = _tool_patterns(
+        os.environ.get("COGNEE_CAPTURE_DENY_TOOLS", ""), "COGNEE_CAPTURE_DENY_TOOLS", []
+    )
     if not any(_matches(tool, prefix, name, params) for tool, prefix in allowed):
         return False
     if any(_matches(tool, prefix, name, params) for tool, prefix in denied):
@@ -235,8 +244,10 @@ def capture_pattern_error() -> str:
     report a problem that only surfaces inside the silent PostToolUse path.
     """
     try:
-        _tool_patterns("COGNEE_CAPTURE_TOOLS", ["*"])
-        _tool_patterns("COGNEE_CAPTURE_DENY_TOOLS", [])
+        _tool_patterns(os.environ.get("COGNEE_CAPTURE_TOOLS", ""), "COGNEE_CAPTURE_TOOLS", ["*"])
+        _tool_patterns(
+            os.environ.get("COGNEE_CAPTURE_DENY_TOOLS", ""), "COGNEE_CAPTURE_DENY_TOOLS", []
+        )
     except CapturePatternError as exc:
         return str(exc)
     return ""
@@ -252,7 +263,11 @@ def redact(value):
         # User-supplied regexes are JSON strings; commas are valid regex syntax.
         raw = os.environ.get("COGNEE_CAPTURE_REDACT_PATTERNS", "").strip()
         if raw:
-            patterns = _list_env("COGNEE_CAPTURE_REDACT_PATTERNS", separator="\n")
+            patterns = _list_env(
+                os.environ.get("COGNEE_CAPTURE_REDACT_PATTERNS", ""),
+                "COGNEE_CAPTURE_REDACT_PATTERNS",
+                separator="\n",
+            )
             for pattern in patterns:
                 value = re.sub(pattern, "[redacted:custom]", value)
         return value

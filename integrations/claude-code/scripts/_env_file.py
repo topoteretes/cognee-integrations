@@ -236,8 +236,11 @@ def forced_backend_with_source() -> tuple[str, str]:
     The plugin-specific variable beats the shared ``COGNEE_BACKEND``; a
     variable holding an unrecognized value is skipped rather than honored.
     """
-    for var in (_PLUGIN_BACKEND_VAR, _SHARED_BACKEND_VAR):
-        value = os.environ.get(var, "").strip().lower()
+    for var, raw in (
+        (_PLUGIN_BACKEND_VAR, os.environ.get("COGNEE_CLAUDE_BACKEND", "")),
+        (_SHARED_BACKEND_VAR, os.environ.get("COGNEE_BACKEND", "")),
+    ):
+        value = raw.strip().lower()
         if value in _LOCAL_BACKEND_VALUES:
             return "local", var
         if value in _CLOUD_BACKEND_VALUES:

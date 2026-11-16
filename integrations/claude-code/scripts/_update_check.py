@@ -197,7 +197,9 @@ def maybe_check_for_update() -> None:
         if not _update_check_enabled():
             return
         marker = _pc._load_json_file(_UPDATE_CHECK_FILE)
-        interval = _pc._float_env("COGNEE_UPDATE_CHECK_INTERVAL", _UPDATE_CHECK_INTERVAL_DEFAULT)
+        interval = _pc._float_env(
+            os.environ.get("COGNEE_UPDATE_CHECK_INTERVAL", ""), _UPDATE_CHECK_INTERVAL_DEFAULT
+        )
         now = datetime.now(timezone.utc).timestamp()
         if now - float(marker.get("last_checked_at", 0) or 0) < interval:
             return  # checked recently

@@ -520,7 +520,9 @@ def set_launch_dataset_ids(
     from _file_lock import file_lock
 
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             hook_log(
                 "launch_dataset_ids_skipped",
@@ -699,7 +701,9 @@ def switch_launch_record(
     # transactional guarantee, so a concurrent switch landing in between would
     # make a successful write look unpersisted (and vice versa).
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             raise RuntimeError("Another dataset switch is in progress for this launch")
         return _switch_launch_record_locked(
@@ -851,7 +855,9 @@ def set_recall_pinned(host_key: str, pinned: bool) -> dict:
 
     # The switch lock: a concurrent switch rewrites the same record.
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             raise RuntimeError("Another dataset switch is in progress for this launch")
         rec = _read_map_record(host_key)
@@ -904,8 +910,12 @@ def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
     if key:
         return key, "env_session_key"
 
-    for var in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
-        val = _sanitize_session_key(str(os.environ.get(var, "") or "").strip())
+    for var, raw in (
+        ("CLAUDE_CODE_SESSION_ID", os.environ.get("CLAUDE_CODE_SESSION_ID", "")),
+        ("CODEX_SESSION_ID", os.environ.get("CODEX_SESSION_ID", "")),
+        ("CODEX_THREAD_ID", os.environ.get("CODEX_THREAD_ID", "")),
+    ):
+        val = _sanitize_session_key(str(raw or "").strip())
         if val and _session_map_path(val).exists():
             return val, var
 
@@ -949,9 +959,9 @@ def _live_launch_records() -> list[dict]:
 def _candidate_host_pids() -> set[int]:
     """Pids that could be this process's host: the host's pid export + ancestry."""
     pids: set[int] = set()
-    for var in ("CLAUDE_PID", "CODEX_PID"):
+    for raw in (os.environ.get("CLAUDE_PID", ""), os.environ.get("CODEX_PID", "")):
         try:
-            v = int(str(os.environ.get(var, "") or "0").strip() or 0)
+            v = int(str(raw or "0").strip() or 0)
         except ValueError:
             v = 0
         if v > 1:
@@ -1663,7 +1673,7 @@ def is_observer_child() -> bool:
     hooks anyway, each would talk to the same server whose cognify is waiting on
     the child — a loop. Every hook checks this first and exits silently.
     """
-    return bool(os.environ.get(OBSERVER_CHILD_ENV, "").strip())
+    return bool(os.environ.get("COGNEE_OBSERVER_CHILD", "").strip())
 
 
 @contextmanager
@@ -4001,7 +4011,9 @@ def set_launch_base_url(host_key: str, base_url: str) -> None:
     from _file_lock import file_lock
 
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             return
         rec = _read_map_record(host_key)
@@ -4550,23 +4562,27 @@ def _json_http_request(
         return json.loads(body)
 
 
-def _float_env(name: str, default: float) -> float:
-    """Read a float from the environment, falling back to default on absence/parse error."""
+def _float_env(raw: str, default: float) -> float:
+    """Parse a float setting, falling back to default when it is unset or not a number.
+
+    Takes the value, not the variable's name: each caller reads its own
+    setting by name, so every environment read in the plugin is spelled out.
+    """
     try:
-        raw = os.environ.get(name, "").strip()
+        raw = str(raw or "").strip()
         return float(raw) if raw else default
     except (TypeError, ValueError):
         return default
 
 
-def positive_float_env(name: str, default: float) -> float:
-    """A timeout from the environment: only a finite value > 0 is honoured.
+def positive_float_env(raw: str, default: float) -> float:
+    """A timeout setting's value: only a finite value > 0 is honoured.
 
     ``_float_env`` passes 0, negatives, inf and nan through, which a socket
     timeout turns into an immediate failure or an error; those fall back to
     ``default`` here.
     """
-    value = _float_env(name, default)
+    value = _float_env(raw, default)
     return value if math.isfinite(value) and value > 0 else default
 
 
@@ -4914,7 +4930,7 @@ def register_agent_via_http(
 ) -> tuple[bool, dict]:
     if timeout is None:
         # Tunable independently of recall/remember; 15s is the historical value.
-        timeout = positive_float_env("COGNEE_REGISTER_TIMEOUT", 15.0)
+        timeout = positive_float_env(os.environ.get("COGNEE_REGISTER_TIMEOUT", ""), 15.0)
     payload = {
         "agent_session_name": agent_session_name,
         # Self-declared connection type (the server keeps a free-form registry;
@@ -5148,7 +5164,9 @@ REACHABLE_TIMEOUT_DEFAULT_SECONDS = 2.0
 
 def _backend_reachable(base_url: str, timeout: float | None = None) -> bool:
     if timeout is None:
-        timeout = positive_float_env("COGNEE_REACHABLE_TIMEOUT", REACHABLE_TIMEOUT_DEFAULT_SECONDS)
+        timeout = positive_float_env(
+            os.environ.get("COGNEE_REACHABLE_TIMEOUT", ""), REACHABLE_TIMEOUT_DEFAULT_SECONDS
+        )
     try:
         with urllib.request.urlopen(
             f"{base_url.rstrip('/')}/health", timeout=timeout, context=_https_context()
@@ -5535,7 +5553,10 @@ def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = 
     submit_timeout = (
         timeout
         if timeout is not None
-        else _float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS)
+        else _float_env(
+            os.environ.get("COGNEE_IMPROVE_SUBMIT_TIMEOUT", ""),
+            IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS,
+        )
     )
     improve_payload = {
         **write_fields(dataset),
@@ -5667,7 +5688,7 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
     else:
         # Detached context: nothing user-visible waits on this, so the drain
         # gets a far larger budget than the per-prompt hook's default.
-        final_budget = _float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
+        final_budget = _float_env(os.environ.get("COGNEE_DRAIN_BUDGET_FINAL", ""), 120.0)
         _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
         if remaining:
             # One bounded retry after a short pause: the tail usually failed on a

@@ -496,7 +496,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # so a confirmed-bad backend costs one bounded probe per prompt instead of
     # the full budget.
     service_url = runtime.get("base_url", "")
-    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 3.0)
+    probe_timeout = _float_env(os.environ.get("COGNEE_READY_PROBE_TIMEOUT", ""), 3.0)
     prior = read_connection_state()
     # Permissive on purpose: "same target" unless the two URLs provably differ,
     # so a recorded state still applies when a URL is unknown. Mirrors the
@@ -625,14 +625,18 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
+    recall_budget = _float_env(
+        os.environ.get("COGNEE_RECALL_BUDGET", ""), 45.0 if cloud_enabled(runtime) else 20.0
+    )
     # After slow_streak_threshold() timeout-only prompts the server is treated as
     # slow: recall gets a few seconds until a recall answers or the window ends,
     # so a hung server cannot cost the full budget on every prompt.
     slow_until = recall_slow_until(service_url)
     recall_slow = time.time() < slow_until
     if recall_slow:
-        recall_budget = min(recall_budget, _float_env("COGNEE_RECALL_SLOW_BUDGET", 5.0))
+        recall_budget = min(
+            recall_budget, _float_env(os.environ.get("COGNEE_RECALL_SLOW_BUDGET", ""), 5.0)
+        )
         hook_log("recall_budget_reduced", {"budget_s": recall_budget})
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget

@@ -34,6 +34,17 @@ what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK
   `forget-dataset <dataset_id>` and `forget-everything --confirm-delete-all` cover the
   broader deletions. `cognee-forget.sh env` is removed, so no command prints the key.
 
+- **Two variables renamed** (SDK-1411). `COGNEE_SESSION_KEY`, which the plugin sets and
+  reads itself to name a process's session, is now `COGNEE_SESSION_REF`.
+  `COGNEE_LLM_KEY_CHECK`, the setting that turns the local LLM check off, is now
+  `COGNEE_LLM_CHECK`; the old name is no longer read. Neither was a credential, but the
+  directory's validator treats any name with KEY in it as one.
+- **Every setting is read by its own name** (SDK-1411). Helpers such as `_float_env`
+  took a variable's name and read it, and a few loops read a list of names, so a check
+  of the files could not see which variables the plugin reads. Callers now read each
+  setting themselves and pass the value. The settings-file loader is the one exception:
+  it copies whatever names `~/.cognee/.env` holds. No behaviour change.
+
 ## [1.8.5]
 
 **This release takes back versions 1.8.2, 1.8.3 and 1.8.4.** The plugin is 1.8.1 again,

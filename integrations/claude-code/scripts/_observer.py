@@ -91,7 +91,7 @@ _TRUE = {"1", "true", "yes", "on"}
 
 def setting() -> str:
     """``auto`` (default), ``true`` or ``false``."""
-    raw = os.environ.get(SETTING_ENV, "").strip().lower()
+    raw = os.environ.get("COGNEE_LLM_OBSERVER", "").strip().lower()
     if raw in _FALSE:
         return "false"
     if raw in _TRUE:
@@ -326,7 +326,7 @@ def llm_provider_configured() -> bool:
     provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
     if not provider:
         return False
-    if provider == "custom" and os.environ.get(ACTIVE_ENV_FLAG, "") == "1":
+    if provider == "custom" and os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1":
         return False
     return True
 
@@ -378,7 +378,7 @@ def resolve_observer(config: dict | None = None) -> dict:
         # A prior apply in this same process (or the bootstrap re-exec) stamped
         # the active flag, in which case the placeholder key/custom provider are
         # ours and not a user choice.
-        if os.environ.get(ACTIVE_ENV_FLAG, "") != "1":
+        if os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") != "1":
             if llm_key_configured():
                 result["reason"] = "llm_key_configured"
                 return result
@@ -430,12 +430,16 @@ def apply_observer_env(decision: dict) -> dict:
     }
     for key, value in applied.items():
         os.environ[key] = value
-    for key, value in (
-        ("EMBEDDING_PROVIDER", "fastembed"),
-        ("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-        ("EMBEDDING_DIMENSIONS", DEFAULT_EMBEDDING_DIMENSIONS),
+    for key, current, value in (
+        ("EMBEDDING_PROVIDER", os.environ.get("EMBEDDING_PROVIDER", ""), "fastembed"),
+        ("EMBEDDING_MODEL", os.environ.get("EMBEDDING_MODEL", ""), DEFAULT_EMBEDDING_MODEL),
+        (
+            "EMBEDDING_DIMENSIONS",
+            os.environ.get("EMBEDDING_DIMENSIONS", ""),
+            DEFAULT_EMBEDDING_DIMENSIONS,
+        ),
     ):
-        if not os.environ.get(key, "").strip():
+        if not current.strip():
             os.environ[key] = value
             applied[key] = value
     return applied
@@ -451,7 +455,7 @@ def is_active() -> bool:
     the fallback that watcher would run the litellm key check against a launch
     that has no key by design and put a false ✕ on the status line.
     """
-    if os.environ.get(ACTIVE_ENV_FLAG, "") == "1":
+    if os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1":
         return True
     try:
         from _plugin_common import _read_map_record, get_session_key
