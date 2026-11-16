@@ -1,6 +1,6 @@
 // Tests for the live-activity module: what it shows while the memory hooks
 // work and after they finish. Everything the module reaches (the activity
-// marker file, the renderer process, the session id) is answered here, so the
+// marker file, the row's data file, the session id) is answered here, so the
 // test runs with no file system, process or network.
 import { expect, mock, test } from 'claude-code/testing'
 
@@ -99,7 +99,14 @@ test('the desktop band shows the row the terminal status line shows', async ($, 
   // the mode and the activity.
   expect(await ui.find({ type: 'Svg' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeDefined()
+  // The dataset is a picker from the first draw. Nothing is listed in these
+  // tests, so it holds the name and a loading entry, and the name is not
+  // drawn again as text.
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker!.props.value).toBe('agent_sessions')
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['agent_sessions', 'loading datasets…'])
+  expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /tokens saved/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /3 memories used/ })).toBeDefined()
   // Healthy leads with the green dot, as on the text line.
