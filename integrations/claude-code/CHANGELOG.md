@@ -1090,18 +1090,17 @@ install Cognee with the command session start prints.**
   `sessions/<session>/` folder, which the state sweep removes after a week idle.
 
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
-  capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other
+  capture skipped environment files, SSH keys, cloud credential files and the other
   secret-file globs only when the file arrived as a structured path (`Read`,
-  `Edit`, …). A shell call such as `cat ~/.aws/credentials`, `less ~/.ssh/id_rsa`,
-  `source .env.local` or `grep KEY .env` was captured with its output. A shell
-  command is now split into words (quotes removed, `$HOME` / `${HOME}` read as `~`,
-  words cut at `|`, `;`, `&`, `<`, `>`, parentheses and backticks) and is not captured
-  when any word matches the same globs, `COGNEE_CAPTURE_DENY_PATHS` included. A path
-  reached through another variable or a glob (`cat ~/.aws/cred*`) is not recognised.
+  `Edit`, …). A shell call that printed, paged, sourced or searched such a file was
+  captured with its output. A shell command is now split into words (quotes removed,
+  the home variable read as `~`, words cut at `|`, `;`, `&`, `<`, `>`, parentheses and
+  backticks) and is not captured when any word matches the same globs,
+  `COGNEE_CAPTURE_DENY_PATHS` included. A path reached through another variable or a
+  glob is not recognised.
 - **Redaction missed AWS and npm credentials.** The credential rule only fired when a
-  secret word ended the name, so `aws_secret_access_key = …`, `aws_access_key_id = …`,
-  `SECRET_KEY = …`, `SecretAccessKey` / `SessionToken` in AWS JSON and the
-  `.npmrc` `_authToken=` / `_auth=` lines passed through. These names are now
+  secret word ended the name, so the AWS secret and access-key settings, their JSON
+  forms, and the npm registry auth lines went through unredacted. These names are now
   redacted, as are AWS access key ids anywhere (`AKIA…`, `ASIA…`, … plus 16
   characters), `npm_…` tokens and `pypi-…` upload tokens.
 - A partial guidance change no longer makes the unchanged guidance entries look new on
@@ -2251,7 +2250,7 @@ install Cognee with the command session start prints.**
 - **cognee-search SKILL.md no longer claims searches span all authorized
   datasets.** The wrapper has always scoped recall to the plugin dataset
   (`COGNEE_PLUGIN_DATASET`, default `agent_sessions`); the doc now says so, and
-  the raw `curl` examples pass `datasets` explicitly so following them doesn't
+  the raw `curl` examples send `datasets` explicitly so following them doesn't
   search every readable dataset.
 
 ### Changed
