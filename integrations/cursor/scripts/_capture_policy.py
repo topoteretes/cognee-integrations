@@ -17,22 +17,24 @@ from pathlib import PurePosixPath
 
 _FALSE = {"0", "false", "no", "off"}
 _PATH_KEYS = {"file_path", "filepath", "path", "paths", "notebook_path", "filename", "move_path"}
-_DENY_PATHS = (
-    ".env",
-    ".env.*",
-    "*.pem",
-    "*.key",
-    "id_rsa*",
-    "id_ed25519*",
-    ".npmrc",
-    ".netrc",
-    "*/.aws/credentials",
-    "*/.ssh/*",
-    "*.p12",
-    "*.pfx",
-    "secrets.*",
-    "credentials.*",
-)
+_DENY_PATHS_FILE = "capture_deny_paths.txt"
+
+
+def _load_deny_paths() -> tuple:
+    """The file patterns never captured, one per line in the data file beside
+    this module. If the file cannot be read, every path is refused: losing the
+    list must not turn the protection off."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _DENY_PATHS_FILE)
+    try:
+        with open(path, encoding="utf-8") as stream:
+            lines = [line.strip() for line in stream]
+    except OSError:
+        return ("*",)
+    found = tuple(line for line in lines if line and not line.startswith("#"))
+    return found or ("*",)
+
+
+_DENY_PATHS = _load_deny_paths()
 # The last word of a secret-bearing name. ``secret`` may carry a ``_key`` /
 # ``_access_key`` suffix (``SECRET_KEY``, ``aws_secret_access_key``), and the
 # AWS / npm names a plain suffix test misses are spelled out: ``access_key_id``,

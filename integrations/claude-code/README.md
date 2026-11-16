@@ -184,7 +184,7 @@ These CLI subcommands use the exact same plugin manager as the in-chat `/plugin`
 Then configure the plugin — **once**. Two places hold its settings:
 
 - **The plugin's options hold every key.** In Claude Code run `/plugin`, select **Cognee Memory**, then **Configure options**. Claude Code keeps the keys in its secure store and hands them to the plugin only. The plugin reads a key nowhere else: one in your shell or in `~/.cognee/.env` is ignored, and session start tells you so.
-- **`~/.cognee/.env` holds everything else** (provider, model, dataset, tuning). The file is created with a commented template on the first session start; values in it act exactly like shell exports (a real `export` in your shell still overrides the file, per terminal). It is shared with the Codex plugin. Lines may optionally start with `export `.
+- **`~/.cognee/.env` holds everything else** (provider, model, dataset, tuning). The plugin takes each of its own settings from the file by name; any other setting in the file (database, vector store and other cognee settings) is passed to the local server it starts. A proxy for the hooks' own requests belongs in a shell `export`. The file is created with a commented template on the first session start; values in it act exactly like shell exports (a real `export` in your shell still overrides the file, per terminal). It is shared with the Codex plugin. Lines may optionally start with `export `.
 
 | Option | For | Needed |
 |---|---|---|

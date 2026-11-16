@@ -206,7 +206,9 @@ def _child_env(extra: dict) -> dict:
     """The relay's environment (which holds the options), with the caller's
     values for the names in ``PASSED``: set when the caller has one, removed
     when it does not, so one terminal's mode never leaks into another's."""
-    env = os.environ.copy()
+    from _proc import child_env
+
+    env = child_env()
     for name in PASSED:
         value = (extra or {}).get(name)
         if isinstance(value, str) and value:
@@ -228,7 +230,7 @@ def _run(request: dict) -> dict:
         ran = subprocess.run(
             [*head, str(_SCRIPTS / script), *argv],
             cwd=cwd if cwd and os.path.isdir(cwd) else None,
-            env=_child_env(request.get("env") or {}),
+            env=_child_env(request.get("settings") or {}),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -405,7 +407,7 @@ def relay(script: str, argv: list) -> int | None:
         "COGNEE_PLUGIN_DATASET": _shell_value("COGNEE_PLUGIN_DATASET"),
         "COGNEE_ENV_FILE": os.environ.get("COGNEE_ENV_FILE", ""),
     }
-    request = {"script": script, "argv": list(argv), "cwd": cwd, "env": env}
+    request = {"script": script, "argv": list(argv), "cwd": cwd, "settings": env}
     if state.get("code"):
         request["code"] = str(state["code"])
     try:

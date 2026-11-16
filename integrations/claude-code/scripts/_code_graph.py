@@ -954,6 +954,11 @@ def main(argv):
     """
     a = list(argv) + [""] * 7
     service_url, api_key, command, spec = a[0], a[1], a[2], a[3]
+    if api_key == "-":
+        # The caller holds no key: resolve it the way the hooks do.
+        import _plugin_common
+
+        api_key = _plugin_common.shell_api_key(service_url)
     dataset = a[4]
     index_vectors = str(a[5]).strip().lower() in ("1", "true", "yes", "on")
     try:
@@ -970,7 +975,7 @@ def main(argv):
         print(
             json.dumps(
                 {
-                    "error": "usage: _code_graph.py <service_url> <api_key> "
+                    "error": "usage: _code_graph.py <service_url> - "
                     "index <repo-path-or-url> [dataset] [index_vectors] "
                     "[wait_seconds] | dataset [path]",
                     "status": 2,

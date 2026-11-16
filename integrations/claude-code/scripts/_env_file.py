@@ -11,16 +11,18 @@ The plugin reads a key nowhere else: a value for one of the names in
 A process Claude Code gives no options (a script a skill runs through Bash)
 has no key; it hands its work to the relay a hook started (``_relay.py``).
 
-Everything that is not a key is a one-time step here: values placed in
+Everything that is not a key is a one-time step here: a value placed in
 ``~/.cognee/.env`` (the durable, venv-rebuild-safe cognee home shared by the
-Claude Code and Codex plugins) are injected into ``os.environ`` at process
-start with **setdefault** semantics, so:
+Claude Code and Codex plugins) acts like a shell export for the plugin:
 
-  real exported env vars  >  ~/.cognee/.env  >  defaults
+  real exported variables  >  ~/.cognee/.env  >  defaults
 
-Every existing ``os.environ.get(...)`` call site — and every child process the
-hooks spawn (the local cognee server, idle/exit watchers) — picks the values up
-unchanged.
+Each setting the plugin's scripts read is handled by its own name, from a
+generated list (``_env_names.py``), so the plugin's files show every variable
+the file can set for it. Anything else in the file (database, vector store and
+other cognee settings) is for the local Cognee server: it is handed to that
+server when the plugin starts it (``passthrough_env``) and never enters the
+plugin's own environment.
 
 Deliberately stdlib-only: hook scripts must run outside the plugin venv on the
 cloud path, so python-dotenv is not an option. The parser accepts a leading
@@ -30,8 +32,8 @@ The file may hold BOTH modes' variables at once (cloud connection + local LLM
 key); with nothing exported, cloud wins because ``COGNEE_BASE_URL`` routes the
 connection. One export flips a single terminal: ``COGNEE_BACKEND=local`` (or
 ``=cloud``), with the plugin-specific variable (``_PLUGIN_BACKEND_VAR``)
-beating the shared name. A forced-local switch is applied to ``os.environ``
-itself (see ``_apply_backend_switch``) so the HTTP hot paths and spawned
+beating the shared name. A forced-local switch is applied to the process
+environment itself (see ``_apply_backend_switch``) so the HTTP hot paths and spawned
 children — which read ``COGNEE_BASE_URL`` from the environment directly, not
 via ``config.load_config`` — see the same mode.
 
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -200,8 +203,8 @@ def _apply_url_option() -> None:
         except Exception:
             url = ""
     if url:
+        # Like an export: the file's own value does not replace it.
         os.environ["COGNEE_BASE_URL"] = url
-        _injected["COGNEE_BASE_URL"] = url
 
 
 def cloud_key_option() -> str:
@@ -235,14 +238,15 @@ def server_key_env() -> dict:
 
 def ignored_key_names() -> list:
     """Names of the keys found in the shell or in ~/.cognee/.env and ignored."""
-    carried = [n for n in os.environ.get(_IGNORED_KEYS_VAR, "").split(",") if n.strip()]
+    held = os.environ.get("COGNEE_PLUGIN_IGNORED_SETTINGS", "")
+    carried = [n for n in held.split(",") if n.strip()]
     return sorted(set(carried) | set(_ignored_key_names))
 
 
 def _note_ignored(name: str) -> None:
     if name not in _ignored_key_names:
         _ignored_key_names.append(name)
-    os.environ[_IGNORED_KEYS_VAR] = ",".join(ignored_key_names())
+    os.environ["COGNEE_PLUGIN_IGNORED_SETTINGS"] = ",".join(ignored_key_names())
 
 
 def _drop_shell_keys() -> None:
@@ -260,6 +264,11 @@ def _drop_shell_keys() -> None:
         _note_ignored("COGNEE_USER_EMAIL")
     if os.environ.pop("COGNEE_USER_PASSWORD", ""):
         _note_ignored("COGNEE_USER_PASSWORD")
+
+
+# One setting: NAME=VALUE, with the optional leading word a shell profile line
+# carries, so such lines paste verbatim.
+_SETTING_LINE = re.compile(r"^(?:export\s+)?([A-Za-z0-9_]+)\s*=(.*)$")
 
 
 def parse_env_file(path: Path, key_names: list | None = None, not_keys: tuple = ()) -> dict:
@@ -289,12 +298,10 @@ def parse_env_file(path: Path, key_names: list | None = None, not_keys: tuple = 
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        name, _, value = line.partition("=")
-        name = name.strip()
-        if not name or not all(c.isalnum() or c == "_" for c in name):
+        parsed = _SETTING_LINE.match(line)
+        if not parsed:
             continue
+        name, value = parsed.group(1), parsed.group(2)
         # A key's value is dropped as it is parsed: only its name is kept, so
         # the notice can say that it is ignored.
         if name in OPTION_ONLY:
@@ -312,12 +319,41 @@ _loaded = False
 # switch), key to value: what a refresh may change again. A real export is
 # never among them, and a value changed by anything else since is left alone.
 _injected: dict = {}
+# The file's usable values as last read (never a key: the parser drops those).
+_file_values: dict = {}
 # The file as last parsed by a refresh (path, mtime, size): unchanged, it is not parsed again.
 _seen: tuple = ()
 
 
+def _take(values: dict) -> None:
+    """Make this process follow the file's ``values``.
+
+    The settings the plugin's scripts read are put in the environment, each by
+    its own name (``_env_names.sync``, a generated list): when the shell
+    exports none, and following the file when it changes. Anything else the
+    file holds is kept aside for the local server (``passthrough_env``) and
+    never enters the plugin's own environment.
+    """
+    import _env_names
+
+    usable = {name: value for name, value in values.items() if not _blocked(name)}
+    _file_values.clear()
+    _file_values.update(usable)
+    _env_names.sync(usable, _injected)
+
+
+def passthrough_env() -> dict:
+    """What the file holds for programs the plugin starts, the local Cognee
+    server above all: every setting the plugin does not read itself (database,
+    vector store and other cognee settings). The caller adds them to that
+    program's environment where the shell exports nothing of the same name."""
+    import _env_names
+
+    return {name: value for name, value in _file_values.items() if name not in _env_names.NAMES}
+
+
 def load_env_file() -> None:
-    """Inject env-file values into os.environ (setdefault). Never raises.
+    """Load the env file for this process (a real export wins). Never raises.
 
     Idempotent per process: repeated calls (this module is imported from
     several entry-point modules) parse the file at most once. The backend
@@ -329,6 +365,8 @@ def load_env_file() -> None:
     if _loaded:
         return
     _loaded = True
+    # A load is this process's first look at the file: nothing is its doing yet.
+    _injected.clear()
 
     _drop_shell_keys()
     try:
@@ -343,12 +381,7 @@ def load_env_file() -> None:
             values = parse_env_file(path, named)
             for name in named:
                 _note_ignored(name)
-            for name, value in values.items():
-                if _blocked(name):
-                    continue
-                if name not in os.environ:
-                    os.environ[name] = value
-                    _injected[name] = value
+            _take(values)
     except Exception:
         pass
     _apply_backend_switch()
@@ -381,19 +414,7 @@ def refresh_env_file() -> None:
         _seen = stamp
     except Exception:
         return
-    for name, last in list(_injected.items()):
-        if os.environ.get(name) != last:
-            # Set by something else since (an export, a test): theirs now.
-            _injected.pop(name)
-        elif name not in fresh:
-            os.environ.pop(name, None)
-            _injected.pop(name)
-    for name, value in fresh.items():
-        if _blocked(name):
-            continue
-        if name in _injected or name not in os.environ:
-            os.environ[name] = value
-            _injected[name] = value
+    _take(fresh)
     _apply_backend_switch()
 
 
@@ -494,8 +515,14 @@ def env_file_status() -> dict:
     info["ignored_keys"] = ignored_key_names()
     # A shell export (or another source) that set a different value wins over
     # the file; surface those so mode-selection surprises are debuggable.
+    import _env_names
+
     info["overridden"] = sorted(
-        k for k in values if not _blocked(k) and os.environ.get(k, values[k]) != values[k]
+        _env_names.overridden({k: v for k, v in values.items() if not _blocked(k)})
+    )
+    # Settings for the local server only: never in the plugin's environment.
+    info["passed_to_server"] = sorted(
+        k for k in values if not _blocked(k) and k not in _env_names.NAMES
     )
     return info
 

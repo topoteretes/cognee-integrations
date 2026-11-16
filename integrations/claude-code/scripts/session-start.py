@@ -681,6 +681,12 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
 
         if uv:
             env = child_env()
+            from _env_file import passthrough_env
+
+            # Installer settings from ~/.cognee/.env (an index URL, say).
+            for name, value in passthrough_env().items():
+                if name not in env:
+                    env[name] = value
             # uv must never fetch an interpreter: the runtime is built from what
             # is already installed (no binaries downloaded at setup). The install
             # dir is passed only so an interpreter an earlier plugin version put
@@ -934,8 +940,14 @@ def _ensure_local_server_running(
         server_env = child_env()
         # The server's own keys: the LLM and embedding key options, or the
         # observer shim's token. They exist in the server's environment only.
-        from _env_file import server_key_env
+        from _env_file import passthrough_env, server_key_env
 
+        # Settings in ~/.cognee/.env that are the server's own (database,
+        # vector store, ...): given to the server, where the shell exports no
+        # value of the same name.
+        for name, value in passthrough_env().items():
+            if name not in server_env:
+                server_env[name] = value
         server_env.update(server_key_env())
         try:
             from _observer import observer_server_env

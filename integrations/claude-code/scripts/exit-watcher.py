@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _logfiles import append_line as _append_log_line
+from _proc import child_env
 from _proc import pid_alive as _pid_alive
 from event_names import event_fields
 
@@ -64,8 +65,9 @@ def _spawn_sync(
     service_url: str = "",
 ) -> None:
     try:
-        env = os.environ.copy()
-        env.setdefault("COGNEE_SYNC_START_DELAY", str(_SYNC_START_DELAY))
+        env = child_env()
+        if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
+            env["COGNEE_SYNC_START_DELAY"] = str(_SYNC_START_DELAY)
         env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
         if session_id:
             env["COGNEE_SYNC_SESSION_ID"] = session_id

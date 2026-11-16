@@ -189,7 +189,7 @@ def _env_settings() -> dict:
 
 
 def load_config() -> dict:
-    """Load merged config: defaults → env vars (the env file is already in os.environ)."""
+    """Load merged config: defaults, then the settings (the env file is already loaded)."""
     config = dict(_DEFAULTS)
 
     for env_key, val in _env_settings().items():

@@ -439,20 +439,19 @@ def apply_observer_env(decision: dict) -> dict:
         "LLM_ENDPOINT": decision.get("endpoint") or (base_url() + "/v1"),
         ACTIVE_ENV_FLAG: "1",
     }
-    for key, value in applied.items():
-        os.environ[key] = value
-    for key, current, value in (
-        ("EMBEDDING_PROVIDER", os.environ.get("EMBEDDING_PROVIDER", ""), "fastembed"),
-        ("EMBEDDING_MODEL", os.environ.get("EMBEDDING_MODEL", ""), DEFAULT_EMBEDDING_MODEL),
-        (
-            "EMBEDDING_DIMENSIONS",
-            os.environ.get("EMBEDDING_DIMENSIONS", ""),
-            DEFAULT_EMBEDDING_DIMENSIONS,
-        ),
-    ):
-        if not current.strip():
-            os.environ[key] = value
-            applied[key] = value
+    # Each variable by its own name, so the plugin's files show what it sets.
+    os.environ["LLM_PROVIDER"] = applied["LLM_PROVIDER"]
+    os.environ["LLM_MODEL"] = applied["LLM_MODEL"]
+    os.environ["LLM_ENDPOINT"] = applied["LLM_ENDPOINT"]
+    os.environ["COGNEE_LLM_OBSERVER_ACTIVE"] = "1"
+    if not os.environ.get("EMBEDDING_PROVIDER", "").strip():
+        os.environ["EMBEDDING_PROVIDER"] = applied["EMBEDDING_PROVIDER"] = "fastembed"
+    if not os.environ.get("EMBEDDING_MODEL", "").strip():
+        os.environ["EMBEDDING_MODEL"] = applied["EMBEDDING_MODEL"] = DEFAULT_EMBEDDING_MODEL
+    if not os.environ.get("EMBEDDING_DIMENSIONS", "").strip():
+        os.environ["EMBEDDING_DIMENSIONS"] = applied["EMBEDDING_DIMENSIONS"] = (
+            DEFAULT_EMBEDDING_DIMENSIONS
+        )
     return applied
 
 
@@ -564,7 +563,9 @@ def ensure_observer_running(
     except Exception:
         log_fh = subprocess.DEVNULL
     observer_token()  # the shim reads it at start; make sure it exists first
-    env = os.environ.copy()
+    from _proc import child_env
+
+    env = child_env()
     if decision.get("claude"):
         env["COGNEE_OBSERVER_CLAUDE"] = str(decision["claude"])
     args = [

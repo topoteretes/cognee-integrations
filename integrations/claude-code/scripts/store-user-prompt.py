@@ -39,7 +39,7 @@ from _plugin_common import (
     set_session_key,
     touch_activity,
 )
-from _proc import pid_alive
+from _proc import child_env, pid_alive
 from config import coding_memory_enabled, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
@@ -117,7 +117,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
         log_fh = subprocess.DEVNULL
 
     try:
-        env = os.environ.copy()
+        env = child_env()
         subprocess.Popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,

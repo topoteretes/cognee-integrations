@@ -360,3 +360,91 @@ def test_an_ignored_local_key_is_said_once(start, monkeypatch):
 
 def test_nothing_is_said_when_no_key_was_found(start, monkeypatch):
     assert start._key_options_message() == ""
+
+
+# --- the env file's settings, each by its own name ---------------------------
+
+
+def test_the_generated_settings_list_matches_what_the_scripts_read():
+    from utils import gen_claude_env_names
+
+    assert gen_claude_env_names.main(["--check"]) == 0
+
+
+_FILE_SETTINGS = """
+import json, os, _env_file
+_env_file.load_env_file()
+print(json.dumps({
+    "dataset": os.environ.get("COGNEE_PLUGIN_DATASET"),
+    "model": os.environ.get("LLM_MODEL"),
+    "db": os.environ.get("DB_HOST"),
+    "unknown": os.environ.get("SOME_OTHER_TOOL"),
+    "server": _env_file.passthrough_env(),
+}))
+"""
+
+
+def test_the_file_sets_the_plugins_settings_and_keeps_the_rest_for_the_server(tmp_path):
+    (tmp_path / ".cognee").mkdir()
+    (tmp_path / ".cognee" / ".env").write_text(
+        'COGNEE_PLUGIN_DATASET="notes"\nLLM_MODEL=openai/gpt-4o-mini\n'
+        "DB_HOST=db.internal\nSOME_OTHER_TOOL=1\nPATH=/evil\nCOGNEE_API_KEY=ck_file\n",
+        encoding="utf-8",
+    )
+    seen = _python(_FILE_SETTINGS, tmp_path)
+    # What the plugin's scripts read is set, by name.
+    assert seen["dataset"] == "notes"
+    assert seen["model"] == "openai/gpt-4o-mini"
+    # What they do not read never enters the plugin's environment ...
+    assert seen["db"] is None and seen["unknown"] is None
+    # ... and is kept for the local server; a key or a process variable never is.
+    assert seen["server"] == {"DB_HOST": "db.internal", "SOME_OTHER_TOOL": "1"}
+
+
+def test_a_real_export_wins_over_the_file(tmp_path):
+    (tmp_path / ".cognee").mkdir()
+    (tmp_path / ".cognee" / ".env").write_text("COGNEE_PLUGIN_DATASET=file\n", encoding="utf-8")
+    seen = _python(_FILE_SETTINGS, tmp_path, COGNEE_PLUGIN_DATASET="exported")
+    assert seen["dataset"] == "exported"
+
+
+def test_a_long_lived_process_follows_the_file(tmp_path):
+    env_file = tmp_path / ".cognee" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text("COGNEE_PLUGIN_DATASET=one\nCOGNEE_AGENT_NAME=a\n", encoding="utf-8")
+    code = f"""
+import json, os, _env_file
+from pathlib import Path
+_env_file.load_env_file()
+first = os.environ.get("COGNEE_PLUGIN_DATASET")
+Path({str(env_file)!r}).write_text("COGNEE_PLUGIN_DATASET=two-two\\n", encoding="utf-8")
+_env_file.refresh_env_file()
+now = [os.environ.get("COGNEE_PLUGIN_DATASET"), os.environ.get("COGNEE_AGENT_NAME")]
+print(json.dumps([first, *now]))
+"""
+    assert _python(code, tmp_path) == ["one", "two-two", None]
+
+
+# --- the shell scripts' requests ----------------------------------------------
+
+
+def test_the_request_helper_sends_the_key_only_to_the_configured_server(temp_home, mock_server):
+    env = {"COGNEE_BASE_URL": mock_server.url, _OPTION: "ck_option"}
+    elsewhere = _shell(temp_home, "_authed_request.py", "GET", "https://elsewhere.test/x", **env)
+    assert elsewhere.returncode == 1
+    assert "is not on the configured server" in elsewhere.stderr
+    assert mock_server.calls == []
+    listed = _shell(
+        temp_home, "_authed_request.py", "GET", mock_server.url + "/api/v1/datasets", **env
+    )
+    assert listed.returncode == 0, listed.stderr
+    assert listed.stdout.rstrip().endswith("HTTP 200")
+    sent = mock_server.assert_called("GET", "/api/v1/datasets")
+    assert sent["headers"].get("X-Api-Key") == "ck_option"
+    assert "ck_option" not in listed.stdout + listed.stderr
+
+
+def test_the_shell_scripts_never_hold_a_key():
+    for name in ("cognee-forget.sh", "cognee-index-repo.sh"):
+        text = (_SCRIPTS / name).read_text(encoding="utf-8")
+        assert "API_KEY" not in text and "X-Api-Key" not in text, name

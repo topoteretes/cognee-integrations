@@ -89,23 +89,23 @@ def test_parse_skips_malformed_lines(env_file_env):
 
 def test_load_sets_missing_and_respects_existing(env_file_env, monkeypatch):
     ef, fresh = env_file_env
-    fresh("COGNEE_TEST_FROM_FILE=file-value\nCOGNEE_TEST_EXPORTED=file-value\n")
-    monkeypatch.setenv("COGNEE_TEST_EXPORTED", "shell-value")
+    fresh("COGNEE_PLUGIN_DATASET=file-value\nCOGNEE_AGENT_NAME=file-value\n")
+    monkeypatch.setenv("COGNEE_AGENT_NAME", "shell-value")
     ef.load_env_file()
-    assert os.environ.get("COGNEE_TEST_FROM_FILE") == "file-value"
-    assert os.environ.get("COGNEE_TEST_EXPORTED") == "shell-value"
-    monkeypatch.delenv("COGNEE_TEST_FROM_FILE", raising=False)
+    assert os.environ.get("COGNEE_PLUGIN_DATASET") == "file-value"
+    assert os.environ.get("COGNEE_AGENT_NAME") == "shell-value"
+    monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
 
 
 def test_load_is_idempotent_per_process(env_file_env, monkeypatch):
     ef, fresh = env_file_env
-    fresh("COGNEE_TEST_ONCE=first\n")
+    fresh("COGNEE_SESSION_PREFIX=first\n")
     ef.load_env_file()
-    assert os.environ.get("COGNEE_TEST_ONCE") == "first"
-    monkeypatch.delenv("COGNEE_TEST_ONCE")
+    assert os.environ.get("COGNEE_SESSION_PREFIX") == "first"
+    monkeypatch.delenv("COGNEE_SESSION_PREFIX")
     # Second call without a reset must not re-read the file.
     ef.load_env_file()
-    assert "COGNEE_TEST_ONCE" not in os.environ
+    assert "COGNEE_SESSION_PREFIX" not in os.environ
 
 
 def test_denylist_never_injected(env_file_env, monkeypatch):
@@ -113,7 +113,7 @@ def test_denylist_never_injected(env_file_env, monkeypatch):
     original_path = os.environ.get("PATH", "")
     fresh(
         "PATH=/evil\nLD_PRELOAD=/evil.so\nDYLD_INSERT_LIBRARIES=/evil.dylib\n"
-        "PYTHONPATH=/evil\nCOGNEE_TEST_OK=1\n"
+        "PYTHONPATH=/evil\nCOGNEE_SESSION_STRATEGY=1\n"
     )
     monkeypatch.delenv("LD_PRELOAD", raising=False)
     monkeypatch.delenv("DYLD_INSERT_LIBRARIES", raising=False)
@@ -121,8 +121,8 @@ def test_denylist_never_injected(env_file_env, monkeypatch):
     assert os.environ.get("PATH", "") == original_path
     assert "LD_PRELOAD" not in os.environ
     assert "DYLD_INSERT_LIBRARIES" not in os.environ
-    assert os.environ.get("COGNEE_TEST_OK") == "1"
-    monkeypatch.delenv("COGNEE_TEST_OK", raising=False)
+    assert os.environ.get("COGNEE_SESSION_STRATEGY") == "1"
+    monkeypatch.delenv("COGNEE_SESSION_STRATEGY", raising=False)
 
 
 def test_parse_tolerates_utf8_bom_and_crlf(env_file_env):
@@ -130,19 +130,19 @@ def test_parse_tolerates_utf8_bom_and_crlf(env_file_env):
     # the BOM must not glue onto the first key name.
     ef, fresh = env_file_env
     path = fresh(None)
-    path.write_bytes(b'\xef\xbb\xbfCOGNEE_TEST_BOM="first"\r\nCOGNEE_TEST_SECOND=2\r\n')
+    path.write_bytes(b'\xef\xbb\xbfCOGNEE_PLUGIN_IDENTITY="first"\r\nCOGNEE_MANAGED_ENDPOINT=2\r\n')
     parsed = ef.parse_env_file(path)
-    assert parsed["COGNEE_TEST_BOM"] == "first"
-    assert parsed["COGNEE_TEST_SECOND"] == "2"
+    assert parsed["COGNEE_PLUGIN_IDENTITY"] == "first"
+    assert parsed["COGNEE_MANAGED_ENDPOINT"] == "2"
 
 
 def test_parse_tolerates_utf16(env_file_env):
     # A PowerShell 5.1 `>` redirect (Out-File) writes UTF-16 LE with a BOM.
     ef, fresh = env_file_env
     path = fresh(None)
-    path.write_text('COGNEE_TEST_U16="wide"\n', encoding="utf-16")
+    path.write_text('COGNEE_STATUS_REQUEST_TIMEOUT16="wide"\n', encoding="utf-16")
     parsed = ef.parse_env_file(path)
-    assert parsed["COGNEE_TEST_U16"] == "wide"
+    assert parsed["COGNEE_STATUS_REQUEST_TIMEOUT16"] == "wide"
 
 
 def test_missing_file_is_noop(env_file_env):
@@ -154,11 +154,11 @@ def test_missing_file_is_noop(env_file_env):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions only")
 def test_load_tightens_permissions(env_file_env, monkeypatch):
     ef, fresh = env_file_env
-    path = fresh("COGNEE_TEST_PERMS=1\n")
+    path = fresh("COGNEE_SHARED_AGENT_MEMORY=1\n")
     path.chmod(0o644)
     ef.load_env_file()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    monkeypatch.delenv("COGNEE_TEST_PERMS", raising=False)
+    monkeypatch.delenv("COGNEE_SHARED_AGENT_MEMORY", raising=False)
 
 
 def test_env_file_path_override_and_default(env_file_env, temp_home, monkeypatch):
@@ -194,16 +194,18 @@ def test_template_never_overwrites(env_file_env, temp_home):
 
 def test_status_reports_names_not_values(env_file_env, monkeypatch):
     ef, fresh = env_file_env
-    fresh("COGNEE_TEST_SECRET=super-secret\nPATH=/evil\nCOGNEE_TEST_SHADOWED=file-value\n")
-    monkeypatch.setenv("COGNEE_TEST_SHADOWED", "shell-value")
+    fresh(
+        "COGNEE_REMEMBER_WAIT_SECONDS=super-secret\nPATH=/evil\nCOGNEE_PREFER_MEMORY=file-value\n"
+    )
+    monkeypatch.setenv("COGNEE_PREFER_MEMORY", "shell-value")
     ef.load_env_file()
     status = ef.env_file_status()
     assert status["exists"] is True
-    assert "COGNEE_TEST_SECRET" in status["keys"]
+    assert "COGNEE_REMEMBER_WAIT_SECONDS" in status["keys"]
     assert "super-secret" not in str(status)
     assert status["blocked"] == ["PATH"]
-    assert status["overridden"] == ["COGNEE_TEST_SHADOWED"]
-    monkeypatch.delenv("COGNEE_TEST_SECRET", raising=False)
+    assert status["overridden"] == ["COGNEE_PREFER_MEMORY"]
+    monkeypatch.delenv("COGNEE_REMEMBER_WAIT_SECONDS", raising=False)
 
 
 def test_status_missing_file(env_file_env):

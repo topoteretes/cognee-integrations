@@ -49,65 +49,9 @@ if [ "${COGNEE_RELAYED:-}" != "1" ]; then
     python3 "${SELF_DIR}/_relay.py" run "$(basename "${BASH_SOURCE[0]:-$0}")" "$@" || relay_code=$?
     if [ "$relay_code" -ne 111 ]; then exit "$relay_code"; fi
 fi
-runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
-import json
-import pathlib
-import sys
-
-plugin_dir = pathlib.Path(sys.argv[1])
-import os
-# One-time config from ~/.cognee/.env (shell exports still win).
-sys.path.insert(0, sys.argv[2])
-try:
-    from _env_file import load_env_file
-    load_env_file()
-except Exception:
-    pass
-service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
-# The key the hooks send: the plugin option (present when this script runs
-# through the relay a hook started), else the cached key of the local server.
-api_key = ""
-os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
-try:
-    import _plugin_common
-    api_key = _plugin_common.shell_api_key(service_url)
-except Exception:
-    pass
-
-if not api_key:
-    cache_path = plugin_dir.parent / "api_key.json"
-    if cache_path.exists():
-        try:
-            cache = json.loads(cache_path.read_text())
-            if isinstance(cache, dict):
-                key = str(cache.get("api_key") or "").strip()
-                cached_url = str(cache.get("base_url") or "").strip().rstrip("/")
-                if key and (not cached_url or cached_url == service_url.rstrip("/")):
-                    api_key = key
-        except Exception:
-            pass
-
-print(json.dumps({"service_url": service_url, "api_key": api_key}))
-PY
-)"
-
-SERVICE_URL="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
-import json, sys
-try:
-    print((json.loads(sys.argv[1] or "{}").get("service_url") or "").strip())
-except Exception:
-    pass
-PY
-)"
-API_KEY="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
-import json, sys
-try:
-    print((json.loads(sys.argv[1] or "{}").get("api_key") or "").strip())
-except Exception:
-    pass
-PY
-)"
-
+# The server address, resolved the way the hooks resolve it. The key never
+# enters this script: _code_graph.py resolves it for itself.
+SERVICE_URL="$(python3 "${SELF_DIR}/_authed_request.py" url 2>/dev/null || true)"
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
 
 REPO="${1:-}"
@@ -141,7 +85,7 @@ if [ -z "$REPO" ]; then
     exit 1
 fi
 
-RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
+RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" - index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"

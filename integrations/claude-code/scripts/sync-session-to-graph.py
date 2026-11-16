@@ -74,8 +74,11 @@ def _stop_idle_watcher() -> None:
 def _spawn_detached_sync() -> bool:
     """Run the expensive sync outside a short hook window."""
     try:
-        env = os.environ.copy()
-        env.setdefault("COGNEE_SYNC_START_DELAY", str(_SESSION_END_START_DELAY_DEFAULT))
+        from _proc import child_env
+
+        env = child_env()
+        if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
+            env["COGNEE_SYNC_START_DELAY"] = str(_SESSION_END_START_DELAY_DEFAULT)
         env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],

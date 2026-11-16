@@ -40,6 +40,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the plugin's own scripts, on a Unix socket only the user can reach, or on a
   loopback port with a one-time code where Unix sockets do not exist.
 
+- **Settings from `~/.cognee/.env`, each by its own name.** The file is no
+  longer copied into the plugin's environment as a whole. Each setting the
+  scripts read is handled by its own name, from a generated list
+  (`scripts/_env_names.py`). Anything else in the file (database, vector store
+  and other cognee settings) is handed to the local server and the installer
+  when the plugin starts them, and never enters the plugin's own environment.
+  A proxy or certificate setting for the hooks' own requests must now be
+  exported in the shell.
+- **The shell scripts hold no key.** `cognee-forget.sh` and
+  `cognee-index-repo.sh` no longer keep the key in a shell variable or pass it
+  on a command line: `scripts/_authed_request.py` sends each request.
+- **The redaction deny-list is a data file** (`scripts/capture_deny_paths.txt`).
+  If it cannot be read, every path is refused.
+
 ### Upgrade note
 
 - Enter your keys once in the plugin's options. Until then Cognee Cloud is not

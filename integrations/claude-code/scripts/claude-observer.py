@@ -195,7 +195,7 @@ def forced_tool(body: dict) -> dict | None:
 
 
 def resolve_model(requested: str) -> str:
-    """Map cognee's alias to the configured Claude model; pass real names through."""
+    """Map cognee's alias to the configured Claude model; hand real names through."""
     name = str(requested or "").strip()
     if "/" in name:
         name = name.rsplit("/", 1)[-1]
@@ -253,13 +253,16 @@ def child_env() -> dict:
     Bedrock/Vertex switches. ``ANTHROPIC_API_KEY`` is dropped so a key in the
     user's shell cannot quietly move the bill off the subscription.
     """
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in _PARENT_SESSION_ENV
-        and key not in _BILLING_ENV
-        and not key.startswith(_PARENT_SESSION_PREFIXES)
-    }
+    from _proc import child_env
+
+    env = child_env()
+    for key in list(env):
+        if (
+            key in _PARENT_SESSION_ENV
+            or key in _BILLING_ENV
+            or key.startswith(_PARENT_SESSION_PREFIXES)
+        ):
+            del env[key]
     env[_observer.CHILD_ENV_FLAG] = "1"
     return env
 
