@@ -122,9 +122,18 @@ def _key_option() -> str:
 
 
 def _fingerprint() -> str:
-    """Changes when the key option or the installed plugin does, so that the
-    running relay is replaced. A hash: the key itself is not stored."""
-    text = "\n".join((_key_option(), str(_SCRIPTS), sys.executable))
+    """Changes when the key option or the plugin's code does, so that the
+    running relay is replaced and never answers with what it was started with.
+    A hash: the key itself is not stored."""
+    try:
+        from _version import PLUGIN_VERSION as version
+    except Exception:
+        version = ""
+    try:
+        changed = str(os.path.getmtime(os.path.abspath(__file__)))
+    except OSError:
+        changed = ""
+    text = "\n".join((_key_option(), str(_SCRIPTS), sys.executable, version, changed))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
