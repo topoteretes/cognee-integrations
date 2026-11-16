@@ -299,7 +299,7 @@ def format_code_facts(facts: list[dict], rel: str, max_symbols: int = DEFAULT_MA
     """
     symbols: list[dict] = []
     deps: list[str] = []
-    calls_out: dict[str, set] = {}
+    calls_out: dict[str, set[str]] = {}
     stem = rel.rsplit(".", 1)[0]
     for fact in facts:
         kind = str(fact.get("kind") or "")

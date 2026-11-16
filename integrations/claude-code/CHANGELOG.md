@@ -10,10 +10,77 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.7]
+
+### Changed
+
+- **Keys are plugin options.** The Cognee API key, the LLM API key and the
+  embedding API key are options of the plugin (`/plugin`, Cognee Memory,
+  Configure options), kept in Claude Code's secure store. The plugin reads a key
+  nowhere else. `COGNEE_API_KEY`, `COGNEE_PRINCIPAL_API_KEY`, `LLM_API_KEY` and
+  `EMBEDDING_API_KEY` in the shell or in `~/.cognee/.env` are ignored, and
+  session start says so until the option is set. Everything that is not a key
+  (provider, model, dataset, tuning) still comes from `~/.cognee/.env`.
+- **The login is a pair of options.** A server without an API key is logged in
+  to with the login email and login password options. `COGNEE_USER_EMAIL`,
+  `COGNEE_USER_PASSWORD` and a `DEFAULT_USER_*` export are no longer read.
+- **No key in a variable or on disk.** Plugin processes no longer hand each other
+  the key in an environment variable, and the option is never written to
+  `api_key.json`. Only the key minted on the plugin's own local server is
+  cached, as before. The LLM and embedding keys exist in the environment of the
+  local server the plugin starts, and nowhere else.
+
+### Added
+
+- **Server URL option.** The Cognee server URL can be set in the options. A
+  `COGNEE_BASE_URL` in the shell or in `~/.cognee/.env` is used when it is empty.
+- **Relay for the skills' scripts.** Claude Code hands options to hooks only, so
+  a script a skill runs has no key. A hook starts a relay (`scripts/_relay.py`)
+  that runs the script as its own child and returns the output. It accepts only
+  the plugin's own scripts, on a Unix socket only the user can reach, or on a
+  loopback port with a one-time code where Unix sockets do not exist.
+
+- **Settings from `~/.cognee/.env`, each by its own name.** The file is no
+  longer copied into the plugin's environment as a whole. Each setting the
+  scripts read is handled by its own name, from a generated list
+  (`scripts/_env_names.py`). Anything else in the file (database, vector store
+  and other cognee settings) is handed to the local server and the installer
+  when the plugin starts them, and never enters the plugin's own environment.
+  A proxy or certificate setting for the hooks' own requests must now be
+  exported in the shell.
+- **The shell scripts hold no key.** `cognee-forget.sh` and
+  `cognee-index-repo.sh` no longer keep the key in a shell variable or pass it
+  on a command line: `scripts/_authed_request.py` sends each request.
+- **The redaction deny-list is a data file** (`scripts/capture_deny_paths.txt`).
+  If it cannot be read, every path is refused.
+
+### Upgrade note
+
+- Enter your keys once in the plugin's options. Until then Cognee Cloud is not
+  connected, and local mode runs on the Claude observer when it can.
+
 ## [1.8.6]
 
-Changes for the plugin directory's validator, on top of the restored 1.8.5. None changes
-what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK-1411).
+Changes for the plugin directory's validator, on top of the restored 1.8.5 (SDK-1411).
+The hooks module changes as described below, and `cognee-forget.sh env` is gone.
+
+### Changed
+
+- **The hooks module only draws.** `hooks/register.ts` starts no program, opens
+  no connection and writes no file. It reads the row's data, the dataset list
+  and the activity marker from files the hooks keep, and holds two values in its
+  own store.
+- **A dataset pick applies with the next message.** The picker and
+  `/cognee-dataset` save the pick; the prompt hook carries it out before it
+  recalls, and a toast reports the outcome. If a pick is not confirmed after two
+  messages the module says so and points at the `cognee-switch-datasets` skill.
+- **The fix dialog only explains.** Its **run doctor** button and its field for
+  saving a value are gone. Ask Claude to run `scripts/cognee-doctor.sh` instead.
+
+### Removed
+
+- **The module's `search` and `remember` tools** and the `tools` option. The
+  `cognee-search` and `cognee-remember` skills are the path for both.
 
 ### Changed
 

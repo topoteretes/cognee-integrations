@@ -84,7 +84,7 @@ def _runtime() -> dict:
         or os.environ.get("COGNEE_LOCAL_API_URL")
         or "http://localhost:8011"
     ).strip()
-    api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
+    api_key = ""
     session_id = ""
     dataset = _configured_dataset()
     dataset_ids = ""
@@ -398,4 +398,8 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     sys.exit(main(sys.argv[1:]))

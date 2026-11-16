@@ -183,7 +183,11 @@ def _check_llm_key(config: dict) -> None:
         from cognee.infrastructure.llm.config import get_llm_config
 
         cfg = get_llm_config()
-        key = str(getattr(cfg, "llm_api_key", "") or "").strip()
+        from _env_file import llm_key_option
+
+        # The LLM key option, as the server got it; else whatever cognee's own
+        # configuration holds (a ``.env`` the server loads by itself).
+        key = llm_key_option() or str(getattr(cfg, "llm_api_key", "") or "").strip()
         if not key:
             # Logged, not silent: this write is what puts ✕ (incorrect_llm_api_key) on the bar,
             # and tracking down an unexplained one cost real time.
@@ -198,7 +202,7 @@ def _check_llm_key(config: dict) -> None:
                 model=cfg.llm_model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,
-                api_key=cfg.llm_api_key,
+                api_key=key,
                 api_base=getattr(cfg, "llm_endpoint", None) or None,
                 custom_llm_provider=(getattr(cfg, "llm_provider", None) or None),
                 timeout=15,

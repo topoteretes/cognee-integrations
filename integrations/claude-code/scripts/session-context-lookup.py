@@ -1261,7 +1261,14 @@ def _apply_mod_pick() -> None:
     The module starts no program: it saves the pick in its store and this hook
     switches the session, so the message that follows a pick is answered from
     the new dataset. The picker's listing is refreshed here when it is old.
+    The relay the skills' scripts use is kept up from here as well.
     """
+    try:
+        import _relay
+
+        _relay.ensure_relay()
+    except Exception:
+        pass
     try:
         import _mod_bridge
 

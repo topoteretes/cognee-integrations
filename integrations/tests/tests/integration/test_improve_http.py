@@ -32,7 +32,7 @@ STATUS = "/api/v1/datasets/status"
 def pc(suite, isolated_modules, mock_server, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.setenv("COGNEE_API_KEY", "principal-key")
+    monkeypatch.setenv(suite.api_key_env, "principal-key")
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
     return common
 

@@ -230,9 +230,9 @@ type FixGuide = { title: string; what: string; steps: string[] }
 const FIX_GUIDES: Record<string, FixGuide> = {
   incorrect_cognee_api_key: {
     title: 'The memory server rejected the plugin\'s API key',
-    what: 'The key this plugin sends to the Cognee server (`COGNEE_API_KEY`) is missing, wrong or expired, so nothing can be recalled or saved.',
+    what: 'The key this plugin sends to the Cognee server (its Cognee API key option) is missing, wrong or expired, so nothing can be recalled or saved.',
     steps: [
-      '**Cloud:** put the API key from your Cognee Cloud account in `~/.cognee/.env` as `COGNEE_API_KEY=ck_…`. A key exported in your shell wins over the file.',
+      '**Cloud:** enter the API key from your Cognee Cloud account as the Cognee API key option: run `/plugin`, select Cognee Memory, then Configure options. A key in your shell or in `~/.cognee/.env` is not read.',
       '**Local:** delete `~/.cognee-plugin/api_key.json` and start a new session; the plugin mints a fresh key from the local server.',
       'With a plugin identity (`COGNEE_PLUGIN_IDENTITY`), run the doctor (ask Claude to run `scripts/cognee-doctor.sh` from this plugin): it says whether the cached identity credential was the one rejected.',
       'A new prompt tries the new key; a new session applies it everywhere.',
@@ -240,10 +240,10 @@ const FIX_GUIDES: Record<string, FixGuide> = {
   },
   incorrect_llm_api_key: {
     title: 'The local server cannot reach its LLM',
-    what: 'The Cognee server on this machine builds memory with an LLM, and the key it uses (`LLM_API_KEY`) is missing or the provider rejected it. The server itself is fine.',
+    what: 'The Cognee server on this machine builds memory with an LLM, and the key it uses (the LLM API key option) is missing or the provider rejected it. The server itself is fine.',
     steps: [
-      'Put a working provider key in `~/.cognee/.env` as `LLM_API_KEY=…` (and `LLM_PROVIDER` if not OpenAI).',
-      'Or use your Claude subscription instead: remove `LLM_API_KEY` from `~/.cognee/.env` and keep the `claude` CLI on PATH; the next session routes the server\'s LLM calls through it.',
+      'Enter a working provider key as the LLM API key option: run `/plugin`, select Cognee Memory, then Configure options. Set `LLM_PROVIDER` in `~/.cognee/.env` if it is not OpenAI.',
+      'Or use your Claude subscription instead: leave the LLM API key option empty and keep the `claude` CLI on PATH; the next session routes the server\'s LLM calls through it.',
       'Start a new session: the server reads its key at start.',
     ],
   },
@@ -251,7 +251,7 @@ const FIX_GUIDES: Record<string, FixGuide> = {
     title: 'Cloud mode is forced, but no server URL is configured',
     what: '`COGNEE_BACKEND=cloud` is exported in this shell, and no `COGNEE_BASE_URL` is set anywhere, so there is no server to talk to.',
     steps: [
-      'Put your Cognee Cloud URL in `~/.cognee/.env` as `COGNEE_BASE_URL=…`, and make sure `COGNEE_API_KEY` is set too.',
+      'Enter your Cognee Cloud URL and API key as this plugin\'s options: run `/plugin`, select Cognee Memory, then Configure options.',
       'Or go local for this terminal: `unset COGNEE_BACKEND`, then start a new session.',
     ],
   },
@@ -261,7 +261,7 @@ const FIX_GUIDES: Record<string, FixGuide> = {
     steps: [
       'Install one: `brew install python@3.12`, `uv python install 3.12`, pyenv, or python.org.',
       'Start a new session: the plugin builds its runtime under `~/.cognee-plugin/venv` and starts the server.',
-      'Or use Cognee Cloud instead, which needs no local Python: set `COGNEE_BASE_URL` and `COGNEE_API_KEY` in `~/.cognee/.env`.',
+      'Or use Cognee Cloud instead, which needs no local Python: enter the Cognee server URL and API key as this plugin\'s options (run `/plugin`, select Cognee Memory, then Configure options).',
     ],
   },
   unreachable: {

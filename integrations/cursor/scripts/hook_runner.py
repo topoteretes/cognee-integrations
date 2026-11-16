@@ -176,7 +176,7 @@ def main(argv: list) -> int:
         )
         return _report(script, summary, summary + ": " + sys.executable, stdout)
 
-    os.environ[RUNNER_ENV] = os.path.abspath(__file__)
+    os.environ["COGNEE_HOOK_RUNNER"] = os.path.abspath(__file__)
     sys.argv = [script, *argv[2:]]
     script_dir = os.path.dirname(script)
     if script_dir not in sys.path:

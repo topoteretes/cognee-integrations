@@ -77,12 +77,7 @@ def target() -> dict:
     # pinned to the tenant it started with.
     refresh_env_file()
     url = _local_api_url().rstrip("/")
-    key = (
-        os.environ.get("COGNEE_PRINCIPAL_API_KEY")
-        or load_config().get("api_key")
-        or load_cached_api_key(url)
-        or ""
-    )
+    key = load_config().get("api_key") or load_cached_api_key(url) or ""
     return {"base_url": url, "principal": hashlib.sha256(key.encode()).hexdigest()}
 
 
