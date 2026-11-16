@@ -148,10 +148,145 @@ def test_env_prints_exports_without_calling_server(
     suite, temp_home, mock_server, assert_clean_real_home
 ):
     result = run_forget(suite, "env", home=temp_home, service_url=mock_server.url, api_key="k-env")
+    assert mock_server.calls == []
+    if suite.name == "claude-code":
+        # The Claude Code helper never prints the key (SDK-1411): `env` is gone
+        # and the broader deletions are commands of their own.
+        assert result.returncode == 1
+        assert "k-env" not in result.stdout + result.stderr
+        return
     assert result.returncode == 0, result.stderr
     assert f"export COGNEE_BASE_URL={mock_server.url}" in result.stdout
     assert "export COGNEE_API_KEY=k-env" in result.stdout
+
+
+@pytest.fixture
+def claude(suite):
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: broader deletions go through `env` and a hand-written request")
+    return suite
+
+
+def test_forget_memory_keeps_raw_data(claude, temp_home, mock_server, assert_clean_real_home):
+    result = run_forget(
+        claude,
+        "forget-memory",
+        DEFAULT_DATASET_ID,
+        "--confirm-clear-memory",
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 0, result.stderr
+    call = mock_server.assert_called("POST", "/api/v1/forget")
+    assert call["json"] == {"datasetId": DEFAULT_DATASET_ID, "memoryOnly": True}
+    assert call["headers"].get("X-Api-Key") == "k"
+
+
+def test_forget_dataset_names_only_the_dataset(
+    claude, temp_home, mock_server, assert_clean_real_home
+):
+    result = run_forget(
+        claude,
+        "forget-dataset",
+        DEFAULT_DATASET_ID,
+        "--confirm-delete-dataset",
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 0, result.stderr
+    call = mock_server.assert_called("POST", "/api/v1/forget")
+    assert call["json"] == {"datasetId": DEFAULT_DATASET_ID}
+
+
+@pytest.mark.parametrize("command", ["forget-memory", "forget-dataset"])
+def test_broader_forget_refuses_a_non_uuid(
+    claude, temp_home, mock_server, assert_clean_real_home, command
+):
+    flag = {"forget-memory": "--confirm-clear-memory", "forget-dataset": "--confirm-delete-dataset"}
+    result = run_forget(
+        claude,
+        command,
+        'x", "everything": true, "y": "',
+        flag[command],
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 1
     assert mock_server.calls == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        # The single-document delete typed under the wrong command: the data id
+        # used to be dropped and the whole dataset deleted.
+        ("forget-dataset", DEFAULT_DATASET_ID, DEFAULT_DATA_ID),
+        ("forget-memory", DEFAULT_DATASET_ID, DEFAULT_DATA_ID),
+        # Truncated or without the typed confirmation.
+        ("forget-dataset", DEFAULT_DATASET_ID),
+        ("forget-memory", DEFAULT_DATASET_ID),
+        ("forget-dataset", DEFAULT_DATASET_ID, "--confirm-clear-memory"),
+        ("forget-dataset", DEFAULT_DATASET_ID, "--confirm-delete-dataset", "extra"),
+        # Every other command takes exactly its arguments.
+        ("forget", DEFAULT_DATASET_ID, DEFAULT_DATA_ID, "extra"),
+        ("raw", DEFAULT_DATASET_ID, DEFAULT_DATA_ID, "extra"),
+        ("data", DEFAULT_DATASET_ID, "extra"),
+        ("datasets", "extra"),
+    ],
+    ids=lambda a: " ".join(x[:8] for x in a),
+)
+def test_a_command_line_of_the_wrong_shape_sends_nothing(
+    claude, temp_home, mock_server, assert_clean_real_home, args
+):
+    result = run_forget(claude, *args, home=temp_home, service_url=mock_server.url, api_key="k")
+    assert result.returncode == 1, result.stderr
+    assert [c for c in mock_server.calls if c["path"].startswith("/api/v1/")] == []
+
+
+def test_a_failed_dataset_forget_is_reported(
+    claude, temp_home, mock_server, assert_clean_real_home
+):
+    mock_server.set_forget_status(500)
+    result = run_forget(
+        claude,
+        "forget-dataset",
+        DEFAULT_DATASET_ID,
+        "--confirm-delete-dataset",
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    # The trailer carries the status, which the skill reads as "not removed".
+    assert result.stdout.rstrip().endswith("HTTP 500")
+
+
+def test_forget_everything_needs_the_exact_flag(
+    claude, temp_home, mock_server, assert_clean_real_home
+):
+    for args in ((), ("--yes",), ("--confirm-delete-all", "extra")):
+        result = run_forget(
+            claude,
+            "forget-everything",
+            *args,
+            home=temp_home,
+            service_url=mock_server.url,
+            api_key="k",
+        )
+        assert result.returncode == 1, args
+    assert mock_server.calls == []
+    result = run_forget(
+        claude,
+        "forget-everything",
+        "--confirm-delete-all",
+        home=temp_home,
+        service_url=mock_server.url,
+        api_key="k",
+    )
+    assert result.returncode == 0, result.stderr
+    assert mock_server.assert_called("POST", "/api/v1/forget")["json"] == {"everything": True}
 
 
 def test_unknown_command_exits_1_with_usage(suite, temp_home, mock_server, assert_clean_real_home):

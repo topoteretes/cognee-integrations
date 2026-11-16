@@ -91,7 +91,7 @@ _TRUE = {"1", "true", "yes", "on"}
 
 def setting() -> str:
     """``auto`` (default), ``true`` or ``false``."""
-    raw = os.environ.get(SETTING_ENV, "").strip().lower()
+    raw = os.environ.get("COGNEE_LLM_OBSERVER", "").strip().lower()
     if raw in _FALSE:
         return "false"
     if raw in _TRUE:
@@ -265,13 +265,19 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _is_observer_key(key: str) -> bool:
-    return key == PLACEHOLDER_KEY or (bool(key) and key == observer_token(create=False))
-
-
 def llm_key_configured() -> bool:
-    key = os.environ.get("LLM_API_KEY", "").strip()
-    return bool(key) and not _is_observer_key(key)
+    """Whether the user gave the plugin an LLM key (the LLM key option)."""
+    from _env_file import llm_key_option
+
+    return bool(llm_key_option())
+
+
+def llm_key_ignored() -> bool:
+    """Whether an ``LLM_API_KEY`` was found in the shell or ~/.cognee/.env and
+    dropped, with the LLM key option still empty."""
+    from _env_file import ignored_key_names
+
+    return "LLM_API_KEY" in ignored_key_names() and not llm_key_configured()
 
 
 def server_dotenv_path() -> Path | None:
@@ -305,13 +311,21 @@ def server_dotenv_path() -> Path | None:
 
 
 def server_dotenv_values() -> dict:
+    """The settings in that file. A key's value is never read: ``LLM_API_KEY``
+    comes back as "set" when the file sets one, which is all the caller asks."""
     path = server_dotenv_path()
     if path is None:
         return {}
     try:
         from _env_file import parse_env_file
 
-        return parse_env_file(path)
+        named: list = []
+        # The shim's own token there (older builds wrote it) is not a user's key.
+        ours = (PLACEHOLDER_KEY, observer_token(create=False) or PLACEHOLDER_KEY)
+        values = parse_env_file(path, named, ours)
+        for name in named:
+            values[name] = "set"
+        return values
     except Exception:
         return {}
 
@@ -326,7 +340,7 @@ def llm_provider_configured() -> bool:
     provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
     if not provider:
         return False
-    if provider == "custom" and os.environ.get(ACTIVE_ENV_FLAG, "") == "1":
+    if provider == "custom" and os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1":
         return False
     return True
 
@@ -378,18 +392,24 @@ def resolve_observer(config: dict | None = None) -> dict:
         # A prior apply in this same process (or the bootstrap re-exec) stamped
         # the active flag, in which case the placeholder key/custom provider are
         # ours and not a user choice.
-        if os.environ.get(ACTIVE_ENV_FLAG, "") != "1":
+        if os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") != "1":
             if llm_key_configured():
                 result["reason"] = "llm_key_configured"
+                return result
+            # A key the user keeps in the shell or ~/.cognee/.env is no longer
+            # read, but it shows they chose a provider of their own: their
+            # datasets are built with that key's embedder, and the observer
+            # would switch the server to fastembed and bill their Claude
+            # subscription. Stay off until they enter the option (or force
+            # the observer with COGNEE_LLM_OBSERVER=true).
+            if llm_key_ignored():
+                result["reason"] = "llm_key_ignored"
                 return result
             if llm_provider_configured():
                 result["reason"] = "llm_provider_configured"
                 return result
             dotenv = server_dotenv_values()
-            dotenv_key = str(dotenv.get("LLM_API_KEY") or "").strip()
-            if (dotenv_key and not _is_observer_key(dotenv_key)) or str(
-                dotenv.get("LLM_PROVIDER") or ""
-            ).strip():
+            if dotenv.get("LLM_API_KEY") or str(dotenv.get("LLM_PROVIDER") or "").strip():
                 result["reason"] = "server_dotenv_configured"
                 result["dotenv"] = str(server_dotenv_path() or "")
                 return result
@@ -408,12 +428,22 @@ def resolve_observer(config: dict | None = None) -> dict:
     return result
 
 
+def observer_server_env() -> dict:
+    """What the local server needs to call the shim, for the server's own
+    environment: the shim's bearer token, which litellm sends as
+    ``Authorization: Bearer``. Empty when the observer is not in use."""
+    if os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") != "1":
+        return {}
+    return {"LLM_API_KEY": observer_token() or PLACEHOLDER_KEY}
+
+
 def apply_observer_env(decision: dict) -> dict:
     """Point cognee at the shim. Returns the variables written (for logging).
 
     Called in the SessionStart process BEFORE the cognee install and server
     boot: ``_detect_required_extras`` reads ``EMBEDDING_PROVIDER`` to add the
-    fastembed extra, and the server inherits ``os.environ`` at spawn. The LLM
+    fastembed extra, and the server inherits ``os.environ`` at spawn (plus the
+    shim's token, ``observer_server_env``). The LLM
     variables are overwritten — an ``LLM_MODEL`` left in the env file without
     a key would not work anyway — while the embedding ones are ``setdefault``,
     so a user who configured their own (say Ollama) embedder keeps it.
@@ -424,20 +454,21 @@ def apply_observer_env(decision: dict) -> dict:
         "LLM_PROVIDER": "custom",
         "LLM_MODEL": COGNEE_MODEL,
         "LLM_ENDPOINT": decision.get("endpoint") or (base_url() + "/v1"),
-        # The shim's bearer token: litellm sends it as ``Authorization: Bearer``.
-        "LLM_API_KEY": observer_token() or PLACEHOLDER_KEY,
         ACTIVE_ENV_FLAG: "1",
     }
-    for key, value in applied.items():
-        os.environ[key] = value
-    for key, value in (
-        ("EMBEDDING_PROVIDER", "fastembed"),
-        ("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-        ("EMBEDDING_DIMENSIONS", DEFAULT_EMBEDDING_DIMENSIONS),
-    ):
-        if not os.environ.get(key, "").strip():
-            os.environ[key] = value
-            applied[key] = value
+    # Each variable by its own name, so the plugin's files show what it sets.
+    os.environ["LLM_PROVIDER"] = applied["LLM_PROVIDER"]
+    os.environ["LLM_MODEL"] = applied["LLM_MODEL"]
+    os.environ["LLM_ENDPOINT"] = applied["LLM_ENDPOINT"]
+    os.environ["COGNEE_LLM_OBSERVER_ACTIVE"] = "1"
+    if not os.environ.get("EMBEDDING_PROVIDER", "").strip():
+        os.environ["EMBEDDING_PROVIDER"] = applied["EMBEDDING_PROVIDER"] = "fastembed"
+    if not os.environ.get("EMBEDDING_MODEL", "").strip():
+        os.environ["EMBEDDING_MODEL"] = applied["EMBEDDING_MODEL"] = DEFAULT_EMBEDDING_MODEL
+    if not os.environ.get("EMBEDDING_DIMENSIONS", "").strip():
+        os.environ["EMBEDDING_DIMENSIONS"] = applied["EMBEDDING_DIMENSIONS"] = (
+            DEFAULT_EMBEDDING_DIMENSIONS
+        )
     return applied
 
 
@@ -451,7 +482,7 @@ def is_active() -> bool:
     the fallback that watcher would run the litellm key check against a launch
     that has no key by design and put a false ✕ on the status line.
     """
-    if os.environ.get(ACTIVE_ENV_FLAG, "") == "1":
+    if os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1":
         return True
     try:
         from _plugin_common import _read_map_record, get_session_key
@@ -549,7 +580,9 @@ def ensure_observer_running(
     except Exception:
         log_fh = subprocess.DEVNULL
     observer_token()  # the shim reads it at start; make sure it exists first
-    env = os.environ.copy()
+    from _proc import child_env
+
+    env = child_env()
     if decision.get("claude"):
         env["COGNEE_OBSERVER_CLAUDE"] = str(decision["claude"])
     args = [
@@ -616,7 +649,11 @@ def describe(decision: dict | None = None) -> str:
         "disabled": f"off ({SETTING_ENV}=false)",
         "cloud_mode": "off (cloud mode: the remote server owns its LLM key)",
         "managed_endpoint": "off (COGNEE_MANAGED_ENDPOINT: the deployment owns its LLM key)",
-        "llm_key_configured": "off (LLM_API_KEY is configured)",
+        "llm_key_configured": "off (the LLM API key option is set)",
+        "llm_key_ignored": (
+            "off (an LLM_API_KEY is set in your shell or ~/.cognee/.env but no longer "
+            "read: enter it in the plugin's options)"
+        ),
         "llm_provider_configured": "off (LLM_PROVIDER is configured)",
         "server_dotenv_configured": (
             f"off (the server's {decision.get('dotenv') or '.env'} configures its LLM)"

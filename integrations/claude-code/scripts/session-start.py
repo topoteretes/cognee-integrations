@@ -44,6 +44,7 @@ from _plugin_common import (
     _VENV_READY_MARKER,
     PRESENCE_ABSENT,
     PRESENCE_READY,
+    _api_key,
     _https_context,
     _is_loopback_host,
     _reexec_into_venv,
@@ -64,12 +65,15 @@ from _plugin_common import (
     server_ready_hint,
     service_url_is_local,
     set_launch_base_url,
+    set_process_api_key,
+    set_process_principal_key,
     set_session_key,
     touch_activity,
+    user_cloud_key,
     write_connection_state,
     write_server_pidfile,
 )
-from _proc import find_host_ancestor_windows
+from _proc import child_env, find_host_ancestor_windows
 from _proc import pid_alive as _pid_alive
 from config import (
     _cloud_http_request,
@@ -184,14 +188,26 @@ _PROVIDER_EXTRAS = (
 )
 
 
+def _provider_settings() -> dict:
+    """The provider settings above, each read by its own name."""
+    return {
+        "DB_PROVIDER": os.environ.get("DB_PROVIDER", ""),
+        "VECTOR_DB_PROVIDER": os.environ.get("VECTOR_DB_PROVIDER", ""),
+        "GRAPH_DATABASE_PROVIDER": os.environ.get("GRAPH_DATABASE_PROVIDER", ""),
+        "EMBEDDING_PROVIDER": os.environ.get("EMBEDDING_PROVIDER", ""),
+        "LLM_PROVIDER": os.environ.get("LLM_PROVIDER", ""),
+    }
+
+
 def _detect_required_extras() -> list:
     """Detect the cognee extras actually needed from the configured backend
     providers, so the install below brings in exactly what's needed instead of
     either a bare install (missing drivers, #232) or unconditionally installing
     every possible extra regardless of what's actually configured."""
     extras: list[str] = []
+    settings = _provider_settings()
     for env_var, mapping in _PROVIDER_EXTRAS:
-        value = os.environ.get(env_var, "").strip().lower()
+        value = settings.get(env_var, "").strip().lower()
         extra = mapping.get(value)
         if extra and extra not in extras:
             extras.append(extra)
@@ -307,6 +323,136 @@ def _refuse_fallback_venv() -> None:
         )
     except Exception as exc:
         hook_log("host_python_marker_write_failed", {"error": str(exc)[:200]})
+
+
+_KEY_OPTIONS_HOW = "Run /plugin, select Cognee Memory, then Configure options."
+_KEY_OPTIONS_NOTICE = Path.home() / ".cognee-plugin" / "claude-code" / "key-options-notice.json"
+
+
+def _key_options_message() -> str:
+    """What to tell a user whose keys are still in the shell or ~/.cognee/.env.
+
+    The plugin takes its keys from its options and reads them nowhere else, and
+    a plugin cannot fill in its own options, so the user has to enter them once.
+    Only the names found are used here, never a value.
+
+    * Cloud with no Cognee API key option: said at every session start, since
+      the plugin cannot work until the option is set.
+    * Local mode with an ignored ``LLM_API_KEY`` and no LLM key option: said at
+      every session start, since local memory is paused until the user enters
+      the option or chooses the observer (``_observer.llm_key_ignored``).
+    * Any other key or login that is ignored while its option is empty: said
+      once per set of names. The names are recorded as seen only once the
+      message is on its way to the user (``_commit_key_options_notice``).
+    """
+    from _env_file import (
+        cloud_key_option,
+        embedding_key_option,
+        ignored_key_names,
+        llm_key_option,
+        login_email_option,
+        login_password_option,
+    )
+
+    ignored = ignored_key_names()
+    lines = []
+    config = load_config()
+    cloud_names = [n for n in ignored if n in ("COGNEE_API_KEY", "COGNEE_PRINCIPAL_API_KEY")]
+    url = str(config.get("base_url") or "")
+    needs_cloud_key = is_cloud_mode(config) and not cloud_key_option()
+    if needs_cloud_key and (cloud_names or not service_url_is_local(url)):
+        line = (
+            "Cognee is not connected: this plugin takes your Cognee API key from its "
+            "options. " + _KEY_OPTIONS_HOW
+        )
+        if cloud_names:
+            line += " The %s in your shell or ~/.cognee/.env is no longer read." % " and ".join(
+                cloud_names
+            )
+        lines.append(line)
+    paused = _llm_paused_by_ignored_key(config, ignored, llm_key_option())
+    if paused:
+        lines.append(
+            "Cognee no longer reads LLM_API_KEY from your shell or ~/.cognee/.env, so local "
+            "memory is paused. Enter the key in this plugin's options (%s) to continue with "
+            "the same datasets. Or set COGNEE_LLM_OBSERVER=true to run on your Claude "
+            "subscription instead; that uses a different embedder, so switch to a new "
+            "dataset." % _KEY_OPTIONS_HOW.rstrip(".")
+        )
+    local_names = [
+        name
+        for name, option in (
+            ("LLM_API_KEY", llm_key_option() or paused),
+            ("EMBEDDING_API_KEY", embedding_key_option()),
+            ("COGNEE_USER_EMAIL", login_email_option()),
+            ("COGNEE_USER_PASSWORD", login_password_option()),
+        )
+        if name in ignored and not option
+    ]
+    if local_names:
+        try:
+            seen = json.loads(_KEY_OPTIONS_NOTICE.read_text(encoding="utf-8")).get("names")
+        except Exception:
+            seen = None
+        if seen != local_names:
+            lines.append(
+                "Cognee no longer reads %s from your shell or ~/.cognee/.env: it takes "
+                "them from this plugin's options. %s"
+                % (" and ".join(local_names), _KEY_OPTIONS_HOW)
+            )
+            _pending_notice["names"] = local_names
+    return "\n\n".join(lines)
+
+
+#: The once-only names composed into the last message, recorded as seen by
+#: ``_commit_key_options_notice`` once that message is in the hook's output.
+_pending_notice: dict = {}
+
+
+def _llm_paused_by_ignored_key(config: dict, ignored: list, option: str) -> bool:
+    """Local mode, an ``LLM_API_KEY`` dropped, no LLM key option, and the
+    observer not forced on: the server has no LLM until the user chooses."""
+    if option or "LLM_API_KEY" not in ignored or is_cloud_mode(config):
+        return False
+    try:
+        from _observer import setting
+
+        return setting() != "true"
+    except Exception:
+        return True
+
+
+def _commit_key_options_notice() -> None:
+    names = _pending_notice.pop("names", None)
+    if not names:
+        return
+    try:
+        _KEY_OPTIONS_NOTICE.parent.mkdir(parents=True, exist_ok=True)
+        _KEY_OPTIONS_NOTICE.write_text(json.dumps({"names": names}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _apply_key_options_notice(output: dict) -> dict:
+    """Append ``_key_options_message`` to the hook's systemMessage."""
+    try:
+        message = _key_options_message()
+    except Exception as exc:
+        hook_log("key_options_notice_failed", {"error": str(exc)[:200]})
+        return output
+    if not message:
+        return output
+    hook_log("key_options_notice", {"chars": len(message)})
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("systemMessage") or "").strip()
+    hso["systemMessage"] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    _commit_key_options_notice()
+    return result
 
 
 def _apply_key_limit_warning(output: dict) -> dict:
@@ -573,13 +719,20 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
         installed_via_uv = False
 
         if uv:
-            env = os.environ.copy()
+            env = child_env()
+            from _env_file import passthrough_env
+
+            # Installer settings from ~/.cognee/.env (an index URL, say).
+            for name, value in passthrough_env().items():
+                if name not in env:
+                    env[name] = value
             # uv must never fetch an interpreter: the runtime is built from what
             # is already installed (no binaries downloaded at setup). The install
             # dir is passed only so an interpreter an earlier plugin version put
             # there is still discovered.
             env["UV_PYTHON_DOWNLOADS"] = "never"
-            env.setdefault("UV_PYTHON_INSTALL_DIR", str(_UV_PYTHON_DIR))
+            if not os.environ.get("UV_PYTHON_INSTALL_DIR", ""):
+                env["UV_PYTHON_INSTALL_DIR"] = str(_UV_PYTHON_DIR)
             try:
                 if not venv_present:
                     subprocess.run(
@@ -823,7 +976,24 @@ def _ensure_local_server_running(
             _ready()
             return
 
-        server_env = os.environ.copy()
+        server_env = child_env()
+        # The server's own keys: the LLM and embedding key options, or the
+        # observer shim's token. They exist in the server's environment only.
+        from _env_file import passthrough_env, server_key_env
+
+        # Settings in ~/.cognee/.env that are the server's own (database,
+        # vector store, ...): given to the server, where the shell exports no
+        # value of the same name.
+        for name, value in passthrough_env().items():
+            if name not in server_env:
+                server_env[name] = value
+        server_env.update(server_key_env())
+        try:
+            from _observer import observer_server_env
+
+            server_env.update(observer_server_env())
+        except Exception:
+            pass
         # Data-dir pins + CACHING are already in os.environ via apply_cognee_env(),
         # so the copy carries them to the server process.
         # Run in agent mode: the server tears itself down once all registered
@@ -833,11 +1003,13 @@ def _ensure_local_server_running(
         # DEFAULT_USER_PASSWORD is set, and never rewrites a stored password. Hand
         # the server the well-known local credentials so a fresh install gets the
         # same default user it always had and the owner-key bootstrap below can log
-        # in. The server binds localhost only. setdefault: an operator's own
-        # DEFAULT_USER_* export wins. COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD still
-        # pick the user the plugin logs in as; a non-default user must already exist.
-        server_env.setdefault("DEFAULT_USER_EMAIL", _LOCAL_DEFAULT_USER_EMAIL)
-        server_env.setdefault("DEFAULT_USER_PASSWORD", _LOCAL_DEFAULT_USER_PASSWORD)
+        # in. The server binds localhost only. The login options, when set, name
+        # that user instead: the server creates it and the plugin logs in as it.
+        login = load_config()
+        server_env["DEFAULT_USER_EMAIL"] = str(login.get("user_email") or _LOCAL_DEFAULT_USER_EMAIL)
+        server_env["DEFAULT_USER_PASSWORD"] = str(
+            login.get("user_password") or _LOCAL_DEFAULT_USER_PASSWORD
+        )
         # The server's console output must not inherit this worker's stdio
         # (bootstrap.log — that is how it reached gigabytes: every line the
         # server printed for as long as it ran), but it must not vanish either:
@@ -867,8 +1039,8 @@ def _ensure_local_server_running(
             port,
             server_proc.pid,
             version=_PINNED_COGNEE_VERSION,
-            llm_observer=server_env.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1",
-            coding_memory=server_env.get("DISTILLATION_MODE", "").strip().lower() == "coding",
+            llm_observer=os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1",
+            coding_memory=os.environ.get("DISTILLATION_MODE", "").strip().lower() == "coding",
         )
 
         health_deadline = time.monotonic() + health_timeout
@@ -937,14 +1109,18 @@ def _login_failure_message(status: int, body: str) -> str:
             f"{head} The server's default user has no password: cognee >= 1.6.0 "
             "creates none unless the server is started with DEFAULT_USER_PASSWORD set. "
             "Start the server with DEFAULT_USER_PASSWORD set to the same value as "
-            "COGNEE_USER_PASSWORD, or set COGNEE_API_KEY to skip the login."
+            "this plugin's login password option, or set the Cognee API key option "
+            "to skip the login."
         )
     if status == 400 and _BAD_CREDENTIALS_MARKER in body:
         return (
-            f"{head} The server rejected COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD; point "
-            "them at a user that exists on that server, or set COGNEE_API_KEY."
+            f"{head} The server rejected this plugin's login email and password options; point "
+            "them at a user that exists on that server, or set the Cognee API key option."
         )
-    return f"{head} Set COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD correctly, or set COGNEE_API_KEY."
+    return (
+        f"{head} Set this plugin's login email and password options correctly, "
+        "or set the Cognee API key option."
+    )
 
 
 async def _login_default_user_for_owner_api_key(service_url: str, config: dict) -> str:
@@ -1013,8 +1189,8 @@ def _resolve_agent_name(config: dict, cwd: str) -> str:
 async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
     """Resolve the PRINCIPAL key for this deployment.
 
-    Order: env ``COGNEE_API_KEY`` -> single cached key -> mint once from the
-    default user (and cache it).
+    Order: the Cognee API key option -> the key cached for the plugin's own
+    server -> mint once from the default user (and cache it).
 
     The provisioned plugin-agent key is explicitly NOT a principal: earlier
     steps in this same process may have stamped it into the env / config (see
@@ -1028,11 +1204,11 @@ async def _resolve_single_principal_key(service_url: str, config: dict) -> str:
     )
 
     agent_key = load_cached_agent_key(service_url)
-    api_key = str(config.get("api_key", "") or os.environ.get("COGNEE_API_KEY", "")).strip()
+    api_key = str(config.get("api_key", "") or user_cloud_key(service_url)).strip()
     if agent_key and api_key == agent_key:
         api_key = ""
     if not api_key:
-        api_key = os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or load_cached_api_key(service_url)
+        api_key = load_cached_api_key(service_url)
     if not api_key:
         api_key = await _login_default_user_for_owner_api_key(service_url, config)
         if api_key:
@@ -1229,7 +1405,7 @@ async def _ensure_agent_credentials_and_register(
     if not principal_key:
         return "", "", "", False
 
-    os.environ["COGNEE_PRINCIPAL_API_KEY"] = principal_key
+    set_process_principal_key(principal_key)
     agent_key = await _ensure_plugin_identity(service_url, config, principal_key)
 
     # Shared agent memory: wire the agent into the user's shared role and pin
@@ -1284,7 +1460,7 @@ async def _ensure_agent_credentials_and_register(
         agent_key, shared = _wire(agent_key)
     api_key = agent_key or principal_key
 
-    os.environ["COGNEE_API_KEY"] = api_key
+    set_process_api_key(api_key)
     config["api_key"] = api_key
 
     # The effective identity's user id (best-effort) — used for dataset
@@ -1345,7 +1521,7 @@ async def _ensure_agent_credentials_and_register(
         if replacement:
             hook_log("plugin_identity_reprovisioned", {"after": "auth_rejected"})
             agent_key = api_key = replacement
-            os.environ["COGNEE_API_KEY"] = api_key
+            set_process_api_key(api_key)
             config["api_key"] = api_key
             user_id = await _user_id_via_api(service_url, api_key)
             registered, registration = await _register()
@@ -1381,7 +1557,7 @@ async def _ensure_agent_credentials_and_register(
                 "dataset_ids": [],
             }
             set_launch_dataset_ids(session_key, "", [])
-            os.environ["COGNEE_API_KEY"] = api_key
+            set_process_api_key(api_key)
             config["api_key"] = api_key
             user_id = await _user_id_via_api(service_url, api_key)
             registered, registration = await _register()
@@ -1472,9 +1648,9 @@ def _spawn_idle_watcher(
         log_fh = subprocess.DEVNULL
 
     try:
-        env = os.environ.copy()
+        env = child_env()
         if session_key:
-            env["COGNEE_SESSION_KEY"] = session_key
+            env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -1606,12 +1782,11 @@ def _spawn_exit_watcher(
         log_fh = subprocess.DEVNULL
 
     try:
-        env = os.environ.copy()
-        # Credentials must not be serialized into process arguments.
-        if api_key:
-            env["COGNEE_API_KEY"] = api_key
+        # The watcher works its key out for itself (the option, or the cached
+        # one): no key travels in arguments or in the environment.
+        env = child_env()
         if session_key:
-            env["COGNEE_SESSION_KEY"] = session_key
+            env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
             [sys.executable, str(_EXIT_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -1727,9 +1902,9 @@ def _spawn_bootstrap(
         hook_log("bootstrap_log_open_failed", {"error": str(exc)[:200]})
         log_fh = subprocess.DEVNULL
     try:
-        env = os.environ.copy()
+        env = child_env()
         if session_key:
-            env["COGNEE_SESSION_KEY"] = session_key
+            env["COGNEE_SESSION_REF"] = session_key
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _BOOTSTRAP_ARG, json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -1954,7 +2129,7 @@ async def _run_heavy(
         code_outcome = autoindex_on_session_start(
             cwd,
             service_url,
-            os.environ.get("COGNEE_API_KEY", ""),
+            _api_key(),
             is_local_server=service_url_is_local(service_url),
         )
         if code_outcome:
@@ -2002,7 +2177,7 @@ async def _bootstrap_session(bootstrap: dict) -> None:
     dataset = str(bootstrap.get("dataset", "") or get_dataset(config))
     agent_session_name = str(bootstrap.get("agent_session_name", "") or session_id)
     if session_key:
-        os.environ["COGNEE_SESSION_KEY"] = session_key
+        os.environ["COGNEE_SESSION_REF"] = session_key
     if session_id:
         os.environ["COGNEE_SESSION_ID"] = session_id
     service_url = _with_scheme(bootstrap.get("base_url", "") or _LOCAL_SERVICE_URL)
@@ -2244,7 +2419,7 @@ def _observer_note(observer: dict) -> str:
             )
         else:
             lines.append(
-                "To use a provider key instead, set LLM_API_KEY in ~/.cognee/.env; "
+                "To use a provider key instead, set the LLM API key option of this plugin; "
                 "COGNEE_LLM_OBSERVER=false turns the observer off."
             )
         if not observer.get("shim_running"):
@@ -2581,7 +2756,6 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     # _ensure_local_server_running), so connecting to an already-running server
     # never claims ownership of its teardown.
     configured_url = _with_scheme(str(config.get("base_url", "") or "").strip())
-    api_key = str(config.get("api_key", "") or "").strip()
     # Forced cloud (backend switch) with no URL configured: there is nothing to
     # boot and nothing to fall back to — keep the target empty so no local
     # server is spawned, let the connection attempt fail, and let the status
@@ -2590,8 +2764,6 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     target_url = configured_url or ("" if forced_cloud_unconfigured else _LOCAL_SERVICE_URL)
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
-    if api_key:
-        os.environ["COGNEE_API_KEY"] = api_key
 
     # Claude observer: local mode with no LLM key of its own runs the server's
     # LLM calls through Claude Code (`claude -p --safe-mode`) behind a loopback
@@ -2625,7 +2797,7 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     if not session_key:
         # The mid-bootstrap venv re-exec (_run_heavy) replays this script after
         # stdin was already consumed, so the payload is gone — but the pre-exec
-        # run exported COGNEE_SESSION_KEY, which execv preserves.
+        # run exported COGNEE_SESSION_REF, which execv preserves.
         session_key = get_session_key()
         if session_key:
             session_source = "env_session_key"
@@ -2641,7 +2813,7 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
                 "systemMessage": "Cognee Memory: session key missing in SessionStart payload.",
             }
         }
-    os.environ["COGNEE_SESSION_KEY"] = session_key
+    os.environ["COGNEE_SESSION_REF"] = session_key
     if payload.get("source") in {"clear", "compact"}:
         from _injection_ledger import reset as reset_injection_ledger
         from _injection_ledger import session_dir as ledger_dir
@@ -3211,6 +3383,7 @@ def main():
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     output = _apply_key_limit_warning(output)
+    output = _apply_key_options_notice(output)
     if coding:
         output = _coding_session_start(output, payload)
     else:
@@ -3268,5 +3441,34 @@ def _coding_session_start(output: dict, payload: dict) -> dict:
     return result
 
 
+def _prepare_mod_files() -> None:
+    """Write what the hooks module draws from, at the end of every session start.
+
+    The module starts no program: its status row comes from a file the hooks
+    keep, and its dataset picker from another. Whatever path session start
+    took (local, Cloud, a boot handed to the worker), the row's data is
+    written here, and the datasets are listed in the background so the hook
+    does not wait for the server.
+    """
+    try:
+        import _relay
+
+        _relay.ensure_relay()
+    except Exception:
+        pass
+    try:
+        import _mod_bridge
+
+        key = get_session_key()
+        if key:
+            _mod_bridge.refresh_status(key)
+            _mod_bridge.refresh_listing_in_background(key)
+    except Exception as exc:
+        hook_log("mod_listing_start_failed", {"error": str(exc)[:200]})
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        _prepare_mod_files()

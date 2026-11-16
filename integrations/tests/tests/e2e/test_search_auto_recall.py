@@ -42,7 +42,7 @@ def _launch(suite, home, *, pinned: bool, shared: bool = False) -> dict:
     sessions = home / ".cognee-plugin" / suite.state_subdir / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / f"{key}.json").write_text(json.dumps(record), encoding="utf-8")
-    return {"COGNEE_SESSION_KEY": key}
+    return {"COGNEE_SESSION_KEY": key, "COGNEE_SESSION_REF": key}
 
 
 def _run(suite, home, service_url, extra):
@@ -153,3 +153,48 @@ def test_remember_with_auto_only_in_the_env_file_saves_to_the_default_dataset(
     assert result.returncode == 0, result.stderr
     form = mock_server.assert_called("POST", "/api/v1/remember")["form"]
     assert form.get("datasetName") == "agent_sessions"
+
+
+def _run_with(suite, home, service_url, extra, *args):
+    script = suite.scripts_dir / "cognee-search.sh"
+    env = build_env(suite, home, service_url=service_url, api_key="k", extra=extra)
+    return subprocess.run(
+        [BASH, str(script), "what did we decide", "5", *args],
+        env=env,
+        cwd=str(home),
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+
+
+def test_category_filters_a_graph_search_by_node_set(suite, temp_home, mock_server):
+    """Claude Code (SDK-1411): the category filter is a flag, so no skill sends a request."""
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: the category filter is a hand-written request in the skill")
+    extra = _launch(suite, temp_home, pinned=False)
+    result = _run_with(suite, temp_home, mock_server.url, extra, "--category", "project_docs")
+    assert result.returncode == 0, result.stderr
+    body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
+    assert body["scope"] == ["graph"]
+    assert body["node_name"] == ["project_docs"]
+
+
+def test_category_is_refused_when_unknown_or_with_code(suite, temp_home, mock_server):
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: no --category flag")
+    extra = _launch(suite, temp_home, pinned=False)
+    for args in (("--category", "secrets"), ("--category", "project_docs", "--code")):
+        result = _run_with(suite, temp_home, mock_server.url, extra, *args)
+        assert result.returncode == 1, args
+    assert mock_server.calls == []
+
+
+def test_category_search_has_no_cli_fallback(suite, temp_home):
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: no --category flag")
+    extra = _launch(suite, temp_home, pinned=False)
+    result = _run_with(suite, temp_home, UNREACHABLE, extra, "--category", "user_context")
+    assert result.returncode == 1
+    assert "server unreachable" in result.stderr

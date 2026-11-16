@@ -35,14 +35,11 @@ Run **one** broad search via the wrapper and answer from it. It queries the **ru
 
 **Do not fan out into many targeted calls.** One broad search plus the context the `UserPromptSubmit` hook already injects on every turn is enough — multiple calls just add latency and (un-allowlisted) permission prompts for the user. Memory is read from the knowledge graph (and the code graph via `--code`) only; there is no session-cache search.
 
-**Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm directly. Category filtering uses `node_name` (the CLI doesn't expose it):
+**Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm with one more wrapper call. A category filter is a flag:
 ```bash
-curl -s -X POST "${COGNEE_BASE_URL:-http://localhost:8011}/api/v1/recall" \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY:-}" \
-  -d '{"query": "<query>", "top_k": 10, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"]}'
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --category project_docs
 ```
-(For a local server `COGNEE_API_KEY` is unused; an empty value is fine.)
+Send no request of your own: the wrapper resolves the key and never prints it.
 
 ## The server is the source of truth (read this before reporting "not found")
 

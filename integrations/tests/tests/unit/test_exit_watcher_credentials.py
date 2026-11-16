@@ -30,12 +30,19 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
     assert "api_key" not in bootstrap
     assert "watcher-test-key" not in " ".join(argv)
     assert "inherited-test-key" not in " ".join(argv)
-    assert popen.call_args.kwargs["env"]["COGNEE_API_KEY"] == (explicit_key or "inherited-test-key")
+    env = popen.call_args.kwargs["env"]
+    if suite.api_key_env == "COGNEE_API_KEY":
+        assert env["COGNEE_API_KEY"] == (explicit_key or "inherited-test-key")
+    else:
+        # claude-code hands the watcher no key: it works its own out from the
+        # plugin option, so the key it was given travels nowhere.
+        assert "watcher-test-key" not in env.values()
 
 
 def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, monkeypatch):
     watcher = hook_module(suite, "exit-watcher.py")
-    monkeypatch.setenv("COGNEE_API_KEY", "environment-test-key")
+    monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
+    monkeypatch.setenv(suite.api_key_env, "environment-test-key")
     monkeypatch.setattr(
         watcher.sys,
         "argv",

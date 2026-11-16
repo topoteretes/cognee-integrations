@@ -17,7 +17,7 @@ Usage:
             With --file, positional <content> is not required.
 
 Configuration:
-  Resolves auth from env/api_key.json.
+  Resolves auth the way the hooks do (the plugin option, or the local server's cached key).
   Dataset comes from this launch's record (follows a dataset switch), then
   COGNEE_PLUGIN_DATASET, then agent_sessions.
   Falls back to cognee-cli only if the server is unreachable.
@@ -49,7 +49,7 @@ def _runtime() -> dict:
         or os.environ.get("COGNEE_LOCAL_API_URL")
         or "http://localhost:8011"
     ).strip()
-    api_key = (os.environ.get("COGNEE_API_KEY") or "").strip() or _cached_api_key(service_url)
+    api_key = ""
     dataset = _configured_dataset()
     dataset_id = ""
     # The launch record wins (dataset chosen with switch-dataset.py, its
@@ -72,6 +72,7 @@ def _runtime() -> dict:
             os.environ.pop("COGNEE_PLUGIN_IN_VENV", None)
         else:
             os.environ["COGNEE_PLUGIN_IN_VENV"] = previous
+    api_key = api_key or _cached_api_key(service_url)
     return {
         "service_url": service_url,
         "api_key": api_key,
@@ -210,4 +211,8 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     sys.exit(main(sys.argv[1:]))

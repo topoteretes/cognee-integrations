@@ -265,11 +265,11 @@ def _active_base_url() -> str:
     own to compare, a marker written for someone else's *cloud* tenant was accepted by
     a *local* session. Defaulting here is what gives that guard teeth.
     """
-    for var in ("COGNEE_LOCAL_API_URL", "COGNEE_BASE_URL"):
-        url = os.environ.get(var, "").strip()
-        if url:
-            return url.rstrip("/")
-    return _DEFAULT_LOCAL_BASE_URL
+    url = (
+        os.environ.get("COGNEE_LOCAL_API_URL", "").strip()
+        or os.environ.get("COGNEE_BASE_URL", "").strip()
+    )
+    return url.rstrip("/") if url else _DEFAULT_LOCAL_BASE_URL
 
 
 def _path_safe(session_id: str) -> bool:
@@ -486,19 +486,11 @@ def _running_plugin_version() -> str:
     install path is version-pinned (``.../cognee-memory/<version>/scripts/``), so
     this file's own location identifies the running version.
     """
-    candidates = []
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
-    if root:
-        candidates.append(Path(root) / ".claude-plugin" / "plugin.json")
-    candidates.append(Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json")
-    for path in candidates:
-        try:
-            version = str(json.loads(path.read_text(encoding="utf-8")).get("version") or "").strip()
-            if version:
-                return version
-        except Exception:
-            continue
-    return ""
+    try:
+        from _version import PLUGIN_VERSION
+    except Exception:
+        return ""
+    return str(PLUGIN_VERSION or "").strip()
 
 
 def _parse_semver(value: str):
@@ -689,12 +681,45 @@ _ACTIVE_LABELS = {
 def _band_draws_row(session_id: str) -> bool:
     """True when the hooks module draws this session's row above the prompt.
 
-    Only this session's marker counts: a terminal without the module (an older
-    Claude Code, ``--safe-mode``, a managed org) keeps its status line.
+    The module records that in its own store (``band:<session>``); see
+    ``_mod_bridge``. Only this session's entry counts: a terminal without the
+    module (an older Claude Code, ``--safe-mode``, a managed org) keeps its
+    status line. A marker file from an older module is honoured too.
     """
     if not session_id or not _path_safe(session_id):
         return False
-    return (_BAND_DIR / f"{session_id}.json").is_file()
+    if (_BAND_DIR / f"{session_id}.json").is_file():
+        return True
+    try:
+        import _mod_bridge
+
+        return _mod_bridge.band_drawn(session_id)
+    except Exception:
+        return False
+
+
+_STATUS_DIR = _SHARED_ROOT / "claude-code" / "status"
+
+
+def write_status(session_id: str) -> None:
+    """Save the row's data where the hooks module reads it. Never raises.
+
+    The module starts no program, so it cannot ask for a snapshot: the hooks
+    (through ``_mod_bridge.refresh_status``) and every run of this renderer as
+    the settings status line keep ``status/<session>.json`` current instead.
+    """
+    if not session_id or not _path_safe(session_id):
+        return
+    try:
+        snapshot = _snapshot(session_id, enabled=True)
+        snapshot["at"] = time.time()
+        _STATUS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _STATUS_DIR / f"{session_id}.json"
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(snapshot), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 def _phase_marker(session_id: str) -> dict:
@@ -1303,6 +1328,9 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         "activity": activity,
         "update": update,
         "text": line,
+        # The hooks module picks its purple from this, so it reads neither the
+        # theme override nor Claude Code's settings itself.
+        "light": _light_theme(),
     }
 
 
@@ -1341,6 +1369,9 @@ def main() -> None:
             # entry and render nothing so the line disappears.
             _evict_own_statusline()
             return
+        # Each run as the settings status line also refreshes the file the
+        # hooks module draws its row from.
+        write_status(session_id)
         if as_json:
             sys.stdout.write(json.dumps(_snapshot(session_id, enabled=True)))
             return

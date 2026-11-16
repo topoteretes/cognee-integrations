@@ -137,7 +137,7 @@ def build_env(
         env["COGNEE_BASE_URL"] = service_url
         env.setdefault("COGNEE_PLATFORM_API_URL", service_url)
     if api_key is not None:
-        env["COGNEE_API_KEY"] = api_key
+        env[suite.api_key_env] = api_key
     if extra:
         env.update(extra)
     return env

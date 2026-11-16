@@ -85,28 +85,26 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 
 ## Error handling
 
-- **Helper exits 2 ("no API key resolved")**: no key in `COGNEE_API_KEY`, `~/.cognee/.env`, or the local `api_key.json` cache. Cloud mode: add `COGNEE_API_KEY` to `~/.cognee/.env`. Local mode: the key is minted at session start — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
-- **HTTP 401**: a key was sent but rejected — it doesn't match this server. Check `COGNEE_API_KEY` against the target `COGNEE_BASE_URL`.
+- **Helper exits 2 ("no API key resolved")**: the plugin has no key for this server. Cloud mode: the Cognee API key is a plugin option (run `/plugin`, select Cognee Memory, then Configure options), and a script reaches it through the relay a session's hooks keep up, so send a prompt in a session first. Local mode: the key is minted at session start — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
+- **HTTP 401**: a key was sent but rejected — it doesn't match this server. Check the Cognee API key option against the server URL.
 - **HTTP 404 on a data id**: it was already deleted (possibly by an earlier step of this same run) — not an error, move on.
 - An `{"error": ...}` response body means the server was reachable but the request failed — surface it; do **not** conclude the data was deleted.
 
 ## Broader deletions — explicit user request only
 
-The `/api/v1/forget` endpoint can also delete more than a single document (see `$COGNEE_BASE_URL/docs`). The helper deliberately supports only single-document deletion; for a broader scope, resolve credentials with the helper's `env` command and call the endpoint directly **in the same shell invocation** (exports do not persist across separate Bash calls):
+The helper can also delete more than a single document. Each of these is irreversible:
+
+| Command | Effect |
+|---------|--------|
+| `cognee-forget.sh forget <dataset_id> <data_id>` | Forget one document (the default for this skill) |
+| `cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory` | Clear the dataset's memory (graph + vector) but keep raw data |
+| `cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset` | Delete the **entire dataset** |
+| `cognee-forget.sh forget-everything --confirm-delete-all` | Delete **all** user data |
 
 ```bash
-eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
-curl -sS -X POST "${COGNEE_BASE_URL}/api/v1/forget" \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY}" \
-  -d '<payload>'
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-dataset <dataset_id> --confirm-delete-dataset
 ```
 
-| Payload | Effect |
-|---------|--------|
-| `{"datasetId": "...", "dataId": "..."}` | Forget one document (the default for this skill — use the helper) |
-| `{"datasetId": "..."}` | Delete the **entire dataset** |
-| `{"datasetId": "...", "memoryOnly": true}` | Clear the dataset's memory (graph + vector) but keep raw data |
-| `{"everything": true}` | Delete **all** user data |
+Send no request of your own: the helper holds the key and never prints it.
 
 Never use the dataset-wide or `everything` forms unless the user explicitly and unambiguously asked for that scope, and confirm first either way.

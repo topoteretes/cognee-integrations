@@ -9,7 +9,7 @@ def store(suite, hook_module, monkeypatch):
         pytest.skip("Claude trace filtering")
     module = hook_module(suite, "store-to-session.py")
     monkeypatch.setattr(module, "cloud_enabled", lambda *args: True)
-    monkeypatch.setenv("COGNEE_SESSION_KEY", "quality-host")
+    monkeypatch.setenv("COGNEE_SESSION_REF", "quality-host")
     return module
 
 

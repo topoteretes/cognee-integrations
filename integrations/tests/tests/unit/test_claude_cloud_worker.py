@@ -12,7 +12,7 @@ def worker(suite, isolated_modules, monkeypatch):
     if suite.name != "claude-code":
         pytest.skip("Cloud worker")
     worker = isolated_modules(suite, "_cloud_worker")
-    monkeypatch.setenv("COGNEE_SESSION_KEY", "host-a")
+    monkeypatch.setenv("COGNEE_SESSION_REF", "host-a")
     monkeypatch.setattr(
         worker, "target", lambda: {"base_url": "https://cloud.example", "principal": "key"}
     )

@@ -496,7 +496,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # so a confirmed-bad backend costs one bounded probe per prompt instead of
     # the full budget.
     service_url = runtime.get("base_url", "")
-    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 3.0)
+    probe_timeout = _float_env(os.environ.get("COGNEE_READY_PROBE_TIMEOUT", ""), 3.0)
     prior = read_connection_state()
     # Permissive on purpose: "same target" unless the two URLs provably differ,
     # so a recorded state still applies when a URL is unknown. Mirrors the
@@ -625,14 +625,18 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
+    recall_budget = _float_env(
+        os.environ.get("COGNEE_RECALL_BUDGET", ""), 45.0 if cloud_enabled(runtime) else 20.0
+    )
     # After slow_streak_threshold() timeout-only prompts the server is treated as
     # slow: recall gets a few seconds until a recall answers or the window ends,
     # so a hung server cannot cost the full budget on every prompt.
     slow_until = recall_slow_until(service_url)
     recall_slow = time.time() < slow_until
     if recall_slow:
-        recall_budget = min(recall_budget, _float_env("COGNEE_RECALL_SLOW_BUDGET", 5.0))
+        recall_budget = min(
+            recall_budget, _float_env(os.environ.get("COGNEE_RECALL_SLOW_BUDGET", ""), 5.0)
+        )
         hook_log("recall_budget_reduced", {"budget_s": recall_budget})
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
@@ -1251,6 +1255,36 @@ def _recall_min_prompt_chars() -> int:
         return 5
 
 
+def _apply_mod_pick() -> None:
+    """Carry out a dataset picked in the hooks module's picker, before recalling.
+
+    The module starts no program: it saves the pick in its store and this hook
+    switches the session, so the message that follows a pick is answered from
+    the new dataset. The picker's listing is refreshed here when it is old.
+    The relay the skills' scripts use is kept up from here as well.
+    """
+    try:
+        import _relay
+
+        _relay.ensure_relay()
+    except Exception:
+        pass
+    try:
+        import _mod_bridge
+
+        key = get_session_key()
+        result = _mod_bridge.apply_pick(key)
+        if result:
+            hook_log(
+                "mod_pick_applied",
+                {"target": result.get("target"), "state": result.get("state")},
+            )
+        if _mod_bridge.listing_is_stale(key):
+            _mod_bridge.refresh_listing_in_background(key)
+    except Exception as exc:
+        hook_log("mod_pick_failed", {"error": str(exc)[:200]})
+
+
 def main():
     if is_observer_child():
         return
@@ -1272,6 +1306,8 @@ def main():
     if not get_session_key():
         hook_log("context_lookup_missing_session_key")
         return
+
+    _apply_mod_pick()
 
     if coding_memory_enabled():
         output = _coding_prompt(payload)

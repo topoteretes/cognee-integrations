@@ -114,7 +114,8 @@ def _resolve_server_url() -> tuple:
 
 _KEY_SOURCE_LABELS = {
     "plugin_agent_key": "Plugin identity",
-    "env_api_key": "ENV",
+    "plugin_option": "Plugin option",
+    "session_start": "Session start",
     "cache_single_key": "Config",
     "missing": "Default",
 }
@@ -122,18 +123,10 @@ _KEY_SOURCE_LABELS = {
 
 def _resolve_api_key_source() -> str:
     """Return a human-friendly label for where the API key came from."""
-    from _env_file import env_file_path, parse_env_file
     from _plugin_common import _api_key_with_source
 
-    key, source = _api_key_with_source()
-    label = _KEY_SOURCE_LABELS.get(source, source)
-    if source == "env_api_key" and key:
-        # The env layer is fed by both real exports and ~/.cognee/.env
-        # (setdefault); tell them apart for debuggability.
-        file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
-        if file_key and file_key == key:
-            label = "Env file"
-    return label
+    _key, source = _api_key_with_source()
+    return _KEY_SOURCE_LABELS.get(source, source)
 
 
 def _resolve_memory_sharing() -> str:
@@ -335,13 +328,19 @@ def _resolve_llm() -> str:
         provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
         return f"Configured provider ({provider}, model {model})"
+    if reason == "llm_key_ignored":
+        return (
+            "None — local memory is paused: the LLM_API_KEY in your shell or ~/.cognee/.env "
+            "is no longer read. Enter it in the plugin's options, or set "
+            "COGNEE_LLM_OBSERVER=true to run on your Claude subscription (new dataset needed)"
+        )
     if reason == "server_dotenv_configured":
         return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
     if reason == "claude_cli_missing":
-        return "None — no LLM_API_KEY and no `claude` executable for the observer"
+        return "None — no LLM API key option and no `claude` executable for the observer"
     if reason == "disabled":
-        return "None — no LLM_API_KEY; observer disabled (COGNEE_LLM_OBSERVER=false)"
-    return "None — no LLM_API_KEY configured"
+        return "None — no LLM API key option; observer disabled (COGNEE_LLM_OBSERVER=false)"
+    return "None — no LLM API key option configured"
 
 
 def _resolve_env_file() -> str:
@@ -473,4 +472,8 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     main()

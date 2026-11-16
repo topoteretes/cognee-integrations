@@ -34,9 +34,10 @@ ROLE = "cognee-agent"
 def pc(suite, isolated_modules, mock_server, monkeypatch):
     module = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     monkeypatch.delenv("COGNEE_SHARED_AGENT_MEMORY", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_ID", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
     return module
@@ -48,7 +49,7 @@ def bootstrap(suite, hook_module, mock_server, monkeypatch):
     registration bootstrap for host session HOST and returns its tuple."""
     module = hook_module(suite, "session-start.py")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.delenv("COGNEE_API_KEY", raising=False)
+    monkeypatch.delenv(suite.api_key_env, raising=False)
     monkeypatch.delenv("COGNEE_SHARED_AGENT_MEMORY", raising=False)
 
     def run(config: dict, host: str = "host-shared-1", dataset: str = "agent_sessions"):
@@ -60,6 +61,7 @@ def bootstrap(suite, hook_module, mock_server, monkeypatch):
         config.setdefault("user_password", "default_password")
         sid, conn = ensure_launch_record(host, "/tmp/project", dataset=dataset)
         monkeypatch.setenv("COGNEE_SESSION_KEY", host)
+        monkeypatch.setenv("COGNEE_SESSION_REF", host)
         return asyncio.run(
             module._ensure_agent_credentials_and_register(config, "/tmp/project", sid, conn, host)
         )
@@ -190,7 +192,7 @@ def test_existing_same_named_copies_stay_readable(suite, pc, bootstrap, mock_ser
     legacy_copy = ident.seed_dataset("agent_sessions", body["agentId"])
 
     module, run = bootstrap
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     _uid, api_key, _n, ok = run({"api_key": PRINCIPAL_KEY})
     # The principal already owns datasets AND has no tenant: shared memory must
     # not activate a tenant over its head (that would hide every dataset). The
@@ -546,7 +548,7 @@ def test_tenantless_user_with_agent_owned_data_stays_separated(
     assert not any(r["ownerId"] == ident.principal_id for r in ident.dataset_rows.values())
 
     module, run = bootstrap
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     _uid, api_key, _n, ok = run({"api_key": PRINCIPAL_KEY})
     assert ok and api_key == body["apiKey"]
     assert not ident.tenants
@@ -558,7 +560,7 @@ def test_revert_revokes_only_the_key_it_minted(suite, bootstrap, mock_server, mo
     """Shared memory could not be wired, so the fresh key is reverted. Other
     machines hold keys for the same agent: the revert revokes the fresh key by
     id, never every key of the agent."""
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     ident = mock_server.identity
     other_machine = ident.plugins_provision(suite.name, PRINCIPAL_KEY)[1]["apiKey"]
     ident.permissions_api = False
@@ -586,11 +588,11 @@ def test_principal_key_never_resolves_to_the_agent_key(
     pc.save_cached_agent_key("http://one.test", "agent-key-1", "agent-1")
     # The data plane stamps the agent key into the env — it must not be
     # mistaken for the principal.
-    monkeypatch.setenv("COGNEE_API_KEY", "agent-key-1")
+    monkeypatch.setenv(suite.api_key_env, "agent-key-1")
     assert pc.principal_key_for_control_plane("http://one.test") == ""
     pc.save_cached_api_key("http://one.test", "principal-1")
     assert pc.principal_key_for_control_plane("http://one.test") == "principal-1"
-    monkeypatch.setenv("COGNEE_API_KEY", "env-principal")
+    monkeypatch.setenv(suite.api_key_env, "env-principal")
     assert pc.principal_key_for_control_plane("http://one.test") == "env-principal"
 
 
@@ -598,7 +600,7 @@ def test_principal_key_never_resolves_to_the_agent_key(
 
 
 def test_auto_mode_fails_loudly_when_identity_unusable_and_no_principal(
-    pc, mock_server, monkeypatch
+    suite, pc, mock_server, monkeypatch
 ):
     """A blocked or foreign identity is never used; under ``auto`` the plugin
     falls back to the principal — but with no principal anywhere it must raise
@@ -606,13 +608,18 @@ def test_auto_mode_fails_loudly_when_identity_unusable_and_no_principal(
     pc.save_cached_agent_key(mock_server.url, "agent-key-1", "agent-1", principal_key="other")
     # Only the agent key is in the env (as the data plane leaves it), and no
     # principal is preserved or cached.
-    monkeypatch.setenv("COGNEE_API_KEY", "agent-key-1")
+    monkeypatch.setenv(suite.api_key_env, "agent-key-1")
     monkeypatch.delenv("COGNEE_PRINCIPAL_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="no principal key"):
+    with pytest.raises(RuntimeError, match="no principal key|option is not set"):
         pc._api_key_with_source(mock_server.url)
     # With a principal to fall back to, ``auto`` keeps working as the principal.
-    monkeypatch.setenv("COGNEE_PRINCIPAL_API_KEY", PRINCIPAL_KEY)
-    assert pc._api_key_with_source(mock_server.url) == (PRINCIPAL_KEY, "env_api_key")
+    # claude-code has one place for the user's key (its option); the others
+    # keep the principal beside the agent key in a variable of its own.
+    principal_var = (
+        "COGNEE_PRINCIPAL_API_KEY" if suite.api_key_env == "COGNEE_API_KEY" else suite.api_key_env
+    )
+    monkeypatch.setenv(principal_var, PRINCIPAL_KEY)
+    assert pc._api_key_with_source(mock_server.url) == (PRINCIPAL_KEY, suite.api_key_source)
 
 
 def test_parent_dataset_is_writable_via_the_role_grant_the_server_reports(
@@ -771,7 +778,7 @@ def test_ungranted_same_named_dataset_is_kept_out_of_recall(
 def test_structural_reason_is_reevaluated_after_a_plugin_update(
     suite, pc, bootstrap, mock_server, monkeypatch
 ):
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     module, run = bootstrap
     marker = {"base_url": mock_server.url, "mode": "separated", "reason": "tenantless_with_data"}
     # Recorded by THIS plugin version: still structural, no provisioning.

@@ -74,9 +74,15 @@ def test_spawned_server_is_given_the_local_default_user(
     assert env["COGNEE_AGENT_MODE"] == "true"
 
 
-def test_operator_default_user_export_wins(session_start, closed_port_url, monkeypatch):
-    monkeypatch.setenv("DEFAULT_USER_EMAIL", "ops@example.com")
-    monkeypatch.setenv("DEFAULT_USER_PASSWORD", "ops-secret")
+def test_operator_default_user_export_wins(suite, session_start, closed_port_url, monkeypatch):
+    if suite.api_key_env == "COGNEE_API_KEY":
+        monkeypatch.setenv("DEFAULT_USER_EMAIL", "ops@example.com")
+        monkeypatch.setenv("DEFAULT_USER_PASSWORD", "ops-secret")
+    else:
+        # claude-code: the login is a pair of plugin options, and the server
+        # the plugin starts is given that user.
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_USER_EMAIL", "ops@example.com")
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_USER_PASSWORD", "ops-secret")
     env = _spawn_capturing_env(session_start, closed_port_url, monkeypatch)
     assert env["DEFAULT_USER_EMAIL"] == "ops@example.com"
     assert env["DEFAULT_USER_PASSWORD"] == "ops-secret"
@@ -99,30 +105,42 @@ def _login(session_start, mock_server):
     )
 
 
-def test_password_less_default_user_gets_an_actionable_error(session_start, mock_server):
+def _key_setting(suite) -> str:
+    """How a suite's messages name the user's API key."""
+    return "COGNEE_API_KEY" if suite.api_key_env == "COGNEE_API_KEY" else "Cognee API key option"
+
+
+def _login_settings(suite) -> str:
+    """How a suite's messages name the login."""
+    if suite.api_key_env == "COGNEE_API_KEY":
+        return "COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD"
+    return "login email and password options"
+
+
+def test_password_less_default_user_gets_an_actionable_error(suite, session_start, mock_server):
     mock_server.identity.no_password_user = True
     with pytest.raises(RuntimeError) as excinfo:
         _login(session_start, mock_server)
     message = str(excinfo.value)
     assert "400" in message
     assert "DEFAULT_USER_PASSWORD" in message
-    assert "COGNEE_API_KEY" in message
+    assert _key_setting(suite) in message
     assert "correctly" not in message  # not the old generic advice
 
 
-def test_rejected_credentials_name_the_settings(session_start, mock_server):
+def test_rejected_credentials_name_the_settings(suite, session_start, mock_server):
     mock_server.identity.wrong_password = True
     with pytest.raises(RuntimeError) as excinfo:
         _login(session_start, mock_server)
     message = str(excinfo.value)
-    assert "COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD" in message
-    assert "COGNEE_API_KEY" in message
+    assert _login_settings(suite) in message
+    assert _key_setting(suite) in message
     assert "DEFAULT_USER_PASSWORD" not in message
 
 
-def test_other_login_failures_keep_the_generic_advice(session_start, mock_server):
+def test_other_login_failures_keep_the_generic_advice(suite, session_start, mock_server):
     mock_server.identity.reject_login = True  # 401
-    with pytest.raises(RuntimeError, match="COGNEE_USER_EMAIL/COGNEE_USER_PASSWORD"):
+    with pytest.raises(RuntimeError, match=_login_settings(suite)):
         _login(session_start, mock_server)
 
 

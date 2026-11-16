@@ -83,11 +83,33 @@ def test_auto_activates_when_no_key_and_claude_present(observer, fake_claude):
 
 
 def test_auto_yields_to_a_configured_key(observer, fake_claude, monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "sk-real")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
     decision = observer.resolve_observer({})
     assert decision["active"] is False
     assert decision["reason"] == "llm_key_configured"
     assert decision["error"] == ""
+
+
+def test_auto_stays_off_when_a_legacy_key_was_ignored(observer, fake_claude, monkeypatch):
+    # A 1.8.1 user's LLM_API_KEY in the shell or ~/.cognee/.env is dropped; it
+    # must not hand their datasets to the observer's embedder.
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    decision = observer.resolve_observer({})
+    assert decision["active"] is False
+    assert decision["reason"] == "llm_key_ignored"
+    assert "options" in observer.describe(decision)
+
+
+def test_an_ignored_key_with_the_option_set_is_a_configured_key(observer, fake_claude, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    assert observer.resolve_observer({})["reason"] == "llm_key_configured"
+
+
+def test_forced_true_runs_despite_an_ignored_key(observer, fake_claude, monkeypatch):
+    monkeypatch.setenv("COGNEE_LLM_OBSERVER", "true")
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    assert observer.resolve_observer({})["active"] is True
 
 
 def test_auto_yields_to_a_configured_provider(observer, fake_claude, monkeypatch):
@@ -282,7 +304,7 @@ def test_missing_cli_is_silent_in_auto_and_loud_when_forced(observer, tmp_path, 
 
 
 def test_forced_true_overrides_a_configured_key(observer, fake_claude, monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "sk-real")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
     monkeypatch.setenv("COGNEE_LLM_OBSERVER", "true")
     assert observer.resolve_observer({})["active"] is True
 
@@ -307,7 +329,10 @@ def test_apply_points_cognee_at_the_shim(observer, fake_claude, monkeypatch):
     assert os.environ["LLM_MODEL"] == observer.COGNEE_MODEL == "openai/" + observer.MODEL_ALIAS
     assert os.environ["LLM_ENDPOINT"] == "http://127.0.0.1:8123/v1"
     # cognee's LLM_API_KEY is the shim's bearer token, not a guessable constant.
-    assert os.environ["LLM_API_KEY"] == observer.observer_token(create=False) != ""
+    # It goes into the server's environment only, never this process's own.
+    assert "LLM_API_KEY" not in os.environ
+    assert observer.observer_server_env() == {"LLM_API_KEY": observer.observer_token(create=False)}
+    assert observer.observer_token(create=False) != ""
     assert os.environ[observer.ACTIVE_ENV_FLAG] == "1"
     # Embeddings default to a local model — the observer cannot embed.
     assert os.environ["EMBEDDING_PROVIDER"] == "fastembed"
@@ -317,7 +342,6 @@ def test_apply_points_cognee_at_the_shim(observer, fake_claude, monkeypatch):
         "LLM_PROVIDER",
         "LLM_MODEL",
         "LLM_ENDPOINT",
-        "LLM_API_KEY",
         "EMBEDDING_PROVIDER",
     }
     assert observer.is_active()
@@ -725,7 +749,7 @@ def test_running_keyed_server_is_not_claimed(session_start, fake_claude, monkeyp
 def test_running_observer_server_is_followed_even_with_a_key(
     session_start, fake_claude, monkeypatch
 ):
-    monkeypatch.setenv("LLM_API_KEY", "sk-real")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
     decision = _decide(session_start, monkeypatch, running=True, stamp=True)
     assert decision["active"] is True and decision["wanted"] is False
     note = session_start._observer_note(decision)

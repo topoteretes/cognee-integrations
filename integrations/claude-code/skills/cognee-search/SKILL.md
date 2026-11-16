@@ -16,14 +16,6 @@ when_to_use: >-
 
 Search both session memory and the permanent knowledge graph, optionally filtered by data category.
 
-## The `search` tool, when it is listed
-
-Where Claude Code loads the plugin's hooks module, `mcp__cognee-memory__search`
-(`query`, `top_k`, `scope` graph|code, `dataset_id`, `user_picked`) runs the same wrapper as
-this skill with typed arguments and no Bash call. Prefer it when it is among your
-tools (load its schema through tool search); this skill is the path everywhere
-else, and its notes below on reading results and on other datasets apply to both.
-
 ## Visible search progress
 
 Before running a Cognee search, send one short user-visible progress sentence,
@@ -89,31 +81,23 @@ conceptual questions that name no symbol ("how does auth work here?").
 
 ### Filter by category (optional)
 
-Categories (`user_context` / `project_docs` / `agent_actions`) filter by node set. The wrapper does not expose this — pass `node_name` to the server directly.
-
-**Resolve credentials first.** In local mode `$COGNEE_API_KEY` is empty (the key is minted into `~/.cognee-plugin/api_key.json` and never exported to your shell), so a hand-rolled `curl` with `-H "X-Api-Key: ${COGNEE_API_KEY:-}"` 401s and looks like a server fault when nothing is wrong. Use the forget helper's resolver in the **same** shell invocation — exports do not persist across separate Bash calls:
+Categories (`user_context` / `project_docs` / `agent_actions`) filter a graph search by node set:
 
 ```bash
-eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
-curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY}" \
-  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "node_name": ["project_docs"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 5 --category project_docs
 ```
+
+A category search is answered by the server only; it has no `cognee-cli` fallback.
 
 ### Ground-truth a suspicious result (debugging)
 
-The server is authoritative. If a search returns empty but you expect content, confirm directly — **do not** conclude "not found" from empty CLI output. Resolve credentials in the same invocation, as above:
+The server is authoritative, and the wrapper asks the server first. If a search returns empty but you expect content, run the wrapper once more against the dataset by name — **do not** conclude "not found" from empty `cognee-cli` output:
 
 ```bash
-eval "$("${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" env)" && \
-curl -s -X POST "${COGNEE_BASE_URL}/api/v1/recall" \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: ${COGNEE_API_KEY}" \
-  -d '{"query": "...", "top_k": 5, "only_context": true, "scope": ["graph"], "datasets": ["'"${COGNEE_PLUGIN_DATASET:-agent_sessions}"'"]}'
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 5 --graph --dataset <dataset-name> --user-picked
 ```
 
-(The server enforces auth in both modes, which is why the resolver is not optional. If the response is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results". A `401` *after* the resolver means the key really is wrong for that server; a `401` without it means nothing.)
+Send no request of your own: the wrapper resolves the key (in local mode it is never exported to your shell) and never prints it. If the output is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results".
 
 ### Fallback only — server unreachable
 
@@ -210,10 +194,10 @@ The session cache is never a search source; it reaches the graph through the syn
 | Need current session context | Already automatic, no action needed |
 | User explicitly says "search cognee" | `cognee-search.sh "<query>"` (server-first) |
 | "what does the codebase do" / "what did we do last time" | `cognee-search.sh "<query>" 10 --graph` |
-| Need a specific category | use the `node_name` curl form above (`["user_context"\|"project_docs"\|"agent_actions"]`) |
+| Need a specific category | `cognee-search.sh "<query>" 5 --category <user_context\|project_docs\|agent_actions>` |
 | Auto context insufficient | `cognee-search.sh "<query>" 10` (memory is graph + code only; the session cache is written, never searched) |
 | **Server says empty and the user is recalling something** | **Auto recall: report that nothing matched. Restricted: offer the other readable datasets (`list-datasets.py --others` + AskUserQuestion), then `cognee-search.sh "<query>" 10 --graph --dataset-id <id> --user-picked`** |
-| **Result empty but you expect content** | **Ground-truth via the credential-resolving `curl` above before concluding "not found"** |
+| **Result empty but you expect content** | **Ground-truth with the wrapper against the dataset by name (above) before concluding "not found"** |
 
 ### Inspectable evidence
 

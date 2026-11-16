@@ -125,6 +125,15 @@ class Suite:
     #: local path's ``sync_bridge_done`` / ``final_sync_once_*`` events. codex and
     #: Antigravity still talk to the tenant from the hooks.
     has_cloud_worker: bool
+    #: The variable a hook process finds the user's Cognee API key in. Codex,
+    #: Cursor and Antigravity read ``COGNEE_API_KEY`` from the environment;
+    #: claude-code takes its keys from the plugin options, which Claude Code
+    #: hands to hooks as ``CLAUDE_PLUGIN_OPTION_*`` (SDK-1411).
+    api_key_env: str = "COGNEE_API_KEY"
+    #: What ``_api_key_with_source`` calls a key found there, and the label
+    #: doctor shows for it.
+    api_key_source: str = "env_api_key"
+    api_key_source_label: str = "ENV"
 
 
 CLAUDE = Suite(
@@ -144,6 +153,9 @@ CLAUDE = Suite(
     has_rich_statusline=True,
     has_precompact_http=True,
     has_single_submit_improve=True,
+    api_key_env="CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY",
+    api_key_source="plugin_option",
+    api_key_source_label="Plugin option",
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
     has_recap_skills=True,

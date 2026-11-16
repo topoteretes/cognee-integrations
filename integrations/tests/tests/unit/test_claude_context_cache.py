@@ -11,7 +11,7 @@ def cache(suite, isolated_modules, monkeypatch):
         pytest.skip("Claude digest")
     module = isolated_modules(suite, "_context_cache")
     monkeypatch.setattr(module, "target", lambda: {"base_url": "https://cloud", "principal": "a"})
-    monkeypatch.setenv("COGNEE_SESSION_KEY", "new-host")
+    monkeypatch.setenv("COGNEE_SESSION_REF", "new-host")
     return module
 
 

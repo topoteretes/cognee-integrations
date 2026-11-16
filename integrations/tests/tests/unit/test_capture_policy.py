@@ -606,7 +606,7 @@ def test_sanitize_cli_prints_the_clean_text_and_fails_closed(suite, temp_home):
 def test_shared_policy_modules_are_identical_across_hosts():
     from utils.suites import ALL_SUITES, CLAUDE
 
-    for name in ("_capture_policy.py", "_remember_http.py"):
+    for name in ("_capture_policy.py", "_remember_http.py", "capture_deny_paths.txt"):
         reference = (CLAUDE.scripts_dir / name).read_bytes()
         for other in ALL_SUITES:
             if other is CLAUDE:
@@ -642,3 +642,20 @@ def test_sync_payload_log_names_fields_but_never_their_values(suite, run_hook, t
     assert "payload_preview" not in log_text
     assert "SENTINEL-4b2e" not in log_text
     assert "prompt" in log_text and "payload_bytes" in log_text
+
+
+def test_the_deny_list_is_a_data_file_and_losing_it_refuses_every_path(
+    policy, tmp_path, monkeypatch
+):
+    """The patterns never captured live in a data file beside the module
+    (SDK-1411). The list still holds the secret files it always held, and a
+    missing or empty file refuses every path instead of none."""
+    for pattern in (".env", "*.pem", "id_rsa*", ".netrc", "*/.aws/credentials", "credentials.*"):
+        assert pattern in policy._DENY_PATHS
+    assert policy._DENY_PATHS != ("*",)
+    monkeypatch.setattr(policy, "_DENY_PATHS_FILE", "no-such-file.txt")
+    assert policy._load_deny_paths() == ("*",)
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# nothing\n\n", encoding="utf-8")
+    monkeypatch.setattr(policy, "_DENY_PATHS_FILE", str(empty))
+    assert policy._load_deny_paths() == ("*",)

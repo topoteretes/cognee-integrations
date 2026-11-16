@@ -108,9 +108,10 @@ def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
 # ── API key source ─────────────────────────────────────────────────────────
 
 
-def test_api_key_source_env(doctor, monkeypatch):
-    monkeypatch.setenv("COGNEE_API_KEY", "test-key-from-env")
-    assert doctor._resolve_api_key_source() == "ENV"
+def test_api_key_source_env(suite, doctor, monkeypatch):
+    monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
+    monkeypatch.setenv(suite.api_key_env, "test-key-from-env")
+    assert doctor._resolve_api_key_source() == suite.api_key_source_label
 
 
 def test_api_key_source_config(doctor, pc, tmp_path, monkeypatch):
@@ -123,7 +124,7 @@ def test_api_key_source_config(doctor, pc, tmp_path, monkeypatch):
     assert doctor._resolve_api_key_source() == "Config"
 
 
-def test_cached_api_key_remains_scoped_to_its_endpoint(pc, tmp_path, monkeypatch):
+def test_cached_api_key_remains_scoped_to_its_endpoint(suite, pc, tmp_path, monkeypatch):
     """A key cached for another server must never be sent to this one."""
     configured = "http://managed-cognee.internal:8012"
     monkeypatch.setenv("COGNEE_BASE_URL", configured)
@@ -135,9 +136,9 @@ def test_cached_api_key_remains_scoped_to_its_endpoint(pc, tmp_path, monkeypatch
     )
     assert pc.resolved_http_endpoint_auth() == (configured, "matching-key")
 
-    # A successful resolution exports the key into the process env so sibling
-    # hooks reuse it, so that has to be cleared before the mismatch case —
-    # otherwise the env hit would mask what the cache file says.
+    # Codex, Cursor and Antigravity export a resolved key into the process env
+    # so sibling hooks reuse it, so that has to be cleared before the mismatch
+    # case — otherwise the env hit would mask what the cache file says.
     monkeypatch.delenv("COGNEE_API_KEY", raising=False)
     cache_file.write_text(
         json.dumps({"api_key": "wrong-key", "base_url": "http://other:8012"}), encoding="utf-8"

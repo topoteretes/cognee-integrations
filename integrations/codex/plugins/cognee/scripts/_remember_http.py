@@ -102,9 +102,9 @@ def _timeout_result(timeout):
     return _error(0, "remember submitted; timed out after %ss waiting for confirmation" % timeout)
 
 
-def _float_env(name, default):
+def _float_env(raw, default):
     try:
-        raw = os.environ.get(name, "").strip()
+        raw = str(raw or "").strip()
         return float(raw) if raw else default
     except (TypeError, ValueError):
         return default
@@ -116,7 +116,7 @@ def _explicit_wait_seconds():
     Default 8s: a background submit returns immediately, so without a short wait an
     immediate recall sees the not-yet-cognified graph. 0 disables (fire-and-forget).
     """
-    return _float_env("COGNEE_REMEMBER_WAIT_SECONDS", 8.0)
+    return _float_env(os.environ.get("COGNEE_REMEMBER_WAIT_SECONDS", ""), 8.0)
 
 
 def _remember_timeout():
@@ -125,7 +125,7 @@ def _remember_timeout():
     Tunable independently of recall/register via ``COGNEE_REMEMBER_TIMEOUT``;
     defaults to 120s, the value ``do_remember`` has always used.
     """
-    value = _float_env("COGNEE_REMEMBER_TIMEOUT", 120.0)
+    value = _float_env(os.environ.get("COGNEE_REMEMBER_TIMEOUT", ""), 120.0)
     # 0, negatives, inf and nan would make the socket fail at once or raise.
     return value if math.isfinite(value) and value > 0 else 120.0
 
@@ -326,8 +326,8 @@ def do_remember(
             result["dataset_id"],
             wait_seconds,
             opener=opener,
-            interval_seconds=_float_env("COGNEE_COGNIFY_POLL_INTERVAL", 3.0),
-            request_timeout=_float_env("COGNEE_STATUS_REQUEST_TIMEOUT", 10.0),
+            interval_seconds=_float_env(os.environ.get("COGNEE_COGNIFY_POLL_INTERVAL", ""), 3.0),
+            request_timeout=_float_env(os.environ.get("COGNEE_STATUS_REQUEST_TIMEOUT", ""), 10.0),
         )
         result["wait_outcome"] = outcome
         result["queryable"] = outcome == "completed"

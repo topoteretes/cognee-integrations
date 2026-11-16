@@ -332,6 +332,7 @@ def cloud(cm, suite, isolated_modules, monkeypatch):
         pytest.skip("the cloud worker ships with Claude Code only")
     worker = isolated_modules(suite, "_cloud_worker")
     monkeypatch.setenv("COGNEE_SESSION_KEY", KEY)
+    monkeypatch.setenv("COGNEE_SESSION_REF", KEY)
     monkeypatch.setenv("COGNEE_AUTO_IMPROVE_EVERY", "150")
     monkeypatch.setattr(
         worker, "target", lambda: {"base_url": "https://cloud.example", "principal": "key"}

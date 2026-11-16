@@ -23,7 +23,7 @@ instead of silently falling back to local.
 
 Two modes, both over HTTP — the hooks never import cognee in-process:
   - Local: the plugin boots a Cognee server on localhost and talks to it
-  - Cloud: connect to a remote Cognee server via COGNEE_BASE_URL + COGNEE_API_KEY
+  - Cloud: connect to a remote Cognee server via COGNEE_BASE_URL + the Cognee API key option
 """
 
 from __future__ import annotations
@@ -36,7 +36,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from _env_file import load_env_file
+from _env_file import (
+    cloud_key_option,
+    llm_key_option,
+    load_env_file,
+    login_email_option,
+    login_password_option,
+)
 from _logfiles import append_line as _append_log_line
 from event_names import event_fields
 
@@ -121,13 +127,9 @@ _ENV_MAP = {
     "COGNEE_SESSION_STRATEGY": "session_strategy",
     "COGNEE_SESSION_PREFIX": "session_prefix",
     "COGNEE_BASE_URL": "base_url",
-    "COGNEE_API_KEY": "api_key",
     # base_url is an externally managed deployment: never boot a local fallback
     # server on its port; fail loudly when it is unreachable.
     "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",
-    "COGNEE_USER_EMAIL": "user_email",
-    "COGNEE_USER_PASSWORD": "user_password",
-    "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
     "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
@@ -160,14 +162,49 @@ def sanitize_dataset_name(name: str, fallback: str = "agent_sessions") -> str:
     return cleaned
 
 
+def _env_settings() -> dict:
+    """Every setting in ``_ENV_MAP``, read by its own name, in the map's order.
+
+    Spelled out one by one so that the plugin's files show which variables it
+    reads; a test keeps this list and ``_ENV_MAP`` equal.
+    """
+    return {
+        "COGNEE_BACKEND": os.environ.get("COGNEE_BACKEND", ""),
+        "COGNEE_CLAUDE_BACKEND": os.environ.get("COGNEE_CLAUDE_BACKEND", ""),
+        "COGNEE_AGENT_NAME": os.environ.get("COGNEE_AGENT_NAME", ""),
+        "COGNEE_PLUGIN_DATASET": os.environ.get("COGNEE_PLUGIN_DATASET", ""),
+        "COGNEE_SESSION_STRATEGY": os.environ.get("COGNEE_SESSION_STRATEGY", ""),
+        "COGNEE_SESSION_PREFIX": os.environ.get("COGNEE_SESSION_PREFIX", ""),
+        "COGNEE_BASE_URL": os.environ.get("COGNEE_BASE_URL", ""),
+        "COGNEE_MANAGED_ENDPOINT": os.environ.get("COGNEE_MANAGED_ENDPOINT", ""),
+        "LLM_MODEL": os.environ.get("LLM_MODEL", ""),
+        "COGNEE_PREFER_MEMORY": os.environ.get("COGNEE_PREFER_MEMORY", ""),
+        "COGNEE_PLUGIN_IDENTITY": os.environ.get("COGNEE_PLUGIN_IDENTITY", ""),
+        "COGNEE_SHARED_AGENT_MEMORY": os.environ.get("COGNEE_SHARED_AGENT_MEMORY", ""),
+        "COGNEE_COGNIFY_POLL_INTERVAL": os.environ.get("COGNEE_COGNIFY_POLL_INTERVAL", ""),
+        "COGNEE_REMEMBER_WAIT_SECONDS": os.environ.get("COGNEE_REMEMBER_WAIT_SECONDS", ""),
+        "COGNEE_STATUS_REQUEST_TIMEOUT": os.environ.get("COGNEE_STATUS_REQUEST_TIMEOUT", ""),
+        "COGNEE_SESSION_ID": os.environ.get("COGNEE_SESSION_ID", ""),
+    }
+
+
 def load_config() -> dict:
-    """Load merged config: defaults → env vars (the env file is already in os.environ)."""
+    """Load merged config: defaults, then the settings (the env file is already loaded)."""
     config = dict(_DEFAULTS)
 
-    for env_key, config_key in _ENV_MAP.items():
-        val = os.environ.get(env_key, "")
+    for env_key, val in _env_settings().items():
         if val:
-            config[config_key] = val
+            config[_ENV_MAP[env_key]] = val
+
+    # The keys come from the plugin options only (see _env_file).
+    config["api_key"] = cloud_key_option()
+    config["llm_api_key"] = llm_key_option()
+    # So does the login for a server without an API key; the built-in default
+    # user of the plugin's own local server otherwise.
+    if login_email_option():
+        config["user_email"] = login_email_option()
+    if login_password_option():
+        config["user_password"] = login_password_option()
 
     raw_dataset = str(config.get("dataset") or "")
     if raw_dataset.strip().lower() == "auto":
@@ -223,7 +260,7 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
     kept stable across the launch's separate hook processes via the host-keyed
     map (see ``resolve_cognee_session_id``). It is the single scoping key for all
     saves/recalls. The host (Claude) session id is read from the in-process
-    ``COGNEE_SESSION_KEY`` purely as the local correlation key.
+    ``COGNEE_SESSION_REF`` purely as the local correlation key.
 
     Hooks call this after setting the host session key from their payload, so the
     resolver finds the launch's id in the map. An explicit ``COGNEE_SESSION_ID``

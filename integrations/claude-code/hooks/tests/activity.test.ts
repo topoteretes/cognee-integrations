@@ -1,12 +1,11 @@
 // Tests for the live-activity module: what it shows while the memory hooks
 // work and after they finish. Everything the module reaches (the activity
-// marker file, the renderer process, the session id) is answered here, so the
+// marker file, the row's data file, the session id) is answered here, so the
 // test runs with no file system, process or network.
 import { expect, mock, test } from 'claude-code/testing'
 
 const SESSION = 's1'
 const HOME = '/home/tester'
-const MARKER_PATH = `${HOME}/.cognee-plugin/claude-code/phase/${SESSION}.json`
 
 const SNAPSHOT = {
   enabled: true,
@@ -56,19 +55,35 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: st
     return Text({ children: [''] })
   })
   on('session.id', () => ({ value: SESSION }))
+  // The files the plugin's scripts keep for the module: the row's data, the
+  // activity marker, and the picker's listing (none in these tests).
   on('fs.read', ($, e) => {
-    if (e.path.endsWith('/assets/icon-lavender.svg')) return { value: '<svg viewBox="0 0 1 1"></svg>' }
-    if (e.path !== MARKER_PATH) throw new Error(`unexpected read of ${e.path}`)
-    return { value: state.marker }
+    const root = `${HOME}/.cognee-plugin/claude-code`
+    if (e.path === `${root}/status/${SESSION}.json`) return { value: JSON.stringify(snapshotOf()) }
+    if (e.path === `${root}/phase/${SESSION}.json`) return { value: state.marker }
+    if (e.path === `${root}/mod/${SESSION}.json`) return { value: '{}' }
+    throw new Error(`unexpected read of ${e.path}`)
   })
-  on('fs.write', () => ({ value: undefined }))
-  // Session start registers tools and commands; without these bottoms the
-  // start hook would fail there and never reach its warm-up poll.
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__cognee-memory__${e.name}` } }))
+  on('fs.write', ($, e) => {
+    throw new Error(`unexpected write of ${e.path}`)
+  })
+  // The module must start nothing.
+  on('process.run', ($, e) => {
+    throw new Error(`the module started a process: ${e.argv.join(' ')}`)
+  })
+  const store = new Map<string, unknown>()
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  // Session start registers its commands; without this bottom the start hook
+  // would fail there and never reach its warm-up poll.
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('process.run', () => ({
-    value: { exitCode: 0, stdout: JSON.stringify(snapshotOf()), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
   return clock
 }
 
@@ -84,7 +99,14 @@ test('the desktop band shows the row the terminal status line shows', async ($, 
   // the mode and the activity.
   expect(await ui.find({ type: 'Svg' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeDefined()
+  // The dataset is a picker from the first draw. Nothing is listed in these
+  // tests, so it holds the name and a loading entry, and the name is not
+  // drawn again as text.
+  const picker = await ui.find({ type: 'Select', key: 'dataset' })
+  expect(picker!.props.value).toBe('agent_sessions')
+  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['agent_sessions', 'loading datasets…'])
+  expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /tokens saved/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /3 memories used/ })).toBeDefined()
   // Healthy leads with the green dot, as on the text line.
