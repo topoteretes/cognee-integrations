@@ -12,7 +12,12 @@
 #   cognee-forget.sh data <dataset_id>               List the data items in a dataset
 #   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
 #   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-#   cognee-forget.sh env                             Print eval-able COGNEE_BASE_URL/COGNEE_API_KEY exports
+#   cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
+#   cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
+#   cognee-forget.sh forget-everything --confirm-delete-all   Delete ALL of the user's data (IRREVERSIBLE)
+#
+# The key never leaves this script: no command prints it, and the skills send
+# no request of their own.
 #
 # Every API command prints the response body followed by a final
 # "HTTP <status>" line — callers must check it (curl without -f exits 0 on
@@ -98,7 +103,9 @@ Usage:
   cognee-forget.sh data <dataset_id>               List the data items in a dataset
   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-  cognee-forget.sh env                             Print eval-able COGNEE_BASE_URL/COGNEE_API_KEY exports
+  cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
+  cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
+  cognee-forget.sh forget-everything --confirm-delete-all   Delete ALL of the user's data (IRREVERSIBLE)
 EOF
 }
 
@@ -122,6 +129,15 @@ fi
 CMD="${1:-}"
 api_get() {
     curl -sS "$1" -H "X-Api-Key: ${API_KEY}" -w '\nHTTP %{http_code}\n'
+}
+# POST one fixed JSON body to /api/v1/forget. Callers pass a body they built
+# from validated ids or from a literal; nothing free-form reaches it.
+api_forget() {
+    curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
+        -H "Content-Type: application/json" \
+        -H "X-Api-Key: ${API_KEY}" \
+        -d "$1" \
+        -w '\nHTTP %{http_code}\n'
 }
 
 case "$CMD" in
@@ -154,10 +170,24 @@ case "$CMD" in
             -d "$payload" \
             -w '\nHTTP %{http_code}\n'
         ;;
-    env)
-        # For manual/broader calls only (see SKILL.md) — eval in the same shell
-        # as the curl that uses it; exports do not persist across Bash calls.
-        printf 'export COGNEE_BASE_URL=%q\nexport COGNEE_API_KEY=%q\n' "$SERVICE_URL" "$API_KEY"
+    forget-memory)
+        [ -n "${2:-}" ] || { echo "Error: forget-memory requires <dataset_id>" >&2; usage; exit 1; }
+        validate_uuid "$2"
+        api_forget "$(FORGET_DATASET_ID="$2" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "memoryOnly": True}))')"
+        ;;
+    forget-dataset)
+        [ -n "${2:-}" ] || { echo "Error: forget-dataset requires <dataset_id>" >&2; usage; exit 1; }
+        validate_uuid "$2"
+        api_forget "$(FORGET_DATASET_ID="$2" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"]}))')"
+        ;;
+    forget-everything)
+        # Deletes every dataset the user owns. The flag has to be typed out so
+        # this can never be reached by a mistyped or truncated command.
+        if [ "${2:-}" != "--confirm-delete-all" ] || [ -n "${3:-}" ]; then
+            echo "Error: forget-everything deletes ALL of the user's data and needs exactly: --confirm-delete-all" >&2
+            exit 1
+        fi
+        api_forget '{"everything": true}'
         ;;
     *)
         echo "Error: unknown command '${CMD}'" >&2

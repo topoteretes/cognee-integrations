@@ -231,10 +231,13 @@ def do_recall(
     code_query=None,
     dataset_ids="",
     *,
+    node_name=None,
     opener=None,
     timeout=120.0,
 ):
     """Query the server. Return results (list), an error envelope (dict), or ``UNREACHABLE``.
+
+    ``node_name`` keeps only the named categories (node sets) of a graph search.
 
     ``dataset_ids`` (a list, or a comma-separated string from argv) addresses
     the search by UUID and takes precedence over ``dataset`` — under shared
@@ -255,6 +258,9 @@ def do_recall(
         body["code_query"] = parsed_code_query
     if session_id:
         body["session_id"] = session_id
+    node_names = [str(n).strip() for n in (node_name or []) if str(n).strip()]
+    if node_names and "graph" in body["scope"]:
+        body["node_name"] = node_names
     # Scope the search to the caller's plugin dataset (resolved by the shell from
     # COGNEE_PLUGIN_DATASET → default). All plugin writes target
     # that single dataset, so searching elsewhere only adds noise from unrelated

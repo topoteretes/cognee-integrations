@@ -178,6 +178,7 @@ def recall(
     code_query=None,
     dataset_ids="",
     *,
+    node_name=None,
     timeout=None,
 ):
     """Breaker-wrapped recall. Returns a list, an error-envelope dict, or UNREACHABLE.
@@ -209,6 +210,7 @@ def recall(
         # code query as a context profile.
         code_query=code_query,
         dataset_ids=dataset_ids,
+        node_name=node_name,
         timeout=timeout or _RECALL_TIMEOUT,
     )
     if result == UNREACHABLE:

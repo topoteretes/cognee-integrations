@@ -66,7 +66,7 @@ Determine the category from the user's intent, then run:
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-remember.sh" "$ARGUMENTS" --node-set agent_actions
 ```
 
-**Storing a file (code included)**: pass `--file` so the upload keeps its real
+**Storing a file (code included)**: add `--file` so the upload keeps its real
 filename — the extension is the server's routing signal, and a code file
 (`.py`/`.ts`/`.go`/...) then rides the zero-LLM code path instead of being
 ingested as prose:

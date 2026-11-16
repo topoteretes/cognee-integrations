@@ -56,6 +56,14 @@ do, Cognee runs locally with defaults.
   key value is `YOUR_API_KEY`. The settings template names the Cloud URL without an
   example host.
 
+- **Skills no longer put the key into a shell command** (SDK-1411). The forget and
+  search skills and the `cognee-recall` agent told Claude to print the key with
+  `cognee-forget.sh env` and send its own request. The helpers do it now:
+  `cognee-search.sh --category <user_context|project_docs|agent_actions>` filters a
+  graph search, and `cognee-forget.sh forget-memory <dataset_id>`,
+  `forget-dataset <dataset_id>` and `forget-everything --confirm-delete-all` cover the
+  broader deletions. `cognee-forget.sh env` is removed, so no command prints the key.
+
 The entries for 1.8.2 to 1.8.4 below are kept as a record of what those versions did.
 
 ## [1.8.4]
