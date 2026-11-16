@@ -124,8 +124,8 @@ _COGNEE_INSTALL_MARKER = _GLOBAL_STATE_DIR / "cognee-install-needed.json"
 _PINNED_COGNEE_VERSION = "1.6.6"
 # Maps a provider setting to the cognee package "extra" that provides its
 # driver. A bare `cognee==<version>` install has none, so the server would fail
-# on first use. Only `fastembed` embeddings (also what the Claude observer
-# applies) are left: the plugin's own server always runs on Cognee's built-in
+# on first use. Only `fastembed` embeddings are left: the plugin's own server
+# always runs on Cognee's built-in
 # stores (SQLite, LanceDB, Kuzu) with an allowlisted environment (see
 # _server_env), so a database provider in the shell never reaches it and must
 # not block the start for a driver it would not use; a local Ollama LLM is not
@@ -483,7 +483,7 @@ def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> 
 # platform basics (path, home, locale, temp, proxy, TLS, Windows system vars).
 # Nothing else is copied, so a provider key, database password or token in the
 # user's shell never reaches the server; its LLM and embedding settings come
-# from the plugin options (see _env_file) or the Claude observer.
+# from the plugin options (see _env_file).
 _SERVER_ENV_BASE = frozenset(
     name.upper()
     for name in (
@@ -550,7 +550,6 @@ _SERVER_ENV_PLUGIN = frozenset(
         "CACHING",
         "AUTO_FEEDBACK",
         "DISTILLATION_MODE",
-        "COGNEE_LLM_OBSERVER_ACTIVE",
     }
 )
 # An empty file the plugin owns, handed to cognee as COGNEE_ENV_FILE so the
@@ -564,11 +563,11 @@ def _server_env() -> dict:
     """The local server's environment, built from allowlists. Never copies os.environ.
 
     Holds the platform basics, the plugin's own server settings and tuning
-    names, the non-secret LLM / embedding settings (the plugin options, or the
-    observer's shim settings, which are the only ``LLM_*`` / ``EMBEDDING_*``
-    values left in this process), the keys (the observer's shim token or the
-    LLM and embedding key options, read here and placed in this environment
-    only, never taken from this process's own), the default-user login,
+    names, the non-secret LLM / embedding settings (the plugin options, which
+    are the only ``LLM_*`` / ``EMBEDDING_*`` values left in this process), the
+    keys (the LLM and embedding key options, read here and placed in this
+    environment only, never taken from this process's own), the default-user
+    login,
     ``COGNEE_ENV_FILE`` and ``HASH_API_KEY=false`` (the owner-key lookup needs
     the stored key back).
     """
@@ -579,14 +578,13 @@ def _server_env() -> dict:
         SENSITIVE_OPTIONS,
         server_secret_env,
     )
-    from _observer import server_secret_env as observer_secret_env
 
     key_names = {OPTION_VARS[name] for name in SENSITIVE_OPTIONS if name in LLM_OPTIONS}
     env: dict = {}
     for name, value in os.environ.items():
         upper = name.upper()
         if upper in key_names:
-            # A key comes from the two sources below only.
+            # A key comes from its option only (below).
             continue
         if (
             upper in _SERVER_ENV_BASE
@@ -596,16 +594,10 @@ def _server_env() -> dict:
             or name.startswith(("LLM_", "EMBEDDING_"))
         ):
             env[name] = value
-    # The observer's own shim token, when the observer is this server's LLM,
-    # then the user's LLM and embedding keys, straight from the options. The
-    # token keeps priority: without it the server's calls to the shim are
-    # refused.
-    env.update(observer_secret_env())
-    for name, value in server_secret_env().items():
-        env.setdefault(name, value)
-    # The server calls this machine too (the observer shim, with its bearer
-    # token and the full prompt). With a proxy copied over, exempt loopback in
-    # both spellings so those calls never reach the proxy host, keeping the
+    # The user's LLM and embedding keys, straight from the options.
+    env.update(server_secret_env())
+    # With a proxy copied over, exempt loopback in both spellings so a call the
+    # server makes to this machine never reaches the proxy host, keeping the
     # user's own entries.
     if any(name.upper() in _PROXY_NAMES for name in env):
         own = env.get("no_proxy") or env.get("NO_PROXY") or ""
@@ -772,7 +764,6 @@ def _ensure_local_server_running(
             port,
             server_proc.pid,
             version=_PINNED_COGNEE_VERSION,
-            llm_observer=server_env.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1",
             coding_memory=server_env.get("DISTILLATION_MODE", "").strip().lower() == "coding",
         )
 
@@ -1748,178 +1739,166 @@ async def _bootstrap_session(bootstrap: dict) -> None:
         _stop_heartbeat()
 
 
-def _running_server_observer(target_url: str) -> tuple[bool, bool | None]:
-    """(a local server is already up, whether it was spawned with the observer).
+#: The embedder the Claude observer (removed in 1.8.4) paired its LLM with:
+#: cognee's local CPU embedder. Vectors from different models cannot be
+#: compared, so a dataset stays tied to the embedder that built it.
+_OBSERVER_EMBEDDER = {
+    "EMBEDDING_PROVIDER": "fastembed",
+    "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5",
+    "EMBEDDING_DIMENSIONS": "384",
+}
+#: Written once, on the first start after the observer was removed, for an
+#: install whose last local launch ran on it.
+_EMBEDDER_PIN = _STATE_DIR / "embedder.json"
+_OBSERVER_STATE_DIR = _GLOBAL_STATE_DIR / "observer"
 
-    The second value is None when that is unknown: a server booted by another
-    integration or an older build, or one this plugin did not spawn at all.
+
+def _embedder_pinned() -> bool:
+    """Whether this install keeps the observer's embedder. Never raises.
+
+    Decided once: the pin is written when the newest local launch on record
+    ran on the observer, which only a launch of 1.8.3 or older can say. Later
+    launches read the file.
     """
+    try:
+        if _EMBEDDER_PIN.exists():
+            return True
+        from _plugin_common import last_local_launch_used_observer
+
+        if not last_local_launch_used_observer():
+            return False
+        _EMBEDDER_PIN.parent.mkdir(parents=True, exist_ok=True)
+        _EMBEDDER_PIN.write_text(
+            json.dumps({**_OBSERVER_EMBEDDER, "pinned_at": time.time()}), encoding="utf-8"
+        )
+        hook_log("embedder_pinned", {"embedding": _OBSERVER_EMBEDDER["EMBEDDING_MODEL"]})
+        return True
+    except Exception as exc:
+        hook_log("embedder_pin_failed", {"error": str(exc)[:200]})
+        return False
+
+
+def _apply_embedder_pin() -> bool:
+    """Keep the datasets an observer install built searchable. True when applied.
+
+    The observer ran embeddings on fastembed. Without it, a user who adds an
+    LLM key would get that provider's embedder by default, which cannot search
+    what fastembed built. So an install that ran on the observer keeps
+    fastembed until the user sets the embedding provider option themselves.
+    Applied before the install check and the boot: the first reads
+    ``EMBEDDING_PROVIDER`` for the fastembed extra, the second builds the
+    server's environment from these.
+    """
+    if os.environ.get("EMBEDDING_PROVIDER", "").strip():
+        return False  # the user's own embedding option
+    if not _embedder_pinned():
+        return False
+    for name, value in _OBSERVER_EMBEDDER.items():
+        os.environ.setdefault(name, value)
+    return True
+
+
+def _running_server_on_observer(target_url: str) -> bool:
+    """A local server an older plugin version started on the observer is still up."""
     if not target_url or not _is_local_url(target_url):
-        return False, None
+        return False
     try:
         from _plugin_common import live_server_record
 
         port = urllib.parse.urlparse(target_url).port or 80
-        record = live_server_record(port)
+        return live_server_record(port).get("llm_observer") is True
     except Exception:
-        record = {}
-    if record:
-        stamp = record.get("llm_observer")
-        return True, (bool(stamp) if isinstance(stamp, bool) else None)
-    return _health_ok(_health_url(target_url), timeout=1.0), None
+        return False
 
 
-def _apply_observer(config: dict, target_url: str) -> dict:
-    """Decide the Claude observer for this launch, apply its env, start the shim.
+def _remove_observer_leftovers() -> None:
+    """Delete what the removed observer left on disk. Never raises.
 
-    Returns the decision (``_observer.resolve_observer``) extended with
-    ``shim_running``, ``server_running`` and ``server_observer``. Never raises:
-    the observer is a convenience over the regular local mode, and a failure
-    here must leave that mode intact — except under ``COGNEE_LLM_OBSERVER=true``,
-    whose refusal is recorded so the user learns why the server has no LLM.
-
-    The environment only reaches a server this launch spawns. When one is
-    already running, its own boot-time config is what serves cognify, so that —
-    not this launch's decision — sets ``active``: a server booted on the
-    observer keeps needing the shim even after the user adds a key, and one
-    booted with a key ignores the observer until it restarts.
+    Its shim's bearer token and pidfile, once that shim is gone. A shim an
+    older version started may still be serving a server that was booted on it;
+    it retires itself, and the files go on a later start.
     """
     try:
-        from _observer import apply_observer_env, ensure_observer_running, resolve_observer
-
-        decision = resolve_observer(config)
-        server_running, server_observer = _running_server_observer(target_url)
-        decision["wanted"] = bool(decision.get("active"))
-        decision["server_running"] = server_running
-        decision["server_observer"] = server_observer
-        if server_running and server_observer is not None:
-            decision["active"] = server_observer
-        if decision.get("error"):
-            hook_log("observer_refused", {"error": decision["error"]})
-        if not decision.get("active"):
-            hook_log(
-                "observer_skipped",
-                {
-                    "reason": decision.get("reason", ""),
-                    "setting": decision.get("setting", ""),
-                    "server_running": server_running,
-                    "server_observer": server_observer,
-                },
-            )
-            decision["shim_running"] = False
-            return decision
-        if not decision.get("claude"):
-            # A running observer server this launch would not have chosen (the
-            # CLI is gone): nothing to start, but say what the server expects.
-            decision["shim_running"] = False
-            return decision
-        applied = apply_observer_env(decision)
-        running = ensure_observer_running(decision, cognee_url=target_url, wait=2.0)
-        decision["shim_running"] = running
-        hook_log(
-            "observer_applied",
-            {
-                "claude": decision.get("claude", ""),
-                "model": decision.get("model", ""),
-                "model_warning": decision.get("model_warning", ""),
-                "endpoint": decision.get("endpoint", ""),
-                "embedding": os.environ.get("EMBEDDING_PROVIDER", ""),
-                "applied": sorted(applied),
-                "shim_running": running,
-                "server_running": server_running,
-                "server_observer": server_observer,
-            },
-        )
-        if not running:
-            hook_log("observer_shim_start_failed", {"endpoint": decision.get("endpoint", "")})
-        return decision
+        pidfile = _OBSERVER_STATE_DIR / "observer.pid"
+        try:
+            pid = int(pidfile.read_text(encoding="utf-8").strip() or 0)
+        except (OSError, ValueError):
+            pid = 0
+        if pid and _pid_alive(pid):
+            return
+        for name in ("token", "observer.pid"):
+            try:
+                (_OBSERVER_STATE_DIR / name).unlink()
+            except FileNotFoundError:
+                pass
     except Exception as exc:
-        hook_log("observer_error", {"error": str(exc)[:200]})
-        return {"active": False, "reason": "error", "shim_running": False}
+        hook_log("observer_leftovers_failed", {"error": str(exc)[:200]})
 
 
-def _record_observer(decision: dict) -> None:
-    """Note the observer on this launch's record (read by the status line + doctor)."""
+def _local_llm_state(target_url: str) -> dict:
+    """What the local server has for an LLM this launch. Never raises.
+
+    ``configured``: the user set an LLM key or provider option.
+    ``embedder_pinned``: the observer's embedder is kept (see ``_apply_embedder_pin``).
+    ``server_observer``: the running server was started on the observer by an
+    older version and keeps that LLM until it restarts.
+    """
+    state = {"configured": False, "embedder_pinned": False, "server_observer": False}
     try:
-        from _plugin_common import _read_map_record, _write_map_record, get_session_key
+        from _env_file import option
 
-        host_key = get_session_key()
-        if not host_key:
-            return
-        record = _read_map_record(host_key)
-        if not record:
-            return
-        record["llm_observer"] = {
-            "active": bool(decision.get("active")),
-            "model": str(decision.get("model") or ""),
-            "endpoint": str(decision.get("endpoint") or ""),
-        }
-        _write_map_record(host_key, record)
+        state["configured"] = bool(
+            option("llm_api_key") or os.environ.get("LLM_PROVIDER", "").strip()
+        )
+        state["embedder_pinned"] = _apply_embedder_pin()
+        state["server_observer"] = _running_server_on_observer(target_url)
+        if not state["server_observer"]:
+            _remove_observer_leftovers()
+        hook_log("local_llm", dict(state))
     except Exception as exc:
-        hook_log("observer_record_failed", {"error": str(exc)[:200]})
+        hook_log("local_llm_error", {"error": str(exc)[:200]})
+    return state
 
 
-def _observer_note(observer: dict) -> str:
-    """The SessionStart systemMessage line about the observer, or ''."""
-    from _observer import SPEND_WARNING, embedding_warning
+_SET_LLM_KEY = (
+    "set the plugin's LLM API key option (/plugin, cognee-memory, Configure options) "
+    "and start a new session"
+)
 
-    active = bool(observer.get("active"))
-    wanted = bool(observer.get("wanted", active))
-    server_running = bool(observer.get("server_running"))
-    server_observer = observer.get("server_observer")
-    restart = (
-        "It keeps that config until it restarts (it stops on its own once every "
-        "session using it has closed)."
+
+def _llm_note(llm: dict) -> str:
+    """The SessionStart systemMessage line about the local server's LLM, or ''."""
+    if llm.get("cloud"):
+        return ""
+    embedder = (
+        " Embeddings stay on fastembed ({EMBEDDING_MODEL}, {EMBEDDING_DIMENSIONS} dims), the "
+        "embedder your existing datasets were built with; set the embedding options only "
+        "for a new dataset.".format(**_OBSERVER_EMBEDDER)
+        if llm.get("embedder_pinned")
+        else ""
     )
-    if wanted and server_running and server_observer is None:
-        # Nothing records how this server booted (another integration, an older
-        # build, or a server started outside the plugin). The env this launch
-        # applied does not reach it, so do not claim the observer serves it.
+    if llm.get("server_observer"):
         return (
-            "Cognee Memory: a Cognee server was already running and it is unknown which "
-            "LLM it was started with, so the Claude observer may not be serving it. If it "
-            f"is, cognify/improve use your Claude subscription. {restart}"
+            "Cognee Memory: the running Cognee server was started by an earlier plugin "
+            "version on the Claude observer, which this version removed. It keeps that LLM "
+            "until it restarts (it stops on its own once every session using it has closed). "
+            f"After that, local mode needs an LLM key: {_SET_LLM_KEY}." + embedder
         )
-    if active:
-        lines = [
-            f"⚠ LLM: Claude Code (observer), model {observer.get('model')}. {SPEND_WARNING}",
-            embedding_warning(),
-        ]
-        if observer.get("model_warning"):
-            lines.append(f"Warning: {observer['model_warning']}")
-        if server_running and server_observer is True and not wanted:
-            lines.append(
-                "The running Cognee server was started on the observer, so it still uses "
-                f"your subscription although this session would not have chosen it. {restart}"
-            )
-        else:
-            lines.append(
-                "To use a provider key instead, set the plugin's LLM API key option; "
-                "COGNEE_LLM_OBSERVER=false turns the observer off."
-            )
-        if not observer.get("shim_running"):
-            lines.append(
-                "Warning: the observer shim is not running — check "
-                "~/.cognee-plugin/observer/observer.log; the server has no LLM until it runs."
-            )
-        return "\n".join(lines)
-    if wanted and server_running and server_observer is False:
+    if not llm.get("configured"):
         return (
-            "Cognee Memory: the Claude observer was not applied — the running Cognee "
-            f"server was started with its own LLM config. {restart}"
+            "Cognee Memory: local mode has no LLM, so the server cannot build new memory "
+            f"into the graph. To fix it, {_SET_LLM_KEY}." + embedder
         )
-    if observer.get("error"):
-        return f"Cognee Memory: {observer['error']}"
     return ""
 
 
-def _with_observer_note(output: dict, observer: dict) -> dict:
-    """Tell the user (systemMessage) when the server's LLM is the Claude subscription,
-    what that costs, or why a requested observer could not be honoured."""
+def _with_llm_note(output: dict, llm: dict) -> dict:
+    """Tell the user (systemMessage) when the local server has no LLM to build
+    the graph with, or still runs on the observer an older version started."""
     try:
-        note = _observer_note(observer)
+        note = _llm_note(llm)
     except Exception as exc:
-        hook_log("observer_note_failed", {"error": str(exc)[:200]})
+        hook_log("llm_note_failed", {"error": str(exc)[:200]})
         note = ""
     if not note:
         return output
@@ -2052,29 +2031,15 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     config["base_url"] = target_url
     os.environ["COGNEE_BASE_URL"] = target_url
 
-    # Claude observer: local mode with no LLM key of its own runs the server's
-    # LLM calls through Claude Code (`claude -p --safe-mode`) behind a loopback
-    # OpenAI-compatible shim, with embeddings on fastembed. Decided and applied
-    # HERE, before the install/boot below: the install reads EMBEDDING_PROVIDER
-    # to add the fastembed extra, and the server inherits the provider variables
-    # at spawn. The shim is started detached now so the server's first LLM call
-    # (and the watcher's key check) find it listening.
+    # The local server's LLM comes from the plugin options alone. Decided HERE,
+    # before the install/boot below, because an install that ran on the Claude
+    # observer (removed in 1.8.4) keeps its embedder: the install check reads
+    # EMBEDDING_PROVIDER for the fastembed extra, and the server's environment
+    # is built from these at spawn.
     from _cloud_worker import enabled as cloud_enabled
 
     cloud = cloud_enabled({"base_url": target_url})
-    observer = (
-        {"active": False, "reason": "cloud"} if cloud else _apply_observer(config, target_url)
-    )
-
-    # NOTE: the local server's LLM_API_KEY health is deliberately NOT judged here.
-    # A hook-env read (config's llm_api_key / OPENAI_API_KEY) is blind to a key that
-    # lives in cognee's own config or a .env the server loads, so a session launched
-    # from a shell without the export wrote "not_set" into a marker that EVERY
-    # session's status line reads — a false ✕ (incorrect_llm_api_key) for sessions whose key is
-    # fine. The idle watcher is the sole authority instead: it resolves the key the
-    # same way the server does (cognee's get_llm_config) and validates it against
-    # the provider, so the verdict matches reality. It runs at session start, so the
-    # signal still appears within seconds of launch.
+    llm = {"cloud": True} if cloud else _local_llm_state(target_url)
 
     # The host (Claude) session id is a local correlation key only: it keeps every
     # hook process of this launch resolving the SAME Cognee session id (via the
@@ -2133,10 +2098,9 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     # later change is detected against this and reported (base_url_change_notice).
     set_launch_base_url(session_key, target_url)
     # The launch record is what the status line and doctor read — neither has
-    # this process's environment — so the observer decision lands on it here,
-    # once the record exists.
-    _record_observer(observer)
-    _record_launch_facts(config, target_url, observer)
+    # this process's environment — so what this launch decided lands on it
+    # here, once the record exists.
+    _record_launch_facts(config, target_url)
     from _project_memory import begin as begin_project_memory
 
     begin_project_memory(get_dataset(config), session_id, cwd)
@@ -2370,9 +2334,7 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
         phase_end("connecting", session_key=session_key, ok=bool(ready))
     return _with_system_note(
         _with_system_note(
-            _with_observer_note(
-                _session_start_guidance(mode, dataset, session_id, ready), observer
-            ),
+            _with_llm_note(_session_start_guidance(mode, dataset, session_id, ready), llm),
             coding_note,
         ),
         _project_memory_note(dataset, session_id),
@@ -2558,11 +2520,11 @@ def _apply_option_notices(output: dict) -> dict:
     return output
 
 
-def _record_launch_facts(config: dict, target_url: str, observer: dict) -> None:
+def _record_launch_facts(config: dict, target_url: str) -> None:
     """Note what this launch decided, for doctor (which has no options). Never raises.
 
     Booleans and names only: whether each key option is set, the LLM provider
-    and model as applied, the observer decision, and where the key comes from.
+    and model as applied, and where the key comes from.
     """
     try:
         from _env_file import option
@@ -2577,11 +2539,6 @@ def _record_launch_facts(config: dict, target_url: str, observer: dict) -> None:
                 "embedding_key_option_set": bool(option("embedding_api_key")),
                 "llm_provider": "" if not local else os.environ.get("LLM_PROVIDER", ""),
                 "llm_model": "" if not local else os.environ.get("LLM_MODEL", ""),
-                "observer": {
-                    "active": bool(observer.get("active")),
-                    "reason": str(observer.get("reason") or ""),
-                    "model": str(observer.get("model") or ""),
-                },
                 "key_source": (
                     "local_owner_key"
                     if local

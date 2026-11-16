@@ -2,7 +2,7 @@
 """Background watcher daemon.
 
 Launched detached from ``session-start.py`` (and respawned by the next prompt
-if it is not running). Runs the update check and the observer LLM check once
+if it is not running). Runs the update check and the LLM-configured check once
 at start, then refreshes shared agent memory every ``SHARED_REFRESH_SECONDS``
 until stopped.
 
@@ -76,30 +76,23 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
-# Minimum seconds between two observer checks by the same session.
-_LLM_CHECK_INTERVAL_SECONDS = 300.0
-
-
 def _check_llm_key(config: dict) -> None:
-    """Observer-only LLM check for the status line (local mode).
+    """Say on the status line when the local server has no LLM (local mode).
 
-    The only LLM verdict the plugin forms is about the Claude observer: it asks
-    the plugin's own loopback shim whether ``claude`` can answer. A user's own
-    LLM key is not checked here (SDK-1411): the plugin imports no cognee or
-    litellm code and calls no provider, so a bad key shows up only as failures
-    in the server's logs.
-
-    Writes the shared llm-state marker: ``ok`` / ``auth_failed`` (reason
-    ``observer_needs_stored_login``). Without an active observer it withdraws
-    this session's verdict. Throttled via the marker's ``checked_at``.
+    The local server's LLM comes from the plugin options alone, so "no LLM key
+    or provider option" is something this process knows without asking anyone:
+    it writes ``not_set`` to the llm-state marker, and withdraws the verdict
+    otherwise. Whether a configured key works is not checked (SDK-1411): the
+    plugin imports no cognee or litellm code and calls no provider, so a bad
+    key shows up only as failures in the server's logs.
     """
     try:
         sys.path.insert(0, os.path.dirname(__file__))
+        from _env_file import option
         from _plugin_common import (
             clear_llm_state,
-            get_session_key,
+            live_server_record,
             llm_key_owner,
-            read_llm_state,
             service_url_is_local,
             write_llm_state,
         )
@@ -114,51 +107,25 @@ def _check_llm_key(config: dict) -> None:
             clear_llm_state()
             _log("llm_key_check_skipped", reason=owner)
             return
-
-        from _observer import STORED_LOGIN_ONLY_MESSAGE, STORED_LOGIN_ONLY_REASON, observer_probe
-        from _observer import is_active as _observer_active
-
-        if not _observer_active():
+        if option("llm_api_key") or os.environ.get("LLM_PROVIDER", "").strip():
             clear_llm_state()
-            _log("llm_key_check_skipped", reason="observer_inactive")
+            _log("llm_key_check_skipped", reason="configured")
             return
+        # A server an older version started on the Claude observer (removed in
+        # 1.8.4) keeps that LLM until it restarts.
+        try:
+            import urllib.parse
 
-        # Throttle against OUR OWN last verdict only. The marker is machine-wide, so
-        # honouring another session's timestamp would let a keyless launch's verdict
-        # stand in for ours and leave this session permanently unvalidated.
-        prior = read_llm_state()
-        if str(prior.get("session_key") or "") == get_session_key() and (
-            time.time() - float(prior.get("checked_at", 0) or 0) < _LLM_CHECK_INTERVAL_SECONDS
-        ):
+            port = urllib.parse.urlparse(base_url or "http://localhost:8011").port or 80
+            on_observer = live_server_record(port).get("llm_observer") is True
+        except Exception:
+            on_observer = False
+        if on_observer:
+            clear_llm_state()
+            _log("llm_key_check_skipped", reason="server_on_observer")
             return
-
-        # The "key" is Claude Code's own stored login, and the shim knows whether
-        # `claude` can answer.
-        verdict = observer_probe(timeout=75.0)
-        auth = verdict.get("auth")
-        if auth == "ok":
-            write_llm_state("ok")
-            _log("llm_key_ok", source="observer")
-        elif auth == "failed":
-            write_llm_state(
-                "auth_failed",
-                detail=STORED_LOGIN_ONLY_MESSAGE,
-                reason=STORED_LOGIN_ONLY_REASON,
-            )
-            _log(
-                "llm_key_auth_failed",
-                source="observer",
-                detail=str(verdict.get("detail") or "")[:200],
-            )
-        else:
-            # The shim is down or claude failed for a non-auth reason: no verdict
-            # either way.
-            _log(
-                "llm_key_check_inconclusive",
-                source="observer",
-                status=verdict.get("status"),
-                error=str(verdict.get("detail") or "")[:200],
-            )
+        write_llm_state("not_set")
+        _log("llm_key_not_set")
     except Exception as exc:
         _log("llm_key_check_error", error=str(exc)[:200])
 
@@ -171,7 +138,7 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         user_id=config.get("user_id", ""),
         poll=POLL_SECONDS,
     )
-    # Check the Claude observer once at session start (background).
+    # Note once, at session start, whether the local server has an LLM.
     _check_llm_key(config)
     exit_reason = "loop_complete"
     # First shared-memory refresh one interval in: SessionStart just resolved

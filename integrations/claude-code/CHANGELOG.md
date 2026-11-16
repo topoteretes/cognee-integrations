@@ -10,6 +10,45 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.4]
+
+1.8.3 was held by the plugin directory with the same two findings as 1.8.2 (*Uses a
+credential from the user's machine*, *Update adds credential forward*): "no new
+findings, none fixed". Two releases that removed code patterns cleared nothing, so this
+one removes a behaviour: the Claude observer, which ran the local server's LLM calls
+under the user's stored Claude login (SDK-1411).
+
+### Removed
+
+- **The Claude observer.** Local mode with no LLM API key no longer runs the server's
+  LLM calls as `claude -p` behind a loopback shim. The plugin starts no `claude`
+  process, runs no shim and keeps no shim token; `_observer.py` and
+  `claude-observer.py` are gone, and `COGNEE_LLM_OBSERVER` and the `COGNEE_OBSERVER_*`
+  settings are ignored. **Local mode now needs the LLM API key option to build memory
+  into the graph.** Without it, memory already in the graph is still recalled and new
+  sessions are still captured, but nothing new is built into the graph. Cloud mode is
+  unaffected.
+
+### Changed
+
+- **A local session without an LLM says so.** Session start names the missing LLM API
+  key option every time, doctor's LLM row reads `None — no LLM API key option set`,
+  and the status line shows `✕ (incorrect_llm_api_key)`. The idle watcher no longer
+  probes anything: it records only whether an LLM key or provider option is set.
+- **An install that ran on the observer keeps its embedder.** The observer paired its
+  LLM with cognee's local embedder (fastembed, `BAAI/bge-small-en-v1.5`, 384
+  dimensions), and a dataset can only be searched with the embedder that built it. So
+  when the newest local session on record ran on the observer, the first session start
+  of 1.8.4 records that in `~/.cognee-plugin/claude-code/embedder.json` and keeps
+  fastembed from then on, also after an LLM key is added, unless the embedding provider
+  option is set. Doctor shows the kept embedder.
+- **Upgrading mid-flight.** A local server that 1.8.3 started on the observer keeps
+  that LLM, and the shim that version started, until it restarts; session start says
+  so. The shim's token and pidfile in `~/.cognee-plugin/observer/` are deleted on the
+  first session start after that shim is gone.
+- **Option descriptions.** The LLM API key and LLM provider options no longer offer
+  the Claude subscription as the alternative to a key.
+
 ## [1.8.3]
 
 1.8.2 was still held by the plugin directory with the same findings as 1.8.1 (*Uses a
