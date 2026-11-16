@@ -45,6 +45,13 @@ what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK
   setting themselves and pass the value. The settings-file loader is the one exception:
   it copies whatever names `~/.cognee/.env` holds. No behaviour change.
 
+### Removed
+
+- **From `cognee-report`: the Notion export and the `--server` check** (SDK-1411). The
+  report script read a Notion token and the Cognee key from the environment and called
+  `api.notion.com` and the Cognee server. Neither was part of the skill's instructions.
+  The report itself, built from local telemetry, is unchanged.
+
 ## [1.8.5]
 
 **This release takes back versions 1.8.2, 1.8.3 and 1.8.4.** The plugin is 1.8.1 again,
