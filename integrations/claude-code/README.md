@@ -228,10 +228,10 @@ with the Bash tool (nor to the status line command). So in Cloud mode the script
 behind the skills get no key: search, remember, forget, code indexing, the recaps and
 the dataset switch, doctor's auth check, and the search of the `cognee-recall` agent.
 They stop before any request with "no API key", and exit with status 2.
-The Cloud URL is not a secret, so the status line and these scripts read the URL
-option where Claude Code saves it: `pluginConfigs["cognee-memory@<marketplace>"].options.cognee_base_url`
-in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`). They only read
-it. Automatic recall and capture run
+The Cloud URL is not a secret, so every hook saves it to the plugin's own state file,
+`~/.cognee-plugin/claude-code/cloud-url`, and the status line and these scripts read
+it from there. The file holds the URL only, never a key. Claude Code's settings files
+are not read for it. Automatic recall and capture run
 in hooks and work in both modes. In local mode the skills work: they look up the
 local server's key themselves.
 
@@ -1045,7 +1045,7 @@ nothing; the entry stays until you remove it.
 
 The status line reads only local state — no network calls on every refresh:
 1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
-2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then the Cloud URL option (read from `pluginConfigs` in `~/.claude/settings.json`)
+2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then the Cloud URL option (in a shell: as a hook last saved it to `~/.cognee-plugin/claude-code/cloud-url`)
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM configured: `llm-state/<session>.json`, then `llm-state.json`

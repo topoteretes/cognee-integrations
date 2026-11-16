@@ -293,18 +293,9 @@ def test_the_shell_guard_fires_for_a_pinned_loopback_cloud_url(
     """From a shell (no key) against the pinned loopback Cloud URL: stop with
     exit 2, as for any Cloud server, instead of logging in as the default user."""
     _as_shell(monkeypatch)
-    settings = temp_home / ".claude" / "settings.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        json.dumps(
-            {
-                "pluginConfigs": {
-                    "cognee-memory@cognee": {"options": {"cognee_base_url": mock_server.url}}
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+    state = temp_home / ".cognee-plugin" / "claude-code" / "cloud-url"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(mock_server.url + "\n", encoding="utf-8")
     monkeypatch.setenv("COGNEE_BACKEND", "cloud")
     pc = isolated_modules(suite, "_plugin_common")
     with pytest.raises(SystemExit) as stopped:

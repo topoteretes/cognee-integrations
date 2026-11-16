@@ -22,8 +22,9 @@ keeps only their names, so doctor and the session-start upgrade notice can say
 they are ignored.
 
 Processes Claude Code gives no options (the status line, Bash-run skills) read
-the non-secret URL option where Claude Code saves it: ``pluginConfigs`` in the
-user settings. They have no key.
+the non-secret URL option from the plugin's own state file, where the last hook
+process saved it (``_URL_STATE_FILE``). They have no key, and no file outside
+the plugin's state directory is read for it.
 
 Deliberately stdlib-only: hook scripts must run outside the plugin venv on the
 cloud path, so python-dotenv is not an option. The parser accepts a leading
@@ -203,11 +204,16 @@ _TUNING_NAMES = frozenset(
 
 # Claude Code exports the options to hook processes only (and their children);
 # CLAUDE_PLUGIN_ROOT marks those. The status line and the Bash-run skills get
-# no options, so they read the URL option where Claude Code keeps non-secret
-# option values: ``pluginConfigs["cognee-memory@<marketplace>"].options`` in the
-# user settings. The keys are secrets and are never readable there.
+# no options, so they read the URL option from a file in the plugin's own state
+# directory, which every hook process keeps equal to the option. Only the URL is
+# saved there, never a key. Claude Code's settings files are not read.
 _HOOK_PROCESS_MARKER = "CLAUDE_PLUGIN_ROOT"
-_PLUGIN_ID_PREFIX = "cognee-memory@"
+_URL_STATE_NAME = "cloud-url"
+
+
+def _url_state_file() -> Path:
+    return Path.home() / ".cognee-plugin" / "claude-code" / _URL_STATE_NAME
+
 
 # Explicit per-terminal mode switch. The shared name flips every Cognee plugin
 # in the terminal; the plugin-specific name beats it when both are set. The
@@ -290,15 +296,41 @@ def _loadable(name: str, value: str) -> bool:
     return name in _TUNING_NAMES
 
 
+def _option_readers() -> dict:
+    """Each plugin option read by its full, literal variable name.
+
+    Claude Code exports ``userConfig`` option ``<key>`` to hook processes as
+    ``CLAUDE_PLUGIN_OPTION_<KEY>``. The names are spelled out, not built from a
+    prefix, so that anyone reading this file (a reviewer, or a check of the
+    plugin's files) sees which variables are read: the plugin's own options and
+    nothing else from the environment.
+    """
+    env = os.environ
+    return {
+        "cognee_base_url": lambda: env.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", ""),
+        "cognee_api_key": lambda: env.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", ""),
+        "llm_api_key": lambda: env.get("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", ""),
+        "llm_provider": lambda: env.get("CLAUDE_PLUGIN_OPTION_LLM_PROVIDER", ""),
+        "llm_model": lambda: env.get("CLAUDE_PLUGIN_OPTION_LLM_MODEL", ""),
+        "embedding_provider": lambda: env.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_PROVIDER", ""),
+        "embedding_model": lambda: env.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_MODEL", ""),
+        "embedding_dimensions": lambda: env.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_DIMENSIONS", ""),
+        "embedding_api_key": lambda: env.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", ""),
+    }
+
+
 def option(name: str) -> str:
-    """A plugin option's value as Claude Code exported it to this process, or ""."""
-    return os.environ.get(OPTION_PREFIX + name.upper(), "").strip()
+    """A plugin option's value as Claude Code exported it to this process, or "".
+
+    Only the options this plugin declares can be read; any other name is ""."""
+    reader = _option_readers().get(str(name or "").lower())
+    return str(reader() or "").strip() if reader else ""
 
 
 def cloud_key(service_url: str = "") -> str:
     """The Cloud key option when it is the key for ``service_url`` (default:
     the server requests go to), else "". Read from the option on every call."""
-    key = option("cognee_api_key")
+    key = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "").strip()
     if key and cloud_key_applies(service_url or resolved_service_url()):
         return key
     return ""
@@ -308,11 +340,14 @@ def server_secret_env() -> dict:
     """The LLM and embedding key options, under the names the local server
     reads them by. For the environment of the server this plugin starts only:
     they are never put in a plugin process's own environment."""
-    return {
-        OPTION_VARS[name]: option(name)
-        for name in SENSITIVE_OPTIONS
-        if name in LLM_OPTIONS and option(name)
-    }
+    llm_key = os.environ.get("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "").strip()
+    embedding_key = os.environ.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "").strip()
+    env = {}
+    if llm_key:
+        env[OPTION_VARS["llm_api_key"]] = llm_key
+    if embedding_key:
+        env[OPTION_VARS["embedding_api_key"]] = embedding_key
+    return env
 
 
 def is_hook_process() -> bool:
@@ -320,10 +355,10 @@ def is_hook_process() -> bool:
 
 
 def url_option() -> str:
-    """The Cloud URL option: from the hook env, else from the saved settings."""
+    """The Cloud URL option: from the hook env, else as a hook last saved it."""
     if is_hook_process():
         return option(URL_OPTION)
-    return _url_option_from_settings()
+    return _saved_url_option()
 
 
 def _apply_plugin_options() -> None:
@@ -376,36 +411,43 @@ def _apply_connection_options() -> None:
     request needs it, and only for a server it is the key for.
     """
     base_url = url_option()
+    if is_hook_process():
+        _save_url_option(base_url)
     if base_url:
         os.environ["COGNEE_BASE_URL"] = base_url
     else:
         os.environ.pop("COGNEE_BASE_URL", None)
 
 
-def _url_option_from_settings() -> str:
-    """The URL option as Claude Code saved it, for processes that get no options.
+def _saved_url_option() -> str:
+    """The URL option as a hook process last saved it, for processes that get
+    no options. Never raises; "" when no URL option is set."""
+    try:
+        return _url_state_file().read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
 
-    Read from the user settings (``CLAUDE_CONFIG_DIR`` or ``~/.claude``), the
-    only scope Claude Code reads ``pluginConfigs`` from besides managed settings.
-    Never raises; "" when the plugin has no URL option set.
+
+def _save_url_option(value: str) -> None:
+    """Keep the state file equal to the URL option (hook processes only).
+
+    Written only when it differs, removed when the option is empty. Holds the
+    URL alone, which is not a secret. Never raises.
     """
     try:
-        import json
-
-        config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
-        root = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
-        settings = json.loads((root / "settings.json").read_text(encoding="utf-8"))
-        configs = settings.get("pluginConfigs") if isinstance(settings, dict) else None
-        for plugin_id, entry in (configs or {}).items():
-            if not str(plugin_id).startswith(_PLUGIN_ID_PREFIX) or not isinstance(entry, dict):
-                continue
-            options = entry.get("options")
-            value = options.get(URL_OPTION) if isinstance(options, dict) else None
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+        path = _url_state_file()
+        value = str(value or "").strip()
+        if _saved_url_option() == value:
+            return
+        if not value:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(value + "\n", encoding="utf-8")
+        os.replace(tmp, path)
     except Exception:
         pass
-    return ""
 
 
 def _keeps_value(name: str, value: str) -> bool:

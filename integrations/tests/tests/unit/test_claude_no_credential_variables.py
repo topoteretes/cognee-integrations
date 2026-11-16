@@ -62,13 +62,22 @@ def _own_the_environment(monkeypatch) -> None:
     monkeypatch.setattr(isolation, "scrub_cognee_env", lambda _monkeypatch: None)
 
 
+#: The plugin's own options, as Claude Code exports them: the one sanctioned
+#: source of a key, read by its literal name so a reader can see that it is.
+_OPTION_PREFIX = "CLAUDE_PLUGIN_OPTION_"
+
+
 def _credential_reads(path) -> list[str]:
     text = path.read_text(encoding="utf-8", errors="replace")
     patterns = _PY_READS if path.suffix == ".py" else (*_PY_READS, _SHELL_READ)
     found = []
     for number, line in enumerate(text.splitlines(), 1):
         for pattern in patterns:
-            found += [f"{path.name}:{number}: {m.group(1)}" for m in pattern.finditer(line)]
+            found += [
+                f"{path.name}:{number}: {m.group(1)}"
+                for m in pattern.finditer(line)
+                if not m.group(1).startswith(_OPTION_PREFIX)
+            ]
     return found
 
 
@@ -100,7 +109,7 @@ def test_the_scan_catches_each_form(tmp_path):
         'env["LLM_API_KEY"] = value  # a child environment: an assignment\n'
         'os.environ["HASH_API_KEY"] = "false"\n'
         'e = os.environ.get("COGNEE_SESSION_KEY")  # not a credential name\n'
-        'f = os.environ.get("CLAUDE_PLUGIN_OPTION_" + name.upper())\n',
+        'f = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY")  # the option itself\n',
         encoding="utf-8",
     )
     assert [hit.split(": ")[1] for hit in _credential_reads(sample)] == [
