@@ -13,7 +13,7 @@ user's shell. Now:
 - the Cloud key is read from its option where a request needs it, and no
   resolver writes a key into the environment;
 - the LLM and embedding keys reach only the environment of the server the
-  plugin starts, and the observer's own shim token keeps priority there;
+  plugin starts;
 - ``cognee-search.sh --category`` replaces the hand-written ``curl`` the skill
   texts used for a category search.
 """
@@ -199,30 +199,14 @@ def test_the_llm_keys_reach_the_server_env_and_not_the_plugin_process(
     env = start._server_env()
     assert env["LLM_API_KEY"] == "sk-option-llm"
     assert env["EMBEDDING_API_KEY"] == "sk-option-embed"
-    assert importlib.import_module("_observer").llm_key_configured() is True
-
-
-def test_the_observer_token_keeps_priority_over_the_key_option(claude, hook_module, monkeypatch):
-    """Observer forced on with a key option set: the server must be given the
-    shim's token, or its calls to the shim are refused."""
-    start = hook_module(claude, "session-start.py")
-    observer = importlib.import_module("_observer")
-    _load_options(monkeypatch, llm_api_key="sk-option-llm")
-    # What apply_observer_env leaves in the process: the flag, not the token.
-    monkeypatch.setenv(observer.ACTIVE_ENV_FLAG, "1")
-    monkeypatch.setattr(observer, "observer_token", lambda create=True: "shim-token")
-    assert start._server_env()["LLM_API_KEY"] == "shim-token"
-    assert "LLM_API_KEY" not in os.environ
 
 
 def test_a_key_left_in_the_process_never_reaches_the_server(claude, hook_module, monkeypatch):
     """A key-named variable still in this process (an older plugin version's
     ancestor, a shell export that survived) is not copied to the server: the
-    server's keys come from the options or the observer only."""
+    server's keys come from the options only."""
     start = hook_module(claude, "session-start.py")
-    observer = importlib.import_module("_observer")
     _load_options(monkeypatch, llm_api_key="sk-option-llm")
-    monkeypatch.delenv(observer.ACTIVE_ENV_FLAG, raising=False)
     monkeypatch.setenv("LLM_API_KEY", "sk-stale")
     monkeypatch.setenv("EMBEDDING_API_KEY", "sk-stale-embed")
     env = start._server_env()
@@ -238,7 +222,6 @@ def test_without_a_key_option_the_server_gets_none(claude, hook_module, monkeypa
     env = start._server_env()
     assert "LLM_API_KEY" not in env
     assert "EMBEDDING_API_KEY" not in env
-    assert importlib.import_module("_observer").llm_key_configured() is False
 
 
 # ── the category search the skills used a hand-written curl for ────────────

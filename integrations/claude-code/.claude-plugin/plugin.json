@@ -1,8 +1,8 @@
 {
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
-  "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
-  "version": "1.8.3",
+  "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally (with your own LLM API key) or on Cognee Cloud.",
+  "version": "1.8.4",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -38,13 +38,13 @@
     "llm_api_key": {
       "type": "string",
       "title": "LLM API key (local mode)",
-      "description": "The model provider key the local Cognee server builds memory with (OpenAI unless LLM provider is set). Leave empty to use your Claude subscription through the claude CLI instead.",
+      "description": "The model provider key the local Cognee server builds memory with (OpenAI unless LLM provider is set). Local mode needs it to build memory into the graph.",
       "sensitive": true
     },
     "llm_provider": {
       "type": "string",
       "title": "LLM provider (local mode)",
-      "description": "The local server's LLM provider, such as openai, anthropic or gemini. Leave empty for OpenAI with an LLM API key, or the Claude subscription without one.",
+      "description": "The local server's LLM provider, such as openai, anthropic or gemini. Leave empty for OpenAI. Needs the LLM API key as well.",
       "default": ""
     },
     "llm_model": {

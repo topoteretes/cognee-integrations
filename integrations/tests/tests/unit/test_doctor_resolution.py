@@ -29,8 +29,12 @@ import pytest
 
 
 @pytest.fixture
-def doctor(suite, isolated_modules):
+def doctor(suite, isolated_modules, monkeypatch):
     module = isolated_modules(suite, "doctor")
+    # The local server is the plugin's own unless a test says otherwise: the
+    # real check probes the port, which a developer's own server may answer.
+    if hasattr(module, "_server_owner"):
+        monkeypatch.setattr(module, "_server_owner", lambda: "")
     # Load the settings layer now, as the doctor process does before any
     # test sets a variable: the Claude Code plugin replaces the shell's
     # connection settings with its options when that layer loads.
@@ -245,7 +249,6 @@ def test_doctor_reads_the_cloud_launch_record_without_options(
             "embedding_key_option_set": False,
             "llm_provider": "",
             "llm_model": "",
-            "observer": {"active": False, "reason": "cloud", "model": ""},
             "key_source": "plugin_option",
             # Anything that is not a boolean or a name is dropped.
             "api_key": "ck_never_written",
@@ -269,7 +272,6 @@ def test_doctor_shows_the_recorded_provider_in_local_mode(
             "llm_key_option_set": True,
             "llm_provider": "anthropic",
             "llm_model": "anthropic/claude-sonnet",
-            "observer": {"active": False, "reason": "llm_key_configured", "model": ""},
             "key_source": "local_owner_key",
         },
     )
@@ -279,18 +281,100 @@ def test_doctor_shows_the_recorded_provider_in_local_mode(
     assert doctor._resolve_api_key_source().startswith("Local server (as of session start")
 
 
-def test_doctor_names_the_stored_login_limit(options_doctor, pc, project_dir, monkeypatch):
+def test_doctor_says_when_local_mode_has_no_llm(options_doctor, pc, project_dir, monkeypatch):
     doctor = options_doctor
     monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
     _launch_record(
         pc,
         project_dir,
-        {
-            "observer": {"active": False, "reason": "observer_needs_stored_login", "model": ""},
-            "key_source": "local_owner_key",
-        },
+        {"llm_key_option_set": False, "llm_provider": "", "key_source": "local_owner_key"},
     )
-    assert "can use only Claude Code's stored login" in doctor._resolve_llm()
+    llm = doctor._resolve_llm()
+    assert llm.startswith("None — no LLM API key option set")
+    assert "(as of session start, " in llm
+
+
+def test_doctor_names_a_provider_recorded_without_its_key(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(
+        pc,
+        project_dir,
+        {"llm_key_option_set": False, "llm_provider": "anthropic", "key_source": "local_owner_key"},
+    )
+    llm = doctor._resolve_llm()
+    assert llm.startswith("None — LLM provider option is anthropic but no LLM API key option set")
+
+
+@pytest.mark.parametrize("owner", ["managed_endpoint", "unowned_server"])
+def test_doctor_leaves_the_llm_of_a_server_it_did_not_start_alone(
+    options_doctor, pc, project_dir, monkeypatch, owner
+):
+    """A docker or systemd Cognee on the port has its own LLM: "no LLM API key
+    option set" would be false for it."""
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(
+        pc,
+        project_dir,
+        {"llm_key_option_set": False, "llm_provider": "", "key_source": "local_owner_key"},
+    )
+    monkeypatch.setattr(doctor, "_server_owner", lambda: owner)
+    llm = doctor._resolve_llm()
+    assert llm == f"Server not started by the plugin ({owner}) — its own LLM settings apply"
+
+
+def test_doctor_names_the_removed_observer_for_a_record_of_an_older_version(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    """Before any session of this version has started, the newest record is
+    one 1.8.3 wrote: the Claude observer was the LLM, and it is gone."""
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(pc, project_dir, {"key_source": "local_owner_key"})
+    record = pc._read_map_record("sess-doctor")
+    record["launch_facts"]["observer"] = {"active": True, "reason": "", "model": "haiku"}
+    pc._write_map_record("sess-doctor", record)
+    llm = doctor._resolve_llm()
+    assert llm.startswith("Claude observer (as of session start, ")
+    assert "set the LLM API key option" in llm
+
+
+def test_doctor_with_options_reports_what_they_configure(options_doctor, monkeypatch):
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", raising=False)
+    assert doctor._computed_llm().startswith("None — no LLM API key option set")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-option")
+    assert doctor._computed_llm() == "Configured provider (openai (default), model Default)"
+
+
+def test_doctor_shows_the_embedder_kept_from_the_observer(options_doctor, pc, monkeypatch):
+    """A shell has no options, so doctor reads the pin session start wrote."""
+    doctor = options_doctor
+    for name in ("EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS"):
+        monkeypatch.delenv(name, raising=False)
+    assert doctor._resolve_embedding() == ("Default", "Default")
+    pc._PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+    (pc._PLUGIN_DIR / "embedder.json").write_text(
+        json.dumps(
+            {
+                "EMBEDDING_PROVIDER": "fastembed",
+                "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5",
+                "EMBEDDING_DIMENSIONS": "384",
+            }
+        ),
+        encoding="utf-8",
+    )
+    model, dims = doctor._resolve_embedding()
+    assert model.startswith("BAAI/bge-small-en-v1.5 (fastembed, kept")
+    assert dims == "384"
+    # The user's own embedding option wins over the pin.
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    assert doctor._resolve_embedding()[0] == "text-embedding-3-small"
 
 
 def test_doctor_without_a_record_says_it_cannot_see_the_options(options_doctor):
@@ -307,94 +391,3 @@ def test_doctor_lists_refused_env_file_names_as_ignored(options_doctor, tmp_path
     line = doctor._resolve_env_file()
     assert "COGNEE_API_KEY ignored (set in the plugin options)" in line
     assert "ck_secret" not in line
-
-
-# ── the observer's "stored login only" note speaks for this session, now ──
-
-_STORED_LOGIN = "can use only Claude Code's stored login"
-_OBSERVER_ACTIVE = {
-    "cloud_key_option_set": False,
-    "llm_key_option_set": False,
-    "llm_provider": "",
-    "llm_model": "",
-    "observer": {"active": True, "reason": "observer", "model": "haiku"},
-    "key_source": "local_owner_key",
-}
-_LLM_OPTIONS_SET = {
-    "cloud_key_option_set": False,
-    "llm_key_option_set": True,
-    "llm_provider": "openai",
-    "llm_model": "openai/gpt-4o-mini",
-    "observer": {"active": False, "reason": "llm_key_configured", "model": ""},
-    "key_source": "local_owner_key",
-}
-
-
-def _health_marker(pc, *, owner: str, age_seconds: float) -> None:
-    """The machine-wide observer health marker, as a session's watcher left it."""
-    pc._LLM_STATE_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    pc._LLM_STATE_MARKER.write_text(
-        json.dumps(
-            {
-                "llm_state": "auth_failed",
-                "checked_at": time.time() - age_seconds,
-                "session_key": owner,
-                "reason": "observer_needs_stored_login",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
-def test_an_old_observer_verdict_from_another_session_is_not_shown(
-    options_doctor, pc, project_dir, monkeypatch
-):
-    """The observer failed on login three weeks ago in another session; the
-    user has set the LLM options since. Doctor must not repeat the advice."""
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    _launch_record(pc, project_dir, _LLM_OPTIONS_SET)
-    _health_marker(pc, owner="some-old-session", age_seconds=20 * 24 * 3600)
-    llm = options_doctor._resolve_llm()
-    assert llm.startswith("Configured provider (openai, model openai/gpt-4o-mini)")
-    assert _STORED_LOGIN not in llm
-
-
-def test_the_observer_note_is_not_added_when_the_llm_options_are_in_use(
-    options_doctor, pc, project_dir, monkeypatch
-):
-    """Even a fresh verdict from this session says nothing once the LLM in use
-    is the configured provider, not the observer."""
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    monkeypatch.setenv("COGNEE_SESSION_KEY", "sess-doctor")
-    _launch_record(pc, project_dir, _LLM_OPTIONS_SET)
-    _health_marker(pc, owner="sess-doctor", age_seconds=60)
-    assert _STORED_LOGIN not in options_doctor._resolve_llm()
-
-
-def test_a_fresh_observer_verdict_of_this_session_is_shown_with_its_age(
-    options_doctor, pc, project_dir, monkeypatch
-):
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    monkeypatch.setenv("COGNEE_SESSION_KEY", "sess-doctor")
-    _launch_record(pc, project_dir, _OBSERVER_ACTIVE)
-    _health_marker(pc, owner="sess-doctor", age_seconds=4 * 60 + 5)
-    llm = options_doctor._resolve_llm()
-    assert llm.startswith("Claude Code observer")
-    assert _STORED_LOGIN in llm and "(checked 4 min ago)" in llm
-
-
-@pytest.mark.parametrize(
-    "owner, age_seconds",
-    [("another-session", 60), ("sess-doctor", 31 * 60)],
-    ids=["another session's", "older than the status line's limit"],
-)
-def test_an_observer_verdict_that_is_not_ours_or_not_fresh_is_not_shown(
-    options_doctor, pc, project_dir, monkeypatch, owner, age_seconds
-):
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    monkeypatch.setenv("COGNEE_SESSION_KEY", "sess-doctor")
-    _launch_record(pc, project_dir, _OBSERVER_ACTIVE)
-    _health_marker(pc, owner=owner, age_seconds=age_seconds)
-    llm = options_doctor._resolve_llm()
-    assert llm.startswith("Claude Code observer")
-    assert _STORED_LOGIN not in llm

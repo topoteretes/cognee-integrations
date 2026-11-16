@@ -52,7 +52,6 @@ QUIET_ENV = {
     "COGNEE_IDLE_DISABLED": "1",
     "COGNEE_UPDATE_CHECK": "off",
     "COGNEE_LAZY_BOOTSTRAP": "0",
-    "COGNEE_LLM_OBSERVER": "false",
 }
 
 

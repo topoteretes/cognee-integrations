@@ -302,157 +302,106 @@ def _resolve_embedding() -> tuple[str, str]:
     (the values that govern local mode). "Default" means unset — cognee falls
     back to its built-in default.
     """
-    model = (os.environ.get("EMBEDDING_MODEL") or "").strip() or "Default"
-    dims = (os.environ.get("EMBEDDING_DIMENSIONS") or "").strip() or "Default"
-    return model, dims
+    model = (os.environ.get("EMBEDDING_MODEL") or "").strip()
+    dims = (os.environ.get("EMBEDDING_DIMENSIONS") or "").strip()
+    if not model and not (os.environ.get("EMBEDDING_PROVIDER") or "").strip():
+        pinned = _pinned_embedder()
+        if pinned:
+            return pinned
+    return model or "Default", dims or "Default"
 
 
-def _stored_login_note(reason: str) -> str:
+def _pinned_embedder() -> tuple[str, str] | None:
+    """The embedder session start keeps for an install that ran on the Claude
+    observer (removed in 1.8.4), or None. A shell has no options, so doctor
+    reads the pin file session start wrote."""
     try:
-        from _observer import STORED_LOGIN_ONLY_MESSAGE, STORED_LOGIN_ONLY_REASON
-    except ImportError:
-        return ""
-    return STORED_LOGIN_ONLY_MESSAGE if reason == STORED_LOGIN_ONLY_REASON else ""
+        from _plugin_common import _PLUGIN_DIR
 
-
-# How long an observer health verdict speaks for the present: the status
-# line's own limit, so the two never disagree about a stale marker.
-try:
-    from cognee_statusline_render import _LLM_STATE_STALE_SECONDS
-except Exception:  # pragma: no cover - the renderer is always shipped alongside
-    _LLM_STATE_STALE_SECONDS = 30 * 60
-
-# How the LLM row starts when the observer is the LLM in use (both the
-# computed and the recorded form), and so when its health note applies.
-_OBSERVER_ROW_PREFIX = "Claude Code observer"
-
-
-def _observer_health_note() -> str:
-    """The "stored login only" note for the observer's last health check, or "".
-
-    Shown only for a verdict that speaks for this session now: this session's
-    own marker, or the machine-wide one when it is unattributed or ours, and
-    only while it is younger than the status line's limit. Another session's
-    verdict, or one from days ago, says nothing about this one. Never raises.
-    """
-    try:
-        from _plugin_common import (
-            _LLM_STATE_DIR,
-            _LLM_STATE_MARKER,
-            _session_key_path_safe,
-            get_session_key,
-            resolve_host_key_outside_hook,
-        )
-
-        def _read(path) -> dict:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                return data if isinstance(data, dict) else {}
-            except Exception:
-                return {}
-
-        key = get_session_key() or resolve_host_key_outside_hook()[0]
-        marker = _read(_LLM_STATE_DIR / f"{key}.json") if _session_key_path_safe(key) else {}
-        if not marker:
-            marker = _read(_LLM_STATE_MARKER)
-            owner = str(marker.get("session_key") or "")
-            if owner and owner != key:
-                return ""
-        age = time.time() - float(marker.get("checked_at") or 0)
-        if age < 0 or age > _LLM_STATE_STALE_SECONDS:
-            return ""
-        note = _stored_login_note(str(marker.get("reason") or ""))
-        return f"{note} (checked {int(age // 60)} min ago)" if note else ""
+        pin = json.loads((_PLUGIN_DIR / "embedder.json").read_text(encoding="utf-8"))
+        model = str(pin.get("EMBEDDING_MODEL") or "").strip()
+        dims = str(pin.get("EMBEDDING_DIMENSIONS") or "").strip()
     except Exception:
-        return ""
+        return None
+    if not model:
+        return None
+    note = "(fastembed, kept for datasets built on the Claude observer)"
+    return f"{model} {note}", dims or "Default"
 
 
 def _resolve_llm() -> str:
-    """Where the local server's LLM calls go: a configured provider key, or the
-    Claude observer (Claude Code's own subscription via ``claude -p``).
+    """Where the local server's LLM calls go: the provider the options configure.
 
     Local mode only — a remote server owns its own LLM. The LLM settings are
     plugin options, which a shell does not have, so without them this reports
-    what session start recorded; the shim's ``/health`` is still asked live.
-    Read-only: it never starts the shim or touches the environment.
+    what session start recorded. Read-only.
     """
     mode = _resolve_mode()
     if mode == "Cloud":
         return "Remote server (not applicable)"
-    result = _computed_llm() if _has_options() else _recorded_llm()
-    if result.startswith(_OBSERVER_ROW_PREFIX):
-        # Only while the observer is the LLM in use: with the LLM options set
-        # its past login failures are not this session's concern.
-        health_note = _observer_health_note()
-        if health_note:
-            result += f" {health_note}"
-    return result
+    owner = _server_owner()
+    if owner:
+        return f"Server not started by the plugin ({owner}) — its own LLM settings apply"
+    return _computed_llm() if _has_options() else _recorded_llm()
+
+
+_NO_LLM = "None — no LLM API key option set; the server cannot build new memory into the graph"
+
+
+def _server_owner() -> str:
+    """Why the local server is not the plugin's (``llm_key_owner``), or "".
+
+    A managed endpoint, or a server on the port this plugin did not start,
+    reads its LLM from its own environment: the options say nothing about it.
+    """
+    try:
+        from _plugin_common import llm_key_owner
+        from config import load_config
+
+        return llm_key_owner(load_config())
+    except Exception:
+        return ""
+
+
+def _no_llm(provider: str) -> str:
+    """The row for a local server the options give no usable LLM."""
+    if provider:
+        return (
+            f"None — LLM provider option is {provider} but no LLM API key option set; "
+            "the server cannot build new memory into the graph"
+        )
+    return _NO_LLM
 
 
 def _recorded_llm() -> str:
-    from _observer import observer_alive, port
-
     facts = _launch_facts()
     if not facts:
         return NOT_VISIBLE
-    observer = facts.get("observer") if isinstance(facts.get("observer"), dict) else {}
-    reason = str(observer.get("reason") or "")
     as_of = _as_of(facts)
-    if observer.get("active"):
-        shim = "shim running" if observer_alive(port()) else "shim not running"
-        return (
-            f"{_OBSERVER_ROW_PREFIX} (`claude -p`, model {observer.get('model') or 'default'}, "
-            f"{shim}) {as_of}"
-        )
-    note = _stored_login_note(reason)
-    if note:
-        return f"None — {note} {as_of}"
-    if facts.get("llm_key_option_set") or facts.get("llm_provider"):
-        provider = str(facts.get("llm_provider") or "") or "openai (default)"
+    from _plugin_common import llm_configured
+
+    recorded_provider = str(facts.get("llm_provider") or "").strip()
+    if llm_configured(bool(facts.get("llm_key_option_set")), recorded_provider):
+        provider = recorded_provider or "openai (default)"
         model = str(facts.get("llm_model") or "") or "Default"
         return f"Configured provider ({provider}, model {model}) {as_of}"
-    if reason == "claude_cli_missing":
-        return f"None — no LLM API key option and no `claude` executable for the observer {as_of}"
-    if reason == "disabled":
-        return (
-            f"None — no LLM API key option; observer disabled (COGNEE_LLM_OBSERVER=false) {as_of}"
-        )
-    return f"None — no LLM API key option set {as_of}"
+    observer = facts.get("observer") if isinstance(facts.get("observer"), dict) else {}
+    if observer.get("active"):
+        # Recorded by 1.8.3 or older: no session of this version has started yet.
+        return f"Claude observer {as_of}, which this version removed — set the LLM API key option"
+    return f"{_no_llm(recorded_provider)} {as_of}"
 
 
 def _computed_llm() -> str:
-    """The observer decision made here, with this process's plugin options."""
-    from _observer import resolve_observer
-    from config import load_config
+    """What this process's plugin options configure."""
+    from _env_file import option
+    from _plugin_common import llm_configured
 
-    try:
-        decision = resolve_observer(load_config())
-    except Exception as exc:
-        return f"Unknown ({str(exc)[:80]})"
-    if decision.get("active"):
-        from _observer import SPEND_WARNING, embedding_warning, observer_alive
-
-        shim = "shim running" if observer_alive(decision.get("port")) else "shim not running"
-        return (
-            f"{_OBSERVER_ROW_PREFIX} (`claude -p`, model {decision.get('model')}, "
-            f"{decision.get('endpoint')}, {shim}). {SPEND_WARNING} {embedding_warning()}"
-            + (f" Warning: {decision['model_warning']}" if decision.get("model_warning") else "")
-        )
-    if decision.get("error"):
-        return f"None — {decision['error']}"
-    reason = str(decision.get("reason") or "")
-    note = _stored_login_note(reason)
-    if note:
-        return f"None — {note}"
-    if reason in ("llm_key_configured", "llm_provider_configured"):
-        provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
+    provider = (os.environ.get("LLM_PROVIDER") or "").strip()
+    if llm_configured(bool(option("llm_api_key")), provider):
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
-        return f"Configured provider ({provider}, model {model})"
-    if reason == "claude_cli_missing":
-        return "None — no LLM API key option and no `claude` executable for the observer"
-    if reason == "disabled":
-        return "None — no LLM API key option; observer disabled (COGNEE_LLM_OBSERVER=false)"
-    return "None — no LLM API key option set"
+        return f"Configured provider ({provider or 'openai (default)'}, model {model})"
+    return _no_llm(provider)
 
 
 def _resolve_env_file() -> str:

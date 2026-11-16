@@ -414,14 +414,14 @@ def test_url_and_key_options_select_cloud(options_only, env_file_env, monkeypatc
 
 
 def test_a_child_keeps_what_its_parent_applied(options_only, env_file_env, monkeypatch):
-    """The observer's non-secret LLM settings, applied by SessionStart, reach
+    """The non-secret LLM settings SessionStart applied reach
     its workers. A key does not: whatever put one in a key variable (a shell
     export next to the applied flag, an older parent), it is dropped."""
     ef, fresh = env_file_env
     fresh(None)
     monkeypatch.setenv(ef._LLM_ENV_APPLIED, "1")
     monkeypatch.setenv("LLM_PROVIDER", "custom")
-    monkeypatch.setenv("LLM_API_KEY", "observer-token")
+    monkeypatch.setenv("LLM_API_KEY", "sk-stale")
     monkeypatch.setenv("EMBEDDING_API_KEY", "parent-embedding-key")
     monkeypatch.setenv("COGNEE_API_KEY", "parent-owner-key")
     ef.load_env_file()

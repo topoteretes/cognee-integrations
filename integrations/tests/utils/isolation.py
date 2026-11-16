@@ -59,7 +59,6 @@ ISOLATED_MODULES = (
     "_remember_http",
     "_code_graph",
     "_coding_memory",
-    "_observer",
     "cognee_plugin",
     "cognee_statusline_render",
     "doctor",
@@ -81,16 +80,12 @@ ISOLATED_MODULES = (
 #:     reconfigure their own stdout to UTF-8, other hook scripts don't — this
 #:     keeps every child's output UTF-8 so run_hook can decode it as such.
 #:     Tests that probe encoding behavior override it via extra_env/build_env.
-#:   - COGNEE_LLM_OBSERVER=false keeps SessionStart from starting the Claude
-#:     observer shim (a detached process) on a machine with `claude` on PATH;
-#:     the observer tests opt back in.
 DETERMINISTIC_ENV = {
     "COGNEE_PLUGIN_IN_VENV": "1",
     "COGNEE_IDLE_DISABLED": "1",
     "COGNEE_UPDATE_CHECK": "off",
     "COGNEE_LAZY_BOOTSTRAP": "0",
     "PYTHONIOENCODING": "utf-8",
-    "COGNEE_LLM_OBSERVER": "false",
 }
 
 #: Env-var prefixes scrubbed from the inherited environment so a developer's

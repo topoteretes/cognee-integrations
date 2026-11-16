@@ -37,7 +37,6 @@ class _Booted(Exception):
 def session_start(suite, _supported, hook_module, monkeypatch):
     module = hook_module(suite, "session-start.py")
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
-    monkeypatch.setenv("COGNEE_LLM_OBSERVER", "false")
     monkeypatch.setattr(module, "_LAZY_BOOTSTRAP", True)
 
     def _boot(*a, **k):
@@ -176,22 +175,6 @@ def test_without_the_flag_a_down_local_endpoint_still_boots(
             monkeypatch,
             verdict=session_start.PRESENCE_ABSENT,
         )
-
-
-# --- the Claude observer ---------------------------------------------------------------
-
-
-def test_observer_stays_off_for_a_managed_endpoint(suite, isolated_modules, monkeypatch):
-    if suite.name != "claude-code":
-        pytest.skip(f"{suite.name}: the Claude observer is a Claude Code feature")
-    observer = isolated_modules(suite, "_observer")
-    monkeypatch.setenv("COGNEE_LLM_OBSERVER", "true")
-    monkeypatch.setenv("COGNEE_MANAGED_ENDPOINT", "true")
-    decision = observer.resolve_observer({"base_url": "http://localhost:8011"})
-    assert decision["active"] is False
-    assert decision["reason"] == "managed_endpoint"
-    assert decision["error"] == ""
-    assert "COGNEE_MANAGED_ENDPOINT" in observer.describe(decision)
 
 
 # --- the real hook, as a subprocess ------------------------------------------------------

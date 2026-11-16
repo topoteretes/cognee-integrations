@@ -1658,12 +1658,14 @@ OBSERVER_CHILD_ENV = "COGNEE_OBSERVER_CHILD"
 
 
 def is_observer_child() -> bool:
-    """True inside a ``claude -p`` process the observer shim spawned.
+    """True inside a ``claude -p`` process an observer shim spawned.
 
-    The shim runs Claude Code headless to serve the local server's LLM calls
-    (``--safe-mode`` already disables hooks there). If that child ever ran our
-    hooks anyway, each would talk to the same server whose cognify is waiting on
-    the child — a loop. Every hook checks this first and exits silently.
+    The Claude observer was removed in 1.8.4, but a shim an older version
+    started can outlive the upgrade for as long as the server booted on it
+    runs, and its ``claude`` children would load this version's hooks. If such
+    a child ran them, each would talk to the same server whose cognify is
+    waiting on the child: a loop. Every hook checks this first and exits
+    silently.
     """
     return bool(os.environ.get(OBSERVER_CHILD_ENV, "").strip())
 
@@ -3485,16 +3487,15 @@ def write_server_pidfile(
     port: int,
     pid: int,
     version: str = "",
-    llm_observer: Optional[bool] = None,
     coding_memory: Optional[bool] = None,
 ) -> None:
     """Record the uvicorn server spawned on ``port`` (presence evidence).
 
-    ``llm_observer`` records whether the server was spawned with the Claude
-    observer's environment: a server keeps the LLM config it booted with, so a
-    later session joining it must learn which one that was, not assume its own.
-    ``coding_memory`` does the same for coding distillation
-    (DISTILLATION_MODE=coding, SDK-1336).
+    ``coding_memory`` records whether the server was spawned with coding
+    distillation (DISTILLATION_MODE=coding, SDK-1336): a server keeps the
+    config it booted with, so a later session joining it must learn which one
+    that was, not assume its own. (A record written by 1.8.3 or older may also
+    carry ``llm_observer``: the server was started on the Claude observer.)
     """
     record = {
         "pid": int(pid),
@@ -3502,8 +3503,6 @@ def write_server_pidfile(
         "version": version,
         "created_at": datetime.now(timezone.utc).timestamp(),
     }
-    if llm_observer is not None:
-        record["llm_observer"] = bool(llm_observer)
     if coding_memory is not None:
         record["coding_memory"] = bool(coding_memory)
     try:
@@ -4054,7 +4053,6 @@ LAUNCH_FACT_FIELDS = (
     "embedding_key_option_set",
     "llm_provider",
     "llm_model",
-    "observer",
     "key_source",
 )
 
@@ -4062,8 +4060,8 @@ LAUNCH_FACT_FIELDS = (
 def record_launch_facts(host_key: str, facts: dict) -> None:
     """Merge ``facts`` (see LAUNCH_FACT_FIELDS) into this launch's record. Never raises.
 
-    Anything that is not a boolean, a short string or the observer's small
-    dict of those is dropped, so a key can never be written by mistake.
+    Anything that is not a boolean or a short string is dropped, so a key can
+    never be written by mistake.
     """
     try:
         host_key = _sanitize_session_key(host_key) or get_session_key()
@@ -4075,13 +4073,7 @@ def record_launch_facts(host_key: str, facts: dict) -> None:
             if name not in facts:
                 continue
             value = facts[name]
-            if name == "observer" and isinstance(value, dict):
-                clean[name] = {
-                    "active": bool(value.get("active")),
-                    "reason": str(value.get("reason") or "")[:64],
-                    "model": str(value.get("model") or "")[:80],
-                }
-            elif isinstance(value, bool):
+            if isinstance(value, bool):
                 clean[name] = value
             elif isinstance(value, str):
                 clean[name] = value[:80]
@@ -4117,6 +4109,75 @@ def latest_launch_facts(cwd: str = "") -> dict:
             if stamp > float(best_here.get("recorded_at") or 0):
                 best_here = facts
     return dict(best_here or best_any)
+
+
+#: The LLM providers cognee runs without an API key (its own
+#: ``_NO_API_KEY_LLM_PROVIDERS``). Every other provider needs the key option.
+LLM_PROVIDERS_WITHOUT_A_KEY = frozenset({"bedrock", "llama_cpp"})
+
+
+def llm_configured(key_set: bool, provider: str = "") -> bool:
+    """Whether the plugin options give the local server a usable LLM.
+
+    The LLM API key option, or a provider that needs none. A provider option
+    alone is not enough: the server would start and then fail at its first LLM
+    call.
+    """
+    return bool(key_set) or str(provider or "").strip().lower() in LLM_PROVIDERS_WITHOUT_A_KEY
+
+
+def _observer_launch_evidence(rec: dict, path: Path) -> tuple[float, bool] | None:
+    """``(when, ran on the observer)`` for one local launch record, else None.
+
+    Two shapes say it. 1.8.2 and 1.8.3 wrote ``launch_facts.observer`` with the
+    launch's ``key_source``. 1.6.0 to 1.8.1 had no ``launch_facts``: they wrote
+    only a top-level ``llm_observer`` beside the launch's ``base_url``, stamped
+    by the record's ``created_at``. A Cloud launch says nothing about the local
+    server and gives None, as does a record with neither shape.
+    """
+    facts = rec.get("launch_facts")
+    if isinstance(facts, dict):
+        if facts.get("key_source") != "local_owner_key":
+            return None
+        observer = facts.get("observer")
+        active = isinstance(observer, dict) and observer.get("active") is True
+        return float(facts.get("recorded_at") or 0), active
+    legacy = rec.get("llm_observer")
+    if not isinstance(legacy, dict):
+        return None
+    base_url = str(rec.get("base_url") or "")
+    if base_url and not service_url_is_local(base_url):
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(rec.get("created_at") or "")).timestamp()
+    except ValueError:
+        stamp = path.stat().st_mtime
+    return stamp, legacy.get("active") is True
+
+
+def last_local_launch_used_observer() -> bool:
+    """Whether the newest local launch on record ran on the Claude observer.
+
+    Only a launch of 1.8.3 or older records that (see
+    ``_observer_launch_evidence`` for the two shapes); the observer was removed
+    in 1.8.4. Read once, on the first start after the upgrade, to keep the
+    embedder of the datasets such an install built. A record that cannot be
+    read is skipped, so one bad file does not hide the others.
+    """
+    newest: tuple[float, bool] = (0.0, False)
+    try:
+        paths = list(_SESSIONS_MAP_DIR.glob("*.json"))
+    except Exception:
+        paths = []
+    for path in paths:
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+            evidence = _observer_launch_evidence(rec, path) if isinstance(rec, dict) else None
+        except Exception:
+            continue
+        if evidence and evidence[0] > newest[0]:
+            newest = evidence
+    return newest[1]
 
 
 def set_launch_base_url(host_key: str, base_url: str) -> None:
@@ -4319,8 +4380,7 @@ def write_llm_state(state: str, detail: str = "", reason: str = "") -> None:
     Readers show a verdict only when it is theirs, or unattributable.
 
     ``reason`` is an optional status-line label overriding the default
-    ``incorrect_llm_api_key`` for a failed state — e.g. ``observer_needs_stored_login``
-    when the LLM is the Claude observer and no key is involved at all.
+    ``incorrect_llm_api_key`` for a failed state.
     """
     if state not in LLM_STATES:
         state = "ok"

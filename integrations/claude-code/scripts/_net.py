@@ -1,11 +1,11 @@
 """Where a request may go: the one loopback rule, and an opener that honours it.
 
 Deliberately stdlib-only and import-free of the rest of the plugin, so every
-script (the hooks, the observer shim, the Bash-run commands) can use it.
+script (the hooks, the Bash-run commands) can use it.
 
 ``is_loopback_host`` is the single test for "this machine". ``open_url`` is
 the single way the plugin opens a URL: a request to this machine (the local
-Cognee server, the observer shim) never goes through a proxy. Python's
+Cognee server) never goes through a proxy. Python's
 ``urlopen`` would otherwise send ``http://127.0.0.1:…`` to ``HTTP_PROXY``
 unless ``NO_PROXY`` lists it, handing the request, with its key, to the proxy
 host. A remote server is opened exactly as ``urlopen`` does, proxy included.
