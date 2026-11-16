@@ -55,26 +55,35 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: st
     return Text({ children: [''] })
   })
   on('session.id', () => ({ value: SESSION }))
-  // The module opens no file: the renderer prints the marker (`--phase`).
+  // The files the plugin's scripts keep for the module: the row's data, the
+  // activity marker, and the picker's listing (none in these tests).
   on('fs.read', ($, e) => {
+    const root = `${HOME}/.cognee-plugin/claude-code`
+    if (e.path === `${root}/status/${SESSION}.json`) return { value: JSON.stringify(snapshotOf()) }
+    if (e.path === `${root}/phase/${SESSION}.json`) return { value: state.marker }
+    if (e.path === `${root}/mod/${SESSION}.json`) return { value: '{}' }
     throw new Error(`unexpected read of ${e.path}`)
   })
   on('fs.write', ($, e) => {
     throw new Error(`unexpected write of ${e.path}`)
   })
-  // Session start registers tools and commands; without these bottoms the
-  // start hook would fail there and never reach its warm-up poll.
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__cognee-memory__${e.name}` } }))
+  // The module must start nothing.
+  on('process.run', ($, e) => {
+    throw new Error(`the module started a process: ${e.argv.join(' ')}`)
+  })
+  const store = new Map<string, unknown>()
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  // Session start registers its commands; without this bottom the start hook
+  // would fail there and never reach its warm-up poll.
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('process.run', ($, e) => ({
-    value: {
-      exitCode: 0,
-      stdout: e.argv.includes('--phase') ? state.marker : JSON.stringify(snapshotOf()),
-      stderr: '',
-      isStdoutTruncated: false,
-      isStderrTruncated: false,
-    },
-  }))
   return clock
 }
 

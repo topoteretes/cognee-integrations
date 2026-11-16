@@ -1,6 +1,9 @@
-// Tests for the dataset picker, the /cognee-dataset command and the two tools the model
-// calls directly. Every process the module would run (the plugin's own
-// scripts) is answered here by argv, so nothing touches a server or a file.
+// Tests for the status row, the dataset picker and the /cognee-dataset command.
+// The module starts no program: it reads the files the plugin's scripts write
+// and saves a pick in its store. `wire` plays the scripts' side: what a script
+// would have written is answered here by argv, as before, and served to the
+// module as the file it reads; a pick in the store is applied at the next
+// prompt, as the prompt hook does. Nothing touches a server or a real file.
 import { expect, mock, test } from 'claude-code/testing'
 
 const SESSION = 's1'
@@ -71,6 +74,9 @@ function wire(
 ) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
+  const store = wiredStore
+  store.clear()
+  let pickResult: Record<string, unknown> | null = null
   // The engine's own session start, where the settings hooks (SessionStart)
   // run: it leaves a mark among the calls so a test can tell what ran before
   // it and what after.
@@ -88,9 +94,33 @@ function wire(
   on('session.id', () => ({ value: currentId() }))
   // A focus move the engine lets through (the band holds the keys).
   on('ui.focus', () => ({}))
-  // No marker and no env file: an empty read (a throw from a bottom hook
-  // inside a timer would end the timer in the kit, which no real file does).
-  on('fs.read', ($, e) => ({ value: readFile(e.path) ?? '' }))
+  // The files the plugin's scripts keep for the module, built from what each
+  // script answers: the row's data (the renderer), the picker's listing and
+  // the last pick's outcome (the switch script), the activity marker.
+  on('fs.read', ($, e) => {
+    const root = `${HOME}/.cognee-plugin/claude-code`
+    const session = (e.path.match(/\/([^/]+)\.json$/) ?? [])[1] ?? ''
+    if (e.path.startsWith(`${root}/status/`)) {
+      return { value: stdoutOf(script('cognee_statusline_render.py', ['--json'], JSON.stringify({ session_id: session }), false)) }
+    }
+    if (e.path.startsWith(`${root}/mod/`)) {
+      let listing: unknown = null
+      try {
+        listing = JSON.parse(stdoutOf(script('switch-dataset.py', ['--list', '--json', '--session-key', session], undefined, false)))
+      } catch {
+        listing = null
+      }
+      const bridge: Record<string, unknown> = {}
+      if (listing && typeof listing === 'object' && !(listing as { error?: unknown }).error) bridge.listing = listing
+      if (pickResult) bridge.pick = pickResult
+      return { value: JSON.stringify(bridge) }
+    }
+    return { value: readFile(e.path) ?? '' }
+  })
+  on('fs.write', ($, e) => {
+    writes.push({ path: e.path, text: e.text })
+    return { value: undefined }
+  })
   // The registrations session start makes; a test that inspects them
   // passes `registrations` and reads it back.
   on('tool.register', ($, e) => {
@@ -101,30 +131,55 @@ function wire(
     registrations.commands.push(e.name)
     return { value: { command: e.name } }
   })
-  on('fs.write', ($, e) => {
-    writes.push({ path: e.path, text: e.text })
+  // The module must start nothing.
+  on('process.run', ($, e) => {
+    throw new Error(`the module started a process: ${e.argv.join(' ')}`)
+  })
+  // The store the module saves its band entry and its picks in.
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
     return { value: undefined }
   })
-  // The module inspects no file: the remember script sizes it (`--file-size`).
-  on('fs.stat', ($, e) => {
-    throw new Error(`unexpected stat of ${e.path}`)
+  on('store.delete', ($, e) => {
+    store.delete(e.key)
+    return { value: undefined }
   })
-  on('process.run', ($, e) => {
-    // The once-a-second marker poll: the renderer prints the session's marker
-    // (`--phase`). Answered from what a test says the marker file holds, and
-    // left out of `calls`, which tests read as the work the module started.
-    if (e.argv.includes('--file-size')) {
-      // The remember tool sizes a file before storing it: a small one by default.
-      const path = e.argv[e.argv.indexOf('--file-size') + 1] ?? ''
-      return ok(JSON.stringify({ kind: 'file', size: path.includes('huge') ? 500_000 : 1_200 }))
+  // The plugin's prompt hook applies a pick the module saved, before it recalls.
+  on('prompt.submit', ($, e) => {
+    applyPick()
+    return { text: e.text }
+  })
+  return clock
+
+  function applyPick(): void {
+    const session = currentId()
+    const pick = store.get(`pick:${session}`) as { target?: string; at?: number } | undefined
+    if (!pick || !pick.target || (pickResult && pickResult.at === pick.at)) return
+    let answer: Record<string, unknown> = {}
+    try {
+      answer = JSON.parse(stdoutOf(script('switch-dataset.py', [pick.target, '--json', '--session-key', session]))) as Record<string, unknown>
+    } catch {
+      answer = { error: 'the dataset script gave no answer' }
     }
-    if (e.argv.includes('--phase')) {
-      const asked = JSON.parse(e.init?.stdin ?? '{}').session_id
-      return ok(readFile(`${HOME}/.cognee-plugin/claude-code/phase/${asked}.json`) ?? '')
+    const failed = !!answer.error || (answer.switched !== true && answer.switched !== false)
+    pickResult = {
+      at: pick.at,
+      target: pick.target,
+      state: failed ? 'failed' : 'done',
+      message: String(answer.error ?? answer.message ?? ''),
+      dataset: String(answer.dataset ?? ''),
+      recall: String(answer.recall ?? ''),
     }
-    calls.push({ argv: e.argv, stdin: e.init?.stdin })
-    const script = e.argv.find(a => a.includes('/scripts/')) ?? ''
-    const name = script.slice(script.lastIndexOf('/') + 1)
+  }
+
+  // One run of a plugin script, as the hooks would make it. `record` false
+  // keeps the refreshes of the files (every read) out of `calls`, which tests
+  // read as the work that was started.
+  function script(name: string, args: string[], stdin?: string, record = true): { value: unknown } {
+    const argv = [`/plugin/scripts/${name}`, ...args]
+    if (record) calls.push({ argv, stdin })
+    const e = { argv, init: { stdin } }
     const answer = answers[name]
     if (answer) return answer(e.argv)
     switch (name) {
@@ -145,19 +200,19 @@ function wire(
       default:
         throw new Error(`unexpected process: ${e.argv.join(' ')}`)
     }
-  })
-  return clock
+  }
 }
 
-// The plugin's cross-session store, as a map the test can read back.
+function stdoutOf(ran: { value: unknown }): string {
+  return String((ran.value as { stdout?: unknown })?.stdout ?? '')
+}
+
+// The plugin's cross-session store, as a map the test can read back. `wire`
+// serves it; call this after `wire` to seed entries.
+const wiredStore = new Map<string, unknown>()
 function fakeStore(on: Parameters<Parameters<typeof test>[1]>[1], entries: Record<string, unknown> = {}) {
-  const store = new Map(Object.entries(entries))
-  on('store.get', ($, e) => ({ value: store.get(e.key) }))
-  on('store.set', ($, e) => {
-    store.set(e.key, e.value)
-    return { value: undefined }
-  })
-  return store
+  for (const [key, value] of Object.entries(entries)) wiredStore.set(key, value)
+  return wiredStore
 }
 
 function argvOf(calls: Call[], script: string): readonly string[] | undefined {
@@ -197,181 +252,12 @@ function resultText(ran: { result?: unknown; deny?: string; text?: string; isErr
   return { text: typeof ran.result === 'string' ? ran.result : String(ran.text ?? ''), isError: false }
 }
 
-test('session start registers the two tools and the commands', async ($, on) => {
-  const calls: Call[] = []
-  const registrations = { tools: [] as string[], commands: [] as string[] }
-  wire(on, calls, {}, [], registrations)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  expect(registrations.tools).toEqual(['search', 'remember'])
-  expect(registrations.commands).toEqual(['cognee-dataset', 'cognee-tour'])
-})
-
 test('the tools row can be switched off', { options: { tools: false } }, async ($, on) => {
   const calls: Call[] = []
   const registrations = { tools: [] as string[], commands: [] as string[] }
   wire(on, calls, {}, [], registrations)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   expect(registrations.tools).toEqual([])
-})
-
-test('the search tool runs the search script and hands the model the hits as text', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'how does tempo replicate?', top_k: 5 })
-  const argv = argvOf(calls, 'cognee_search.py')
-  expect(argv).toBeDefined()
-  expect(argv![0]).toBe('python3')
-  expect(argsAfter(argv!, 'cognee_search.py')).toEqual(['how does tempo replicate?', '5', '--graph'])
-
-  const shown = resultText(ran)
-  expect(shown.isError).toBe(false)
-  // No recall mode listed: an unknown mode does not claim the active dataset,
-  // since the server may have routed the search.
-  expect(shown.text).toContain('2 results from memory.')
-  // Trimmed the way the prompt hook trims, by the plugin's own script, with the query.
-  expect(shown.text).toContain('Project tempo replicates with raft. [trimmed]')
-  const trim = argvOf(calls, 'recall-trim.py')
-  expect(argsAfter(trim!, 'recall-trim.py')).toEqual(['--query', 'how does tempo replicate?'])
-})
-
-test('the search tool reads another dataset by id and the code graph by scope', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2' })
-  expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2'])
-
-  calls.length = 0
-  await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2', user_picked: true })
-  expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['raft', '10', '--graph', '--dataset-id', 'd2', '--user-picked'])
-
-  calls.length = 0
-  const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'process_payment', scope: 'code' })
-  expect(argsAfter(argvOf(calls, 'cognee_search.py')!, 'cognee_search.py')).toEqual(['process_payment', '10', '--code'])
-  expect(resultText(ran).text).toContain('from the code graph')
-})
-
-test('a restricted recall refuses another dataset the person did not pick, as an error result', async ($, on) => {
-  const calls: Call[] = []
-  const refusal = 'recall is restricted to agent_sessions, so another dataset is searched only when the person chooses it.'
-  wire(on, calls, {
-    'cognee_search.py': () => ({ value: { exitCode: 2, stdout: JSON.stringify({ error: refusal }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }),
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft', dataset_id: 'd2' }))
-  expect(shown.isError).toBe(true)
-  expect(shown.text).toContain(refusal)
-})
-
-test('an unreachable server is an error result, never an empty answer', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, { 'cognee_search.py': () => ({ value: { exitCode: 1, stdout: 'UNREACHABLE\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'anything' })
-  const shown = resultText(ran)
-  expect(shown.isError).toBe(true)
-  expect(shown.text).toContain('unreachable')
-})
-
-test('an empty list from a reachable server is authoritative', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, { 'cognee_search.py': () => ok('[]') })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'nothing here' }))
-  expect(shown.isError).toBe(false)
-  expect(shown.text).toContain('No memories matched.')
-})
-
-test('the remember tool maps the category to its node set and reports the write', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const ran = await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'The retry budget lives in the client.', category: 'project' })
-  expect(argsAfter(argvOf(calls, 'cognee_remember.py')!, 'cognee_remember.py')).toEqual([
-    'The retry budget lives in the client.',
-    '--node-set',
-    'project_docs',
-  ])
-  const shown = resultText(ran)
-  expect(shown.isError).toBe(false)
-  expect(shown.text).toContain('Stored in agent_sessions')
-  expect(shown.text).toContain('recall will find it')
-})
-
-test('the remember tool reports the dataset the wrapper wrote to, not a stale band', async ($, on) => {
-  const calls: Call[] = []
-  // The band still shows agent_sessions; the launch record already moved on.
-  wire(on, calls, {
-    'cognee_remember.py': () => ok(JSON.stringify({ ok: true, dataset: 'demo', dataset_id: 'a1', queryable: true })),
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'note' }))
-  expect(shown.text).toContain('Stored in demo')
-})
-
-test('the remember tool stores a file under its real name', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, file: 'src/payments.py', category: 'project' })
-  expect(argsAfter(argvOf(calls, 'cognee_remember.py')!, 'cognee_remember.py')).toEqual(['--file', 'src/payments.py', '--node-set', 'project_docs'])
-})
-
-test('the remember tool refuses a text past its cap and points at the skill', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x'.repeat(16_001) }))
-  expect(shown.isError).toBe(true)
-  expect(shown.text).toContain('cognee-remember skill')
-  // Nothing ran: no cognify was paid for.
-  expect(argvOf(calls, 'cognee_remember.py')).toBeUndefined()
-})
-
-test('the remember tool refuses a file past its cap without reading it', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, file: 'data/huge.csv' }))
-  expect(shown.isError).toBe(true)
-  expect(shown.text).toContain('500000 bytes')
-  expect(shown.text).toContain('cognee-remember skill')
-  expect(argvOf(calls, 'cognee_remember.py')).toBeUndefined()
-})
-
-test('the remember tool has a per-session allowance, with the skill as the way past it', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  // Five calls go through; the sixth is refused before any wrapper runs.
-  for (let i = 0; i < 5; i += 1) {
-    const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: `note ${i}` }))
-    expect(shown.isError).toBe(false)
-  }
-  expect(calls.filter(c => argvOf([c], 'cognee_remember.py')).length).toBe(5)
-  const sixth = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'one more' }))
-  expect(sixth.isError).toBe(true)
-  expect(sixth.text).toContain('allowance')
-  expect(sixth.text).toContain('cognee-remember skill')
-  expect(calls.filter(c => argvOf([c], 'cognee_remember.py')).length).toBe(5)
-
-  // A /clear starts a fresh allowance.
-  await $.session.end({ sessionId: SESSION, reason: 'clear' })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const again = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'after clear' }))
-  expect(again.isError).toBe(false)
 })
 
 test('after a /clear the band binds the new session without waiting for a prompt', async ($, on) => {
@@ -410,53 +296,6 @@ test('after a /clear the band binds the new session without waiting for a prompt
   expect(await ui.find({ type: 'Text', text: /session saved/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
   await ui.unmount()
-})
-
-test('the remember allowance counts bytes too', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  // Four texts of 15,000 characters fit under 64,000 bytes; the fifth would not.
-  for (let i = 0; i < 4; i += 1) {
-    expect(resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x'.repeat(15_000) })).isError).toBe(false)
-  }
-  const fifth = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x'.repeat(15_000) }))
-  expect(fifth.isError).toBe(true)
-  expect(fifth.text).toContain('allowance')
-  expect(calls.filter(c => argvOf([c], 'cognee_remember.py')).length).toBe(4)
-})
-
-test('the transcript row of a plugin tool call is labelled plainly, not as an MCP server', async ($, on) => {
-  const calls: Call[] = []
-  const seen: string[] = []
-  wire(on, calls, {}, [], { tools: [], commands: [] }, seen)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const row = {
-    component: 'ToolUse' as const,
-    props: { tool_use_id: 'toolu_1', tool: `mcp__${PLUGIN}__remember`, input: { content: 'x' }, isRunning: false, isErrored: false, isInterrupted: false },
-  }
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...row })
-  await ui.unmount()
-  // Drawn once, or again when the dataset listing started at session start
-  // lands and redraws: the label is the same each time.
-  expect([...new Set(seen)]).toEqual(['Cognee remember'])
-
-  // A call to any other tool is handed on as it came.
-  seen.length = 0
-  const other = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...row, props: { ...row.props, tool: 'Bash', input: { command: 'ls' } } })
-  await other.unmount()
-  expect(seen).toEqual(['Bash'])
-})
-
-test('a write the server never received is reported as not stored', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, { 'cognee_remember.py': () => ({ value: { exitCode: 1, stdout: 'UNREACHABLE\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x' }))
-  expect(shown.isError).toBe(true)
-  expect(shown.text).toContain('nothing was stored')
 })
 
 test('/cognee-dataset <name> switches from the prompt', async ($, on) => {
@@ -691,47 +530,6 @@ for (const [action, reason, recall, message] of [
     expect(argsAfter(switchArgv(calls)!, 'switch-dataset.py')).toEqual([action, '--json', '--session-key', SESSION])
   })
 }
-test('the search tool names the active dataset only when recall is restricted', async ($, on) => {
-  const calls: Call[] = []
-  let recall = 'auto'
-  wire(on, calls, {
-    'switch-dataset.py': argv => {
-      if (argv.includes('--list')) return ok(JSON.stringify({ ...SWITCH_LIST, recall }))
-      recall = 'pinned'
-      return ok(JSON.stringify({ switched: false, reason: 'recall_restricted', dataset: 'agent_sessions', session_id: 'cognee-1', recall }))
-    },
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'cognee-dataset', args: '' })
-
-  // Auto recall: the server may have read another dataset.
-  let shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
-  expect(shown.text).toContain('2 results from memory.')
-
-  await $.command.run({ command: 'cognee-dataset', args: 'agent_sessions' })
-  shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
-  expect(shown.text).toContain('2 results from the active dataset.')
-})
-
-for (const [listed, said] of [
-  [{ recall: 'auto' }, 'Recall is auto.'],
-  [
-    { recall: 'pinned', reason: 'configured_pin', message: "Recall is pinned to 'agent_sessions', where saves go, because COGNEE_PLUGIN_RECALL_MODE=pinned." },
-    "Recall is pinned to 'agent_sessions', where saves go, because COGNEE_PLUGIN_RECALL_MODE=pinned.",
-  ],
-] as const) {
-  test(`/cognee-dataset alone says which recall is on: "${said}"`, async ($, on) => {
-    const calls: Call[] = []
-    wire(on, calls, {
-      'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, ...listed })) : ok('{}')),
-    })
-    await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-    const listing = await $.command.run({ command: 'cognee-dataset', args: '' })
-    expect(listing.text).toContain(`\n\n${said}\n`)
-    expect(listing.text).not.toContain('Recall is restricted to agent_sessions.')
-  })
-}
 test('in a terminal the picker reads "auto (<dataset>)" while recall is auto', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {
@@ -775,52 +573,6 @@ test('same-named datasets are offered once, so the open terminal picker still dr
   await ui.unmount()
 })
 
-test('a click that focuses the terminal picker lists the datasets afresh', async ($, on) => {
-  const calls: Call[] = []
-  let datasets = SWITCH_LIST.datasets
-  wire(on, calls, {
-    'switch-dataset.py': argv => (argv.includes('--list') ? ok(JSON.stringify({ ...SWITCH_LIST, datasets })) : ok('{}')),
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  await ui.unmount()
-
-  // 'demo' is deleted on the server after the session listed it.
-  datasets = SWITCH_LIST.datasets.filter(d => d.name !== 'demo')
-  const before = listCalls(calls).length
-  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  await focusPicker($, ui)
-  expect(listCalls(calls).length).toBe(before + 1)
-  const picker = await ui.find({ type: 'Select', key: 'dataset' })
-  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['auto (best-matching dataset)', 'agent_sessions', '+ new dataset…'])
-  await ui.unmount()
-})
-
-test('an auto that leaves recall restricted keeps the search tool on the active dataset', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, {
-    'switch-dataset.py': argv =>
-      argv.includes('--list')
-        ? ok(JSON.stringify({ ...SWITCH_LIST, recall: 'pinned', reason: 'read_dataset_ids' }))
-        : ok(
-            JSON.stringify({
-              switched: false,
-              reason: 'recall_auto',
-              dataset: 'agent_sessions',
-              session_id: 'cognee-1',
-              recall: 'pinned',
-              recall_reason: 'read_dataset_ids',
-              message: "Recall is set to auto for this session, but COGNEE_PLUGIN_READ_DATASET_IDS still restricts it to its datasets; saves go to 'agent_sessions'.",
-            }),
-          ),
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  await $.command.run({ command: 'cognee-dataset', args: 'auto' })
-  // The mode follows the answer, not the action: still restricted.
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__search`, query: 'raft' }))
-  expect(shown.text).toContain('2 results from the active dataset.')
-})
 test('a switch made outside the picker relists, so the row shows the new dataset', async ($, on) => {
   const calls: Call[] = []
   // The skill's shell switch moved the launch record; the renderer reads it.
@@ -1112,145 +864,6 @@ test('a healthy row has no fix button', async ($, on) => {
   await band.unmount()
 })
 
-test('the fix pane runs the doctor and shows its report', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, {
-    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...FAIL_SNAPSHOT, reason: 'unreachable' })),
-    'doctor.py': () => ok('Mode: Local\nServer: http://localhost:8011\nHealth: unreachable\n'),
-  })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  await $.ui.press({ plugin: PLUGIN, key: 'fix' })
-  await band.unmount()
-
-  const pane = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'cognee-fix', props: FIX_PROPS })
-  expect(await pane.find({ type: 'Text', text: /cannot be reached/ })).toBeDefined()
-  // No key field for a reason no single value fixes.
-  expect(await pane.find({ type: 'Input', key: 'secret' })).toBeUndefined()
-  await $.ui.press({ plugin: PLUGIN, key: 'doctor' })
-  expect(argvOf(calls, 'doctor.py')).toBeDefined()
-  expect(await pane.find({ type: 'Code', text: /Health: unreachable/ })).toBeDefined()
-  await pane.unmount()
-})
-
-test('a key pasted into the fix pane is appended to ~/.cognee/.env', async ($, on) => {
-  const calls: Call[] = []
-  const writes: Write[] = []
-  wire(on, calls, { 'cognee_statusline_render.py': () => ok(JSON.stringify(FAIL_SNAPSHOT)) }, writes)
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  await $.ui.press({ plugin: PLUGIN, key: 'fix' })
-  await band.unmount()
-
-  const pane = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'cognee-fix', props: FIX_PROPS })
-  calls.length = 0
-  await $.ui.input({ plugin: PLUGIN, key: 'secret', text: '  ck_live_123  ' })
-  // The plugin's env-file module writes it, where the hooks read (COGNEE_ENV_FILE
-  // honoured) and owner-only; the value goes on stdin, never on the command line.
-  const append = calls.find(c => argvOf([c], '_env_file.py'))
-  expect(append).toBeDefined()
-  expect(argsAfter(append!.argv, '_env_file.py')).toEqual(['--append', 'COGNEE_API_KEY'])
-  expect(append!.stdin).toBe('ck_live_123')
-  expect(writes.find(w => w.path.endsWith('/.env'))).toBeUndefined()
-  expect(await pane.find({ type: 'Text', text: /COGNEE_API_KEY saved to \/home\/tester\/.cognee\/.env/ })).toBeDefined()
-  await pane.unmount()
-})
-
-test('a switch that runs past its time is stopped once, not started over under another interpreter', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, {
-    'switch-dataset.py': argv =>
-      argv.includes('--list')
-        ? ok(JSON.stringify(SWITCH_LIST))
-        : // The engine rejects a call whose child outlasts its time; the kit's bottom refuses it the same way.
-          { deny: 'process timed out after 600000 ms' },
-  })
-  const toasts: string[] = []
-  on('ui.toast', ($, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
-  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'demo' })
-  await ui.unmount()
-
-  // One attempt: the script ran, so no second interpreter is tried.
-  const attempts = calls.filter(c => argvOf([c], 'switch-dataset.py') && !c.argv.includes('--list'))
-  expect(attempts.length).toBe(1)
-  expect(toasts.some(t => t.includes('ran past') && t.includes('stopped'))).toBe(true)
-  expect(toasts.some(t => t.includes('no python interpreter'))).toBe(false)
-})
-
-test('a missing interpreter still moves on to the next candidate', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, {
-    'cognee_statusline_render.py': argv => (argv[0] === 'python3' ? { deny: 'spawn python3 ENOENT' } : ok(JSON.stringify(SNAPSHOT))),
-  })
-  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
-  // The snapshot landed through the second interpreter: the mode is drawn.
-  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
-  await ui.unmount()
-  const interpreters = calls.filter(c => argvOf([c], 'cognee_statusline_render.py')).map(c => c.argv[0])
-  expect(interpreters.slice(0, 2)).toEqual(['python3', 'python'])
-})
-
-test('a remember call cut off by its timeout is reported as outcome unknown, never as not stored', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls, {
-    // The engine rejects a call whose child outlasts its time; the kit's bottom refuses it the same way.
-    'cognee_remember.py': () => ({ deny: 'process timed out after 150000 ms' }),
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-
-  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'keep this' }))
-  expect(shown.isError).toBe(true)
-  expect(shown.text).toContain('may have landed')
-  expect(shown.text).toContain('Do not resubmit')
-  expect(shown.text).not.toContain('nothing was stored')
-})
-
-test('a definitive failure ends the warm-up: the renderer is not retaken every few seconds', async ($, on) => {
-  const calls: Call[] = []
-  let renders = 0
-  const clock = wire(on, calls, {
-    'cognee_statusline_render.py': () => {
-      renders += 1
-      return ok(JSON.stringify(FAIL_SNAPSHOT))
-    },
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const after = renders
-  for (let i = 0; i < 30; i += 1) await clock.advance(1000)
-  expect(renders).toBe(after)
-})
-
-test('three renderer failures pause the snapshot for a minute, not for the session', async ($, on) => {
-  const calls: Call[] = []
-  let renders = 0
-  const clock = wire(on, calls, {
-    'cognee_statusline_render.py': () => {
-      renders += 1
-      return { value: { exitCode: 1, stdout: '', stderr: 'boom', isStdoutTruncated: false, isStderrTruncated: false } }
-    },
-  })
-  on('prompt.submit', ($, e) => ({ text: e.text }))
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  // Warm-up retries land the third failure within the first 15 s; then nothing until the minute is up.
-  for (let i = 0; i < 20; i += 1) await clock.advance(1000)
-  const paused = renders
-  expect(paused).toBeGreaterThanOrEqual(3)
-  for (let i = 0; i < 20; i += 1) await clock.advance(1000)
-  expect(renders).toBe(paused)
-  await clock.advance(61_000)
-  await $.prompt.submit({ text: 'another prompt after the pause' })
-  await clock.advance(1100)
-  expect(renders).toBeGreaterThan(paused)
-})
-
 test('the row keeps checking after start until the connection marker lands', async ($, on) => {
   const calls: Call[] = []
   let renders = 0
@@ -1398,17 +1011,6 @@ test('with the band off no session is marked: the settings status line stays', {
   await ui.unmount()
 })
 
-test('the listing starts once the SessionStart hook has run, which writes the record it reads', async ($, on) => {
-  const calls: Call[] = []
-  wire(on, calls)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  const hookAt = calls.findIndex(c => c.argv[0] === HOOK_RAN)
-  const listAt = calls.findIndex(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py')))
-  expect(hookAt).toBeGreaterThanOrEqual(0)
-  expect(listAt).toBeGreaterThan(hookAt)
-  expect(listCalls(calls).length).toBe(1)
-})
-
 test('the picker is there before the datasets are listed, offering only a loading entry', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, { 'switch-dataset.py': () => ok(JSON.stringify({ error: 'no launch record found', code: 2 })) })
@@ -1425,162 +1027,6 @@ test('the picker is there before the datasets are listed, offering only a loadin
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'loading datasets…' })
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'agent_sessions' })
   expect(calls.filter(c => c.argv.some(a => a.endsWith('/scripts/switch-dataset.py'))).length).toBe(before)
-  await ui.unmount()
-})
-
-test('a listing that finds no launch record yet is tried again, and the picker appears', async ($, on) => {
-  const calls: Call[] = []
-  let answers = 0
-  const clock = wire(on, calls, {
-    'switch-dataset.py': () => {
-      answers += 1
-      // The record is there from the second try on.
-      return answers < 2 ? ok(JSON.stringify({ error: 'no launch record found (not_found)', code: 2 })) : ok(JSON.stringify(SWITCH_LIST))
-    },
-  })
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  expect(listCalls(calls).length).toBe(1)
-
-  const labels = async (ui: any) =>
-    ((await ui.find({ type: 'Select', key: 'dataset' })) as any)?.props.options.map((o: { label: string }) => o.label) ?? []
-  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await labels(ui)).toContain('loading datasets…')
-  await ui.unmount()
-  // The first retry comes five seconds after the failure, on the poll.
-  for (let i = 0; i < 7; i += 1) await clock.advance(1000)
-  expect(listCalls(calls).length).toBe(2)
-  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await labels(ui)).not.toContain('loading datasets…')
-  expect((await labels(ui)).length).toBeGreaterThan(2)
-  await ui.unmount()
-  // Listed: no more tries.
-  for (let i = 0; i < 30; i += 1) await clock.advance(1000)
-  expect(listCalls(calls).length).toBe(2)
-})
-
-test('a listing that keeps failing stops after its attempts, until the next prompt or /cognee-dataset', async ($, on) => {
-  const calls: Call[] = []
-  const clock = wire(on, calls, { 'switch-dataset.py': () => ok(JSON.stringify({ error: 'GET /api/v1/datasets failed (HTTP 503)', code: 1 })) })
-  on('prompt.submit', ($, e) => ({ text: e.text }))
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  // The wait grows: 5 s, 10 s, 15 s, 20 s. Four tries fit the poll's window
-  // after session start (at 0, 5, 15 and 30 s); the fifth comes at the prompt.
-  for (let i = 0; i < 120; i += 1) await clock.advance(1000)
-  expect(listCalls(calls).length).toBe(4)
-  await $.prompt.submit({ text: 'hello' })
-  for (let i = 0; i < 120; i += 1) await clock.advance(1000)
-  expect(listCalls(calls).length).toBe(5)
-  // The attempts are spent: the next prompt starts them over (four more in
-  // its window, as after session start), and /cognee-dataset does too.
-  await $.prompt.submit({ text: 'again' })
-  for (let i = 0; i < 120; i += 1) await clock.advance(1000)
-  expect(listCalls(calls).length).toBe(9)
-  const answer = await $.command.run({ command: 'cognee-dataset', args: '' })
-  expect(answer.text).toContain('no datasets listed')
-  expect(listCalls(calls).length).toBe(10)
-})
-
-test('a listing waits for a boot the hook handed to its worker instead of spending its attempts on it', async ($, on) => {
-  const calls: Call[] = []
-  let up = false
-  let markerText = ''
-  const clock = wire(
-    on,
-    calls,
-    { 'switch-dataset.py': () => (up ? ok(JSON.stringify(SWITCH_LIST)) : ok(JSON.stringify({ error: 'GET /api/v1/datasets failed (connection refused)', code: 1 }))) },
-    [],
-    undefined,
-    undefined,
-    path => (path.endsWith(`/phase/${SESSION}.json`) ? markerText : undefined),
-  )
-  const began = clock.now() / 1000
-  // What the worker's heartbeat does: the phase stays fresh while it boots.
-  const touch = () => {
-    markerText = JSON.stringify({
-      session_key: SESSION,
-      active: { phase: 'setting_up', detail: 'starting memory server', started_at: began, updated_at: clock.now() / 1000 },
-      results: {},
-    })
-  }
-  touch()
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  // Four minutes of boot, well past where five tries would have run out: no
-  // listing is run against a server that is not listening.
-  for (let s = 1; s <= 240; s += 1) {
-    await clock.advance(1000)
-    if (s % 15 === 0) touch()
-  }
-  expect(listCalls(calls).length).toBe(0)
-  // The worker registered the session and ended the phase: the poll tick
-  // that sees the phase end lists at once (it is also the poll's last tick),
-  // and the picker appears.
-  up = true
-  markerText = JSON.stringify({ session_key: SESSION, active: null, results: { ready: { at: clock.now() / 1000, ok: true } } })
-  await clock.advance(1000)
-  expect(listCalls(calls).length).toBe(1)
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
-  await ui.unmount()
-})
-
-test('a listing that times out keeps the list the row had', async ($, on) => {
-  const calls: Call[] = []
-  let slow = false
-  let dataset = 'agent_sessions'
-  wire(on, calls, {
-    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
-    'switch-dataset.py': argv => {
-      if (!argv.includes('--list')) {
-        dataset = 'demo'
-        return ok(JSON.stringify({ switched: true, dataset: 'demo', session_id: 'c2', previous: { dataset: 'agent_sessions', synced: true } }))
-      }
-      if (slow) throw new Error('process timed out after 45000ms')
-      return ok(JSON.stringify(SWITCH_LIST))
-    },
-  })
-  on('ui.toast', () => ({ value: undefined }))
-  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
-  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
-  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeDefined()
-  await ui.unmount()
-
-  // The listing after the switch runs past its time: the picker stays, and
-  // it names the dataset the switch landed on, not the one the stale rows
-  // still mark current.
-  slow = true
-  await $.command.run({ command: 'cognee-dataset', args: 'demo' })
-  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
-  const picker = await ui.find({ type: 'Select', key: 'dataset' })
-  expect(picker).toBeDefined()
-  expect((picker!.props.options as { value: string }[]).map(o => o.value)).toContain('demo')
-  expect(picker!.props.value).toBe('demo')
-  await ui.unmount()
-})
-
-test('a switch from a shell whose relist fails still shows the new dataset on the row', async ($, on) => {
-  const calls: Call[] = []
-  // The skill's shell switch moved the launch record; the renderer reads it,
-  // but the server's listing times out from then on.
-  let dataset = 'agent_sessions'
-  let slow = false
-  wire(on, calls, {
-    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...SNAPSHOT, dataset })),
-    'switch-dataset.py': () => {
-      if (slow) throw new Error('process timed out after 45000ms')
-      return ok(JSON.stringify(SWITCH_LIST))
-    },
-  })
-  on('prompt.submit', ($, e) => ({ text: e.text }))
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'cognee-dataset', args: '' })
-
-  dataset = 'demo'
-  slow = true
-  await $.prompt.submit({ text: 'next' })
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  const picker = await ui.find({ type: 'Select', key: 'dataset' })
-  expect(picker).toBeDefined()
-  expect(picker!.props.value).toBe('demo')
   await ui.unmount()
 })
 
