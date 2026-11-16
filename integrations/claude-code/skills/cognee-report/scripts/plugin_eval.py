@@ -2408,7 +2408,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Claude Code config dir (transcripts, plugin registry)",
     )
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("outcomes", help="run or report controlled matched task trials")
 
     report = sub.add_parser(
         "report", parents=[common], help="scorecard, grade and recommendations for a time window"
@@ -2470,10 +2469,6 @@ def _utf8_stdout() -> bool:
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "outcomes":
-        from outcome_eval import main as outcome_main
-
-        return outcome_main(argv[1:])
     if not argv or argv[0] not in ("report", "markers", "-h", "--help"):
         argv.insert(0, "report")
     args = build_parser().parse_args(argv)

@@ -51,6 +51,11 @@ what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK
   report script read a Notion token and the Cognee key from the environment and called
   `api.notion.com` and the Cognee server. Neither was part of the skill's instructions.
   The report itself, built from local telemetry, is unchanged.
+- **From `cognee-report`: the outcome-trial harness** (SDK-1411): the `outcomes`
+  command, its three scripts, `OUTCOMES.md` and the sample suite. It benchmarks task
+  outcomes with and without memory, needs a model key and an evaluation server's key,
+  and is a developer tool. It lives in the repository now, under
+  `integrations/tests/claude_outcome_eval/`.
 
 ## [1.8.5]
 
