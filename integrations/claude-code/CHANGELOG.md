@@ -10,6 +10,30 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.6]
+
+Changes for the plugin directory's validator, on top of the restored 1.8.5. None changes
+what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK-1411).
+
+### Changed
+
+- **Five small changes for the plugin directory's validator** (SDK-1411). None changes
+  behaviour. The status line and the update check take the version from
+  `scripts/_version.py`, so no script opens the manifest, which names the listing icon.
+  The settings loader calls a setting's name `name`, not `key`. The status line reads
+  each URL setting by its own name. A changelog entry and three README passages
+  describe a header, a request and the default login in words, and the README's example
+  key value is `YOUR_API_KEY`. The settings template names the Cloud URL without an
+  example host.
+
+- **Skills no longer put the key into a shell command** (SDK-1411). The forget and
+  search skills and the `cognee-recall` agent told Claude to print the key with
+  `cognee-forget.sh env` and send its own request. The helpers do it now:
+  `cognee-search.sh --category <user_context|project_docs|agent_actions>` filters a
+  graph search, and `cognee-forget.sh forget-memory <dataset_id>`,
+  `forget-dataset <dataset_id>` and `forget-everything --confirm-delete-all` cover the
+  broader deletions. `cognee-forget.sh env` is removed, so no command prints the key.
+
 ## [1.8.5]
 
 **This release takes back versions 1.8.2, 1.8.3 and 1.8.4.** The plugin is 1.8.1 again,
@@ -44,25 +68,6 @@ do, Cognee runs locally with defaults.
 - What 1.8.2 to 1.8.4 added: the credential and connection plugin options,
   `cognee-search.sh --category`, `cognee-forget.sh forget-memory`, `forget-dataset` and
   `forget-everything`, and `COGNEE_PLUGIN_DISABLED`.
-
-### Changed
-
-- **Five small changes for the plugin directory's validator** (SDK-1411). None changes
-  behaviour. The status line and the update check take the version from
-  `scripts/_version.py`, so no script opens the manifest, which names the listing icon.
-  The settings loader calls a setting's name `name`, not `key`. The status line reads
-  each URL setting by its own name. A changelog entry and three README passages
-  describe a header, a request and the default login in words, and the README's example
-  key value is `YOUR_API_KEY`. The settings template names the Cloud URL without an
-  example host.
-
-- **Skills no longer put the key into a shell command** (SDK-1411). The forget and
-  search skills and the `cognee-recall` agent told Claude to print the key with
-  `cognee-forget.sh env` and send its own request. The helpers do it now:
-  `cognee-search.sh --category <user_context|project_docs|agent_actions>` filters a
-  graph search, and `cognee-forget.sh forget-memory <dataset_id>`,
-  `forget-dataset <dataset_id>` and `forget-everything --confirm-delete-all` cover the
-  broader deletions. `cognee-forget.sh env` is removed, so no command prints the key.
 
 The entries for 1.8.2 to 1.8.4 below are kept as a record of what those versions did.
 
