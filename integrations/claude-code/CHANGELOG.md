@@ -10,6 +10,24 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.5]
+
+### Changed
+
+- **The Cloud URL option is no longer read from Claude Code's settings file**
+  (SDK-1411). The status line and the scripts behind the skills get no plugin options,
+  so until 1.8.4 they read the URL from `pluginConfigs` in `~/.claude/settings.json`.
+  Every hook now saves the URL to `~/.cognee-plugin/claude-code/cloud-url`, and those
+  processes read that file. It holds the URL only, never a key, and is removed when the
+  option is cleared. After an upgrade the file appears with the first hook of the next
+  session.
+- **Each plugin option is read by its full variable name** (SDK-1411). Until 1.8.4 the
+  name was built at run time (`"CLAUDE_PLUGIN_OPTION_" + name`), so a check of the
+  plugin's files could not tell that the key sent to the server is the plugin's own
+  `sensitive` option and not a variable from the user's shell. `_env_file.py` now spells
+  out `CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY` and the other eight names. No behaviour
+  change.
+
 ## [1.8.4]
 
 **Breaking for local mode without an LLM API key.** Until 1.8.3 such an install built

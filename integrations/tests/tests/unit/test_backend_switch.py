@@ -171,11 +171,12 @@ def test_keys_in_the_file_or_shell_are_ignored(suite, isolated_modules, tmp_path
     assert ef.cloud_key() == "ck_option"
 
 
-def test_url_option_wins_and_is_read_from_settings_without_options(
+def test_url_option_wins_and_is_saved_for_processes_without_options(
     suite, isolated_modules, temp_home, tmp_path, monkeypatch
 ):
-    """Hooks get the URL option exported; the status line and skills read it
-    where Claude Code saves non-secret options (``pluginConfigs``)."""
+    """Hooks get the URL option exported and save it to the plugin's own state
+    file; the status line and skills read it there. Claude Code's settings file
+    is never read for it."""
     if not suite.keys_from_plugin_options:
         pytest.skip(f"{suite.name}: has no plugin options")
     ef = isolated_modules(suite, "_env_file")
@@ -183,6 +184,31 @@ def test_url_option_wins_and_is_read_from_settings_without_options(
     path.write_text(CLOUD_ENV_FILE, encoding="utf-8")
     monkeypatch.setenv("COGNEE_ENV_FILE", str(path))
     option_url = "https://option.cognee.ai"
+    state = temp_home / ".cognee-plugin" / "claude-code" / "cloud-url"
+
+    def as_shell():
+        # The status line / a Bash-run skill: no options, no CLAUDE_PLUGIN_ROOT.
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", raising=False)
+        monkeypatch.delenv("COGNEE_BASE_URL", raising=False)
+        monkeypatch.setattr(ef, "_loaded", False)
+        ef.load_env_file()
+
+    # Before any hook ran: nothing saved, and the settings file is not a source.
+    settings = temp_home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "pluginConfigs": {
+                    "cognee-memory@cognee": {"options": {"cognee_base_url": option_url}}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    as_shell()
+    assert "COGNEE_BASE_URL" not in os.environ  # the env file's URL is ignored too
 
     # A hook process: options exported, CLAUDE_PLUGIN_ROOT set.
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path))
@@ -190,31 +216,18 @@ def test_url_option_wins_and_is_read_from_settings_without_options(
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
     assert os.environ["COGNEE_BASE_URL"] == option_url
+    assert state.read_text(encoding="utf-8").strip() == option_url
 
-    # The status line / a Bash-run skill: no options, no CLAUDE_PLUGIN_ROOT.
-    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT")
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL")
-    monkeypatch.delenv("COGNEE_BASE_URL")
-    monkeypatch.setattr(ef, "_loaded", False)
-    ef.load_env_file()
-    assert "COGNEE_BASE_URL" not in os.environ  # no option saved; the file's URL is ignored
-
-    settings = temp_home / ".claude" / "settings.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        json.dumps(
-            {
-                "pluginConfigs": {
-                    "other-plugin@x": {"options": {"cognee_base_url": "https://wrong"}},
-                    "cognee-memory@cognee": {"options": {"cognee_base_url": option_url}},
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(ef, "_loaded", False)
-    ef.load_env_file()
+    as_shell()
     assert os.environ["COGNEE_BASE_URL"] == option_url
+
+    # The option cleared: the next hook removes the file.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path))
+    monkeypatch.setattr(ef, "_loaded", False)
+    ef.load_env_file()
+    assert not state.exists()
+    as_shell()
+    assert "COGNEE_BASE_URL" not in os.environ
 
 
 def test_forced_cloud_scrubs_nothing(env_file, suite, monkeypatch):

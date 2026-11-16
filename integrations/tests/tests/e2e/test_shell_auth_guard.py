@@ -2,7 +2,7 @@
 
 Claude Code passes the plugin's Cognee Cloud key option to the plugin's hooks
 only. A skill run from the Bash tool reads the URL option from the user
-settings (``pluginConfigs``) but gets no key, so against a remote server it
+own state file (``cloud-url``) but gets no key, so against a remote server it
 could only send an unauthenticated request and come back with a 401 that sends
 the user to an option they already set. Every shell entry point therefore exits
 2 first, with the reason, and nothing reaches the server (SDK-1411).
@@ -52,15 +52,10 @@ def _remote_alias(url: str) -> str:
 
 
 def _with_url_option(home, url: str) -> None:
-    """Save the URL option where Claude Code keeps non-secret option values."""
-    settings = home / ".claude" / "settings.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        json.dumps(
-            {"pluginConfigs": {"cognee-memory@cognee": {"options": {"cognee_base_url": url}}}}
-        ),
-        encoding="utf-8",
-    )
+    """The URL option as a hook process saves it for processes without options."""
+    state = home / ".cognee-plugin" / "claude-code" / "cloud-url"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(url + "\n", encoding="utf-8")
 
 
 def _shell_env(suite, home, *, api_key=None, extra=None):

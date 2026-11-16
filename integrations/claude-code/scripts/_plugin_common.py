@@ -3356,11 +3356,10 @@ def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
         # The local server's own key, or none at all while pinned to cloud.
         local = load_cached_api_key(service_url)
         return (local, "local_owner_key") if local else ("", "missing")
-    from _env_file import option
-
-    # The option itself, read here: the key is never copied into another
-    # environment variable, so a process Claude Code gave no options has none.
-    key = option("cognee_api_key")
+    # The option itself, read here by its full name: the key is never copied
+    # into another environment variable, so a process Claude Code gave no
+    # options has none.
+    key = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "").strip()
     return (key, "env_api_key") if key else ("", "missing")
 
 

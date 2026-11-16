@@ -17,7 +17,6 @@ flip to XPASS and the marks must come off.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -73,7 +72,7 @@ def connected(suite, private_mock_server, tmp_path):
     project.mkdir()
     mock.set_recall_results([{"source": "graph", "text": MEMORY}])
     # Claude Code gives the plugin its URL and key as options, to hooks only;
-    # the agent's shell reads the URL where Claude Code saves it (pluginConfigs).
+    # the agent's shell reads the URL from the plugin's state file, as a hook saves it.
     options = plugin_options(suite, mock.url, DEFAULT_TEST_API_KEY)
     if options:
         _save_url_option(home, mock.url)
@@ -84,15 +83,10 @@ def connected(suite, private_mock_server, tmp_path):
 
 
 def _save_url_option(home, url: str) -> None:
-    """The URL option where Claude Code keeps non-secret option values."""
-    settings = home / ".claude" / "settings.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        json.dumps(
-            {"pluginConfigs": {"cognee-memory@cognee": {"options": {"cognee_base_url": url}}}}
-        ),
-        encoding="utf-8",
-    )
+    """The URL option as a hook process saves it for processes without options."""
+    state = home / ".cognee-plugin" / "claude-code" / "cloud-url"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(url + "\n", encoding="utf-8")
 
 
 def _agent_env(session: HostSession, tmp_path, setup: str) -> dict[str, str]:
