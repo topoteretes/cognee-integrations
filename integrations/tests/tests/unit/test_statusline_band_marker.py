@@ -128,3 +128,38 @@ def test_a_call_without_a_boolean_band_changes_nothing(sl, monkeypatch, capsys, 
 def test_an_unsafe_session_id_writes_no_marker(sl, monkeypatch, capsys):
     _ask(sl, monkeypatch, capsys, {"session_id": "../../escape", "band": True})
     assert not sl._BAND_DIR.exists() or not any(sl._BAND_DIR.iterdir())
+
+
+# -- the module asks for the activity marker too (``--phase``), so it opens no file
+
+
+def _phase(sl, monkeypatch, capsys, session: str) -> str:
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": session})))
+    monkeypatch.setattr("sys.argv", ["cognee_statusline_render.py", "--phase"])
+    sl.main()
+    return capsys.readouterr().out
+
+
+def test_phase_prints_this_sessions_marker(sl, monkeypatch, capsys):
+    marker = {"session_key": _SESSION, "active": {"phase": "recalling", "at": time.time()}}
+    write_json(sl._PHASE_DIR / f"{_SESSION}.json", marker)
+    write_json(sl._PHASE_DIR / f"{_OTHER}.json", {"session_key": _OTHER})
+    assert json.loads(_phase(sl, monkeypatch, capsys, _SESSION)) == marker
+
+
+def test_phase_prints_nothing_without_a_marker_or_for_an_unsafe_id(sl, monkeypatch, capsys):
+    assert _phase(sl, monkeypatch, capsys, _SESSION) == ""
+    write_json(sl._PHASE_DIR / f"{_SESSION}.json", {"session_key": _SESSION})
+    assert _phase(sl, monkeypatch, capsys, "../" + _SESSION) == ""
+
+
+def test_the_modules_logo_is_the_asset(sl):
+    """The module holds the mark as text; it must stay the drawing in assets/."""
+    plugin = sl._SCRIPTS_DIR.parent if hasattr(sl, "_SCRIPTS_DIR") else None
+    from pathlib import Path
+
+    plugin = plugin or Path(sl.__file__).resolve().parent.parent
+    asset = (plugin / "assets" / "icon-lavender.svg").read_text(encoding="utf-8").strip()
+    module = (plugin / "hooks" / "register.ts").read_text(encoding="utf-8")
+    assert "const WAVE_SVG = `" + asset + "`" in module
+    assert "fs.read" not in module and "fs.write" not in module

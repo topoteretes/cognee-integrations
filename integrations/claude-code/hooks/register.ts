@@ -180,7 +180,7 @@ let adoptWatch: { cancel: () => void } | null = null
 // Until when the row reads "connecting…" after a /clear or /resume while the
 // new conversation is not bound yet (the adopt watch's own window).
 let adoptUntil = 0
-let phasePath = ''
+let phaseInFlight = false
 let rendererPython: string | null = null
 let rendererFailures = 0
 // When the renderer last failed for the third time: the cutoff below expires
@@ -212,6 +212,18 @@ let warmupUntil = 0
 // The terminal's credit line draws the display logotype instead (LOGOTYPE).
 let markOn = true
 let waveSvg = ''
+// The Cognee mark, the same drawing as assets/icon-lavender.svg (a test keeps
+// the two equal). Held here so the module opens no file to draw it.
+const WAVE_SVG = `<svg width="1516" height="1516" viewBox="0 0 1516 1516" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_9804_26551)">
+<path d="M869.871 1243.28C817.666 1243.28 775.207 1198.06 775.207 1142.48V373.319C775.207 359.61 766.206 350.058 758.137 350.058C750.067 350.058 741.066 359.61 741.066 373.319V1142.48C741.066 1198.06 698.607 1243.28 646.403 1243.28C594.198 1243.28 551.74 1198.06 551.74 1142.48V540.797C551.74 527.089 542.739 517.536 534.669 517.536C526.599 517.536 517.599 527.089 517.599 540.797V919.174C517.599 974.752 475.14 1019.97 422.935 1019.97C370.731 1019.97 328.272 974.752 328.272 919.174V736.188C328.272 680.61 373.524 635.391 429.143 635.391C432.929 635.391 436.53 635.95 440.006 636.942V540.797C440.006 485.219 482.465 440 534.669 440C586.874 440 629.333 485.219 629.333 540.797V1142.48C629.333 1156.19 638.333 1165.74 646.403 1165.74C654.473 1165.74 663.473 1156.19 663.473 1142.48V373.319C663.473 317.741 705.932 272.521 758.137 272.521C810.341 272.521 852.8 317.741 852.8 373.319V1142.48C852.8 1156.19 861.801 1165.74 869.871 1165.74C877.94 1165.74 886.941 1156.19 886.941 1142.48V540.797C886.941 485.219 929.4 440 981.604 440C1033.81 440 1076.27 485.219 1076.27 540.797V636.942C1079.74 635.95 1083.34 635.391 1087.13 635.391C1142.75 635.391 1188 680.61 1188 736.188V919.174C1188 974.752 1145.54 1019.97 1093.34 1019.97C1041.13 1019.97 998.675 974.752 998.675 919.174V540.797C998.675 527.089 989.674 517.536 981.604 517.536C973.535 517.536 964.534 527.089 964.534 540.797V1142.48C964.534 1198.06 922.075 1243.28 869.871 1243.28ZM1076.27 711.377V919.174C1076.27 932.883 1085.27 942.435 1093.34 942.435C1101.41 942.435 1110.41 932.883 1110.41 919.174V736.188C1110.41 723.597 1099.73 712.928 1087.13 712.928C1083.34 712.928 1079.74 712.369 1076.27 711.377ZM440.006 711.377C436.53 712.369 432.929 712.928 429.143 712.928C416.542 712.928 405.865 723.597 405.865 736.188V919.174C405.865 932.883 414.866 942.435 422.935 942.435C431.005 942.435 440.006 932.883 440.006 919.174V711.377Z" fill="#BC9BFF"/>
+</g>
+<defs>
+<clipPath id="clip0_9804_26551">
+<rect width="859.73" height="970.754" fill="white" transform="translate(328.272 272.521)"/>
+</clipPath>
+</defs>
+</svg>`
 let purple = PURPLE_DARK
 let bandOn = true
 let spinnerOn = true
@@ -604,18 +616,12 @@ function datasetRows(value: unknown): DatasetRow[] {
 }
 
 // ── helpers that reach the engine ───────────────────────────────────────────
-// The plugin's state folder, ~/.cognee-plugin/claude-code: the module reads
-// phase/<session>.json there. It writes nothing: the renderer keeps the
-// band/<session>.json marker (see refreshSnapshot).
-async function stateDir($: any): Promise<string> {
-  const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
-  return `${home}/.cognee-plugin/claude-code`
-}
-
+// The module reads and writes no file. The plugin's state lives in
+// ~/.cognee-plugin/claude-code and belongs to the plugin's scripts: the
+// renderer answers with this session's activity marker (see readPhase) and
+// keeps the band/<session>.json marker (see refreshSnapshot).
 async function bindSession($: any): Promise<void> {
   sessionId = await $.session.id()
-  const dir = await stateDir($)
-  phasePath = `${dir}/phase/${sessionId}.json`
 }
 
 // After a /clear or /resume: bind the conversation that replaced the ended
@@ -709,13 +715,25 @@ function resultKey(r: Activity | null): string {
 }
 
 async function readPhase($: any): Promise<void> {
-  if (!phasePath) return
-  markerActive = false
+  if (!sessionId || phaseInFlight) return
+  // The renderer prints this session's marker (`--phase`): the module asks the
+  // plugin's own script instead of opening the file. One run at a time; a
+  // slow one is skipped over, not queued behind the poll.
+  phaseInFlight = true
   let marker: PhaseMarker
   try {
-    marker = JSON.parse(await $.fs.read(phasePath)) as PhaseMarker
+    const script = `${$.plugin.root}/scripts/cognee_statusline_render.py`
+    const stdin = JSON.stringify({ session_id: sessionId })
+    const ran = await runPython($, [script, '--phase'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
+    markerActive = false
+    // No marker yet prints nothing, which does not parse: the row stays as it is.
+    if (!ran || ran === 'timeout' || ran.exitCode !== 0) return
+    marker = JSON.parse(ran.stdout) as PhaseMarker
   } catch {
+    markerActive = false
     return
+  } finally {
+    phaseInFlight = false
   }
   const now = await $.clock.now()
   const shown = pickActivity(marker, now)
@@ -1087,14 +1105,7 @@ export const register: Register = (on, options) => {
     // Code's own theme does (a light theme, or auto on a light system, is
     // only known to Claude Code when the theme is set explicitly).
     purple = (await lightTheme($)) ? PURPLE_LIGHT : PURPLE_DARK
-    if (markOn && !waveSvg) {
-      try {
-        const source = await $.fs.read(`${$.plugin.root}/assets/icon-lavender.svg`)
-        if (typeof source === 'string' && source.trimStart().startsWith('<svg')) waveSvg = source
-      } catch {
-        // the text mark then stands in on the desktop too
-      }
-    }
+    if (markOn && !waveSvg) waveSvg = WAVE_SVG
     await bindSession($)
     await readPhase($)
     await refreshSnapshot($)
@@ -1362,7 +1373,6 @@ export const register: Register = (on, options) => {
         poll = null
       }
       endedSessionId = (typeof e.sessionId === 'string' && e.sessionId) || sessionId
-      phasePath = ''
       result = null
       snapshot = null
       namingDataset = false

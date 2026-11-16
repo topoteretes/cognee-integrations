@@ -1216,8 +1216,7 @@ in a terminal alike:
 ```
 
 On the desktop the row leads with cognee's waveform mark, the official icon
-itself (an inline SVG from `assets/icon-lavender.svg`, read once at session
-start), then the wordmark in the brand lavender. A terminal gets the wordmark
+itself (an inline SVG, the same drawing as `assets/icon-lavender.svg`), then the wordmark in the brand lavender. A terminal gets the wordmark
 alone: no character looks like the mark, so none stands in for it, there or
 after the spinner or in toasts (the credit line under an answer is the one
 place a terminal draws the display logotype). The `icon` row in `/config`

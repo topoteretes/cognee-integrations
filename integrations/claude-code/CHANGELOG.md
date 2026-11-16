@@ -45,6 +45,11 @@ what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK
   setting themselves and pass the value. The settings-file loader is the one exception:
   it copies whatever names `~/.cognee/.env` holds. No behaviour change.
 
+- **The hooks module reads no file** (SDK-1411). It read the session's activity marker
+  once a second while something ran, and the logo once per session. The status line
+  renderer prints the marker now (`--phase`), about 23 ms per run, and the logo is held
+  in the module as text. The directory holds a module that can both read local files
+  and start programs.
 - **The hooks module writes no file** (SDK-1411). It wrote `band/<session>.json` so the
   settings status line would not draw the row a second time. The status line renderer
   keeps that marker now: the module passes `band` on the `--json` call it already

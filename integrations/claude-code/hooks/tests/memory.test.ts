@@ -108,6 +108,13 @@ function wire(
   // The remember tool sizes a file before storing it: a small one by default.
   on('fs.stat', ($, e) => ({ value: { kind: 'file' as const, size: e.path.includes('huge') ? 500_000 : 1_200, mtimeMs: 0, isLink: false } }))
   on('process.run', ($, e) => {
+    // The once-a-second marker poll: the renderer prints the session's marker
+    // (`--phase`). Answered from what a test says the marker file holds, and
+    // left out of `calls`, which tests read as the work the module started.
+    if (e.argv.includes('--phase')) {
+      const asked = JSON.parse(e.init?.stdin ?? '{}').session_id
+      return ok(readFile(`${HOME}/.cognee-plugin/claude-code/phase/${asked}.json`) ?? '')
+    }
     calls.push({ argv: e.argv, stdin: e.init?.stdin })
     const script = e.argv.find(a => a.includes('/scripts/')) ?? ''
     const name = script.slice(script.lastIndexOf('/') + 1)

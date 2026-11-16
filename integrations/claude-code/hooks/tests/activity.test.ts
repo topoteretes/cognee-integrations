@@ -6,7 +6,6 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const SESSION = 's1'
 const HOME = '/home/tester'
-const MARKER_PATH = `${HOME}/.cognee-plugin/claude-code/phase/${SESSION}.json`
 
 const SNAPSHOT = {
   enabled: true,
@@ -56,18 +55,25 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: st
     return Text({ children: [''] })
   })
   on('session.id', () => ({ value: SESSION }))
+  // The module opens no file: the renderer prints the marker (`--phase`).
   on('fs.read', ($, e) => {
-    if (e.path.endsWith('/assets/icon-lavender.svg')) return { value: '<svg viewBox="0 0 1 1"></svg>' }
-    if (e.path !== MARKER_PATH) throw new Error(`unexpected read of ${e.path}`)
-    return { value: state.marker }
+    throw new Error(`unexpected read of ${e.path}`)
   })
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.write', ($, e) => {
+    throw new Error(`unexpected write of ${e.path}`)
+  })
   // Session start registers tools and commands; without these bottoms the
   // start hook would fail there and never reach its warm-up poll.
   on('tool.register', ($, e) => ({ value: { tool: `mcp__cognee-memory__${e.name}` } }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('process.run', () => ({
-    value: { exitCode: 0, stdout: JSON.stringify(snapshotOf()), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  on('process.run', ($, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('--phase') ? state.marker : JSON.stringify(snapshotOf()),
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
   }))
   return clock
 }

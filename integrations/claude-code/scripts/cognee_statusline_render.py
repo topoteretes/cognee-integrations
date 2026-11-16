@@ -1348,6 +1348,13 @@ def main() -> None:
     session_id = str(ctx.get("session_id") or "")
     if not _path_safe(session_id) or session_id in {".", ".."}:
         session_id = ""
+    if "--phase" in sys.argv[1:]:
+        # The hooks module asks for this session's activity marker here, so it
+        # opens no file itself. No marker prints nothing.
+        marker = _phase_marker(session_id)
+        if marker:
+            sys.stdout.write(json.dumps(marker))
+        return
     try:
         if not _plugin_enabled(cwd):
             if as_json:
