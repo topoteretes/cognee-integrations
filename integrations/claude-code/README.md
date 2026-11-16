@@ -160,6 +160,7 @@ Then configure the plugin — **once**. Two places hold its settings:
 | Cognee API key | That server | Cloud |
 | LLM API key | The local server's LLM | Local mode, unless it runs on your Claude subscription |
 | Embedding API key | The local server's embedder | Only when it differs from the LLM key |
+| Local models without an LLM key | Building memory with no LLM key, on Cognee's local models (GLiNER and fastembed) | Only to run local mode without a key. The first run downloads torch and GLiNER; use a new dataset |
 | Login email and password | A server you run yourself and log in to with a user | Rarely |
 
 **Cognee Cloud or a remote server** — enter the **Cognee server URL** and the **Cognee API key** in the options. Nothing else is needed.

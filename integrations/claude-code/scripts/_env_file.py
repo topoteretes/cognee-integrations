@@ -222,6 +222,13 @@ def embedding_key_option() -> str:
     return os.environ.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "").strip()
 
 
+def local_models_option() -> bool:
+    """Whether the user chose to build memory without an LLM key, on cognee's
+    local models (GLiNER and fastembed). Off unless the option says so."""
+    value = os.environ.get("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "").strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
 def has_options() -> bool:
     """Whether Claude Code handed this process the plugin's options: true in a
     hook and in what a hook started, false in a script run from a shell."""

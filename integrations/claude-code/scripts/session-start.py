@@ -184,7 +184,9 @@ _PROVIDER_EXTRAS = (
     ("VECTOR_DB_PROVIDER", {"pgvector": "postgres-binary"}),
     ("GRAPH_DATABASE_PROVIDER", {"neo4j": "neo4j"}),
     ("EMBEDDING_PROVIDER", {"fastembed": "fastembed"}),
-    ("LLM_PROVIDER", {"ollama": "ollama"}),
+    # cognee's anthropic and mistral adapters import their SDK, which only the
+    # extra installs (openai and gemini run on litellm, which the base has).
+    ("LLM_PROVIDER", {"ollama": "ollama", "anthropic": "anthropic", "mistral": "mistral"}),
 )
 
 
@@ -374,10 +376,11 @@ def _key_options_message() -> str:
     if paused:
         lines.append(
             "Cognee no longer reads LLM_API_KEY from your shell or ~/.cognee/.env, so local "
-            "memory is paused. Enter the key in this plugin's options (%s) to continue with "
-            "the same datasets. Or set COGNEE_LLM_OBSERVER=true to run on your Claude "
-            "subscription instead; that uses a different embedder, so switch to a new "
-            "dataset." % _KEY_OPTIONS_HOW.rstrip(".")
+            "memory is paused: the local server is not started, and captures are kept until "
+            "it is. Enter the key in this plugin's options (%s) to continue with the same "
+            "datasets. Or, in a new dataset: turn on the local models option (no LLM key; "
+            "the first run downloads torch and GLiNER), or set COGNEE_LLM_OBSERVER=true to "
+            "run on your Claude subscription." % _KEY_OPTIONS_HOW.rstrip(".")
         )
     local_names = [
         name
@@ -410,16 +413,30 @@ _pending_notice: dict = {}
 
 
 def _llm_paused_by_ignored_key(config: dict, ignored: list, option: str) -> bool:
-    """Local mode, an ``LLM_API_KEY`` dropped, no LLM key option, and the
-    observer not forced on: the server has no LLM until the user chooses."""
+    """Local mode, an ``LLM_API_KEY`` dropped, no LLM key option, and no other
+    LLM chosen (``_observer.server_llm_choice``): no server is started until
+    the user chooses."""
     if option or "LLM_API_KEY" not in ignored or is_cloud_mode(config):
         return False
     try:
-        from _observer import setting
+        from _observer import server_llm_choice
 
-        return setting() != "true"
+        return not server_llm_choice()
     except Exception:
         return True
+
+
+#: Shown when local mode has no LLM chosen and no server is running, so none
+#: is started (``_observer.server_llm_choice``).
+_NO_LLM_CHOSEN_MESSAGE = (
+    "## Cognee Memory paused\n"
+    "No LLM is set up for the local Cognee server, so it was not started. Captures "
+    "are kept and saved once it runs. Choose one in this plugin's options (%s): an "
+    "LLM API key; or the local models option, which builds memory without a key "
+    "(the first run downloads torch and GLiNER, and the embedder differs from an LLM "
+    "provider's, so use a new dataset). Or set COGNEE_LLM_OBSERVER=true to run on "
+    "your Claude subscription." % _KEY_OPTIONS_HOW.rstrip(".")
+)
 
 
 def _commit_key_options_notice() -> None:
@@ -557,6 +574,8 @@ _EXTRA_SENTINEL_DISTS = {
     "neo4j": "neo4j",
     "fastembed": "fastembed",
     "ollama": "transformers",
+    "anthropic": "anthropic",
+    "mistral": "mistralai",
 }
 
 
@@ -916,6 +935,19 @@ def _ensure_local_server_running(
             "COGNEE_MANAGED_ENDPOINT forbids booting a local fallback server"
         )
 
+    from _observer import server_llm_choice
+
+    llm_choice = server_llm_choice()
+    if not llm_choice:
+        # The same choke point for the LLM: with none chosen, cognee would fall
+        # back on its own to GLiNER and fastembed. Session start already skips
+        # the boot; this stops any other path.
+        hook_log("boot_refused_no_llm", {"base_url": service_url})
+        raise RuntimeError(
+            "no LLM is set up for the local Cognee server (LLM API key option, "
+            "local models option or COGNEE_LLM_OBSERVER=true); not starting it"
+        )
+
     # The server is positively absent and we're at a boot point: ensure the
     # venv holds the latest cognee BEFORE booting, so the server's lifespan
     # migrations run on the upgraded code. Single-flighted on its own (long)
@@ -999,6 +1031,9 @@ def _ensure_local_server_running(
         # Run in agent mode: the server tears itself down once all registered
         # agents disconnect.
         server_env["COGNEE_AGENT_MODE"] = "true"
+        # cognee installs its keyless extractor (torch and GLiNER) on the first
+        # cognify without a usable LLM. Only the local models option allows it.
+        server_env["GLINER_AUTO_INSTALL"] = "true" if llm_choice == "local_models" else "false"
         # cognee >= 1.6.0 creates the default user at startup only when
         # DEFAULT_USER_PASSWORD is set, and never rewrites a stored password. Hand
         # the server the well-known local credentials so a fresh install gets the
@@ -3001,6 +3036,33 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
                 ),
             },
         }
+    if will_boot:
+        from _observer import server_llm_choice
+
+        if not server_llm_choice():
+            # No LLM chosen: cognee would fall back on its own to GLiNER and
+            # fastembed (installing torch, and changing the embedder of every
+            # existing dataset), so no server is started. Captures take the
+            # unreachable-server path (the warmup buffer) and are replayed once
+            # a server runs.
+            hook_log(
+                "local_boot_skipped_no_llm",
+                {"base_url": target_url, "observer": str(observer.get("reason") or "")},
+            )
+            write_connection_state("no_llm_chosen", target_url)
+            phase_end("connecting", session_key=session_key, ok=False)
+            from _env_file import ignored_key_names
+
+            if "LLM_API_KEY" in ignored_key_names():
+                # The key-options notice (main) says what to do in this case.
+                return {}
+            return {
+                "systemMessage": _NO_LLM_CHOSEN_MESSAGE,
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "systemMessage": _NO_LLM_CHOSEN_MESSAGE,
+                },
+            }
     # Whether a detached bootstrap worker owns the "memory ready" verdict: it
     # ends ``setting_up`` once the server answers and the session is
     # registered. This hook then records no verdict of its own: the server is

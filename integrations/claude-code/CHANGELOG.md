@@ -62,14 +62,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
   remove a dataset.
 - **The redaction deny-list is a data file** (`scripts/capture_deny_paths.txt`).
   If it cannot be read, every path is refused.
+- **Local models are a choice.** With no LLM set up for the local server (no LLM key
+  option, no observer, no provider that needs no key, no key in the server's own
+  `.env`), the plugin no longer starts it: Cognee would fall back on its own to
+  GLiNER and fastembed, downloading torch on the first memory build and changing the
+  embedder of existing datasets. Session start says how to choose, the status row
+  shows `no_llm_chosen`, and captures are kept until a server runs. The new **local
+  models** option turns that fallback on deliberately. A server the plugin starts
+  without that option gets `GLINER_AUTO_INSTALL=false`.
+- **Anthropic and Mistral get their SDK.** `LLM_PROVIDER=anthropic` or `mistral`
+  installs Cognee with the matching extra, and a venv without the SDK is reinstalled;
+  before, every memory build failed with `ModuleNotFoundError`.
 
 ### Upgrade note
 
 - Enter your keys once in the plugin's options. Until then Cognee Cloud is not
   connected. If your LLM key was in the shell or `~/.cognee/.env`, local memory
-  pauses until you enter it in the options; the Claude observer starts only if you
-  set `COGNEE_LLM_OBSERVER=true`, and it uses a different embedder, so it needs a
-  new dataset.
+  pauses until you enter it in the options: the local server is not started, and
+  captures are kept until it is. The other choices use a different embedder, so they
+  need a new dataset: the local models option (no LLM key), or the Claude observer
+  with `COGNEE_LLM_OBSERVER=true`.
 
 ## [1.8.6]
 

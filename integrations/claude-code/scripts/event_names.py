@@ -75,6 +75,8 @@ EVENT_NAMES = {
     "hook:final_sync_once_released": "sync.sync_once_released",
     "hook:hook_notice_failed": "notice.failed",
     "hook:boot_refused_server_present": "boot.refused_server_present",
+    "hook:boot_refused_no_llm": "boot.refused_no_llm",
+    "hook:local_boot_skipped_no_llm": "boot.skipped_no_llm",
     "hook:bootstrap_complete": "bootstrap.complete",
     "hook:bootstrap_owns_ready": "bootstrap.owns_ready",
     "hook:bootstrap_registered": "bootstrap.registered",

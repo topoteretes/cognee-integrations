@@ -345,6 +345,40 @@ def llm_provider_configured() -> bool:
     return True
 
 
+#: Providers cognee runs without an API key (cognee's ``_NO_API_KEY_LLM_PROVIDERS``).
+NO_KEY_LLM_PROVIDERS = frozenset({"bedrock", "llama_cpp"})
+
+
+def server_llm_choice() -> str:
+    """How a local server this plugin starts gets its LLM, or '' when the user
+    chose nothing. Never raises.
+
+    ``observer`` (applied by session start before any boot), ``key`` (the LLM
+    key option), ``provider`` (a provider cognee runs without a key),
+    ``server_dotenv`` (a key in the .env the server loads itself) or
+    ``local_models`` (the user turned on the local models option). With none of
+    these, cognee would fall back on its own to GLiNER and fastembed, which
+    installs torch and changes the embedder of every existing dataset; the
+    plugin then starts no server instead (SDK-1411).
+    """
+    try:
+        if os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") == "1":
+            return "observer"
+        if llm_key_configured():
+            return "key"
+        if os.environ.get("LLM_PROVIDER", "").strip().lower() in NO_KEY_LLM_PROVIDERS:
+            return "provider"
+        if server_dotenv_values().get("LLM_API_KEY"):
+            return "server_dotenv"
+        from _env_file import local_models_option
+
+        if local_models_option():
+            return "local_models"
+    except Exception:
+        return ""
+    return ""
+
+
 def resolve_observer(config: dict | None = None) -> dict:
     """Decide whether the observer serves this launch. Never raises.
 

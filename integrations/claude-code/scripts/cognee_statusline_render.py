@@ -236,7 +236,7 @@ def _mode_label() -> str:
     return f"{style}{mode}\033[0m" if style else mode
 
 
-_FAIL_STATES = ("auth_failed", "unreachable", "server_error", "not_responding")
+_FAIL_STATES = ("auth_failed", "unreachable", "server_error", "not_responding", "no_llm_chosen")
 # Of those, the ones that are a property of the SERVER rather than of the credential
 # the observing session happened to use. Only these may cross session boundaries: if
 # one terminal can't reach the server, neither can the others — but one terminal's

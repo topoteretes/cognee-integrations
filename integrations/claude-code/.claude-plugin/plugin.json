@@ -47,6 +47,12 @@
       "description": "A separate key for the local server's embedding provider, when it differs from the LLM key. Usually left empty.",
       "sensitive": true
     },
+    "local_models": {
+      "type": "boolean",
+      "title": "Local models without an LLM key (local mode)",
+      "description": "Build memory without an LLM API key, on Cognee's local models (GLiNER and fastembed). The first run downloads torch and GLiNER, and the embedder differs from an LLM provider's, so use a new dataset. Off: with no LLM key and no observer, the local server is not started.",
+      "default": false
+    },
     "cognee_user_email": {
       "type": "string",
       "title": "Login email (server without an API key)",

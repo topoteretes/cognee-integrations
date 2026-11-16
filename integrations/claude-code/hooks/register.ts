@@ -274,6 +274,15 @@ const FIX_GUIDES: Record<string, FixGuide> = {
       'The dot turns green again on the next successful recall.',
     ],
   },
+  no_llm_chosen: {
+    title: 'Local memory is paused: no LLM is set up',
+    what: 'The local Cognee server needs an LLM to build memory, and none is chosen, so the plugin did not start it. Captures are kept and saved once it runs.',
+    steps: [
+      'Enter an LLM API key in this plugin\'s options (run `/plugin`, select Cognee Memory, then Configure options), then start a new session. Existing datasets keep working.',
+      'Or turn on the local models option there: memory is built without a key, on GLiNER and fastembed. The first run downloads torch and GLiNER; use a new dataset.',
+      'Or set `COGNEE_LLM_OBSERVER=true` in `~/.cognee/.env` to build memory on your Claude subscription (also a new dataset).',
+    ],
+  },
   server_error: {
     title: 'The memory server is answering with errors',
     what: 'The server is up but replied with a server error (HTTP 5xx) to the last requests. Memory is not read or written until it recovers.',

@@ -324,23 +324,35 @@ def _resolve_llm() -> str:
     if decision.get("error"):
         return f"None — {decision['error']}"
     reason = str(decision.get("reason") or "")
-    if reason in ("llm_key_configured", "llm_provider_configured"):
+    from _observer import server_llm_choice
+
+    choice = server_llm_choice()
+    if reason == "llm_key_configured" or (reason == "llm_provider_configured" and choice):
         provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
         return f"Configured provider ({provider}, model {model})"
-    if reason == "llm_key_ignored":
-        return (
-            "None — local memory is paused: the LLM_API_KEY in your shell or ~/.cognee/.env "
-            "is no longer read. Enter it in the plugin's options, or set "
-            "COGNEE_LLM_OBSERVER=true to run on your Claude subscription (new dataset needed)"
-        )
     if reason == "server_dotenv_configured":
         return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
+    if choice == "provider":
+        provider = (os.environ.get("LLM_PROVIDER") or "").strip()
+        return f"Configured provider ({provider}, no key needed)"
+    if choice == "local_models":
+        return (
+            "Local models (the local models option): GLiNER and fastembed, no LLM key; "
+            "the first memory build downloads torch and GLiNER"
+        )
+    paused = (
+        "None — local memory is paused: the local server is not started until you choose "
+        "an LLM in the plugin's options (an LLM API key, or the local models option) or "
+        "set COGNEE_LLM_OBSERVER=true"
+    )
+    if reason == "llm_key_ignored":
+        return paused + ". The LLM_API_KEY in your shell or ~/.cognee/.env is no longer read"
     if reason == "claude_cli_missing":
-        return "None — no LLM API key option and no `claude` executable for the observer"
+        return paused + ". No `claude` executable was found for the observer"
     if reason == "disabled":
-        return "None — no LLM API key option; observer disabled (COGNEE_LLM_OBSERVER=false)"
-    return "None — no LLM API key option configured"
+        return paused + ". The observer is off (COGNEE_LLM_OBSERVER=false)"
+    return paused
 
 
 def _resolve_env_file() -> str:

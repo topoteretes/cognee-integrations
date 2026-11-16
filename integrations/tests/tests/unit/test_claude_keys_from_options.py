@@ -443,6 +443,8 @@ def test_a_once_only_notice_is_recorded_only_when_emitted(start, monkeypatch):
 
 def test_an_ignored_llm_key_pauses_local_memory_at_every_start(start, monkeypatch):
     monkeypatch.delenv("COGNEE_LLM_OBSERVER", raising=False)
+    # No other LLM chosen (the shared test env turns the local models option on).
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
     monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
     first = _said(start)
     assert "local memory is paused" in first

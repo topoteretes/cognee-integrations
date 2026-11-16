@@ -119,6 +119,52 @@ def test_auto_yields_to_a_configured_provider(observer, fake_claude, monkeypatch
     assert decision["reason"] == "llm_provider_configured"
 
 
+# ── how a local server gets its LLM (server_llm_choice) ──────────────────────
+
+
+def test_no_llm_chosen_is_empty(observer, monkeypatch):
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    assert observer.server_llm_choice() == ""
+
+
+@pytest.mark.parametrize("value", ["", "false", "0", "no"])
+def test_the_local_models_option_off_is_no_choice(observer, monkeypatch, value):
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", value)
+    assert observer.server_llm_choice() == ""
+
+
+def test_the_local_models_option_is_a_choice(observer, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "true")
+    assert observer.server_llm_choice() == "local_models"
+
+
+def test_a_key_or_the_observer_comes_before_local_models(observer, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "true")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    assert observer.server_llm_choice() == "key"
+    monkeypatch.setenv(observer.ACTIVE_ENV_FLAG, "1")
+    assert observer.server_llm_choice() == "observer"
+
+
+@pytest.mark.parametrize("provider", ["bedrock", "LLAMA_CPP"])
+def test_a_provider_that_needs_no_key_is_a_choice(observer, monkeypatch, provider):
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    assert observer.server_llm_choice() == "provider"
+
+
+def test_a_provider_that_needs_a_key_is_not_a_choice_on_its_own(observer, monkeypatch):
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    assert observer.server_llm_choice() == ""
+
+
+def test_a_key_in_the_servers_dotenv_is_a_choice(observer, temp_home, monkeypatch):
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    monkeypatch.setattr(observer, "server_dotenv_values", lambda: {"LLM_API_KEY": "set"})
+    assert observer.server_llm_choice() == "server_dotenv"
+
+
 def test_cloud_mode_never_runs_the_observer(observer, fake_claude):
     assert (
         observer.resolve_observer({"base_url": "https://api.cognee.ai"})["reason"] == "cloud_mode"

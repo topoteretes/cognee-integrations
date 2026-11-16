@@ -91,6 +91,38 @@ def test_unrecognized_provider_value_is_ignored_not_an_error(ss, monkeypatch):
     assert ss._detect_required_extras() == []
 
 
+@pytest.mark.parametrize(
+    ("provider", "extra", "dist"),
+    [("anthropic", "anthropic", "anthropic"), ("mistral", "mistral", "mistralai")],
+)
+def test_llm_provider_sdk_extra_detected(ss, suite, monkeypatch, provider, extra, dist):
+    """cognee's anthropic and mistral adapters import their SDK, which only the
+    extra installs: without it every cognify fails with ModuleNotFoundError."""
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: the provider SDK extras are mapped for Claude Code only")
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    assert ss._detect_required_extras() == [extra]
+    assert ss._cognee_install_spec() == f"cognee[{extra}]=={ss._PINNED_COGNEE_VERSION}"
+    assert ss._EXTRA_SENTINEL_DISTS[extra] == dist
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+def test_llm_providers_on_litellm_need_no_extra(ss, monkeypatch, provider):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    assert ss._detect_required_extras() == []
+
+
+def test_venv_without_the_llm_sdk_is_reinstalled(ss, suite, monkeypatch):
+    """A 1.6.6 venv built before the provider was set lacks the SDK: the probe
+    reports the extra missing, so skip-at-pin reinstalls with it."""
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: the provider SDK extras are mapped for Claude Code only")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setattr(ss, "_VENV_PYTHON", Path(sys.executable))
+    monkeypatch.setattr(ss, "_EXTRA_SENTINEL_DISTS", {"anthropic": "cognee-test-no-such-dist"})
+    assert ss._venv_missing_extras(ss._detect_required_extras()) == ["anthropic"]
+
+
 def test_every_mapped_extra_has_a_probe_sentinel(ss):
     """The detection map and the probe map must stay in lockstep: an extra the
     detector can request but the probe can't verify would crash the skip-at-pin

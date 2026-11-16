@@ -3842,7 +3842,14 @@ def server_presence(
 # "unreachable" is reserved for POSITIVE absence (connection refused / DNS /
 # unroutable). "not_responding" remains readable for compatibility with older
 # state files. Timeout streaks no longer write it or prevent another recall.
-CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error", "not_responding")
+CONNECTION_STATES = (
+    "ready",
+    "auth_failed",
+    "unreachable",
+    "server_error",
+    "not_responding",
+    "no_llm_chosen",
+)
 
 
 # Per-session copies of the status markers. The shared files above are
