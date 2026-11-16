@@ -52,6 +52,21 @@
       "title": "First-run tour",
       "description": "On the first session on this machine, show three short hints under the status row about what it shows and does (/cognee-tour replays them).",
       "default": true
+    },
+    "cognee_api_key": {
+      "type": "string",
+      "title": "Cognee Cloud API key",
+      "description": "The key from your Cognee Cloud account.",
+      "sensitive": true
+    }
+  },
+  "mcpServers": {
+    "cognee": {
+      "type": "http",
+      "url": "https://mcp.cognee.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${user_config.cognee_api_key}"
+      }
     }
   }
 }
