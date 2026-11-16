@@ -833,7 +833,17 @@ start a new session. Until you do:
 - new sessions are still captured, but the server cannot build them into the graph;
 - session start says so every time, doctor's LLM row says
   `None — no LLM API key option set`, and the status line shows
-  `✕ (incorrect_llm_api_key)`.
+  `✕ (incorrect_llm_api_key)` for as long as the session runs.
+
+The LLM provider option alone is not enough: every provider except `bedrock` and
+`llama_cpp` needs the key, and a provider set without one gets the same notices. The
+plugin also installs nothing in its place: without a usable LLM the server is started
+with `GLINER_AUTO_INSTALL=false`, so cognee does not download its local extractor
+(gliner2 and torch) and refuses to build the graph instead.
+
+A local server the plugin did not start (a managed endpoint, or your own Cognee on the
+port) has its own LLM settings, so none of this applies to it: no notice, and doctor's
+LLM row says the server's own settings apply.
 
 Cloud mode is unaffected: the remote server owns its LLM.
 
@@ -843,16 +853,19 @@ from different models cannot be compared, so a dataset is tied to the embedder t
 built it. An install whose last local session ran on the observer therefore keeps that
 embedder after the upgrade, also once you add an LLM key (which would otherwise switch
 embeddings to that provider's default and leave the existing datasets unsearchable).
-The choice is recorded once in `~/.cognee-plugin/claude-code/embedder.json`. To use
-another embedder, set the embedding provider option and switch to a new dataset
+The choice is recorded once in `~/.cognee-plugin/claude-code/embedder.json`. An
+install is recognised whichever version it ran on the observer with (1.6.0 to 1.8.3).
+Setting any embedding option (provider, model, dimensions or key) is your own choice of
+embedder and replaces the kept one as a whole. To use
+another embedder, set the embedding options and switch to a new dataset
 (`/cognee-memory:cognee-switch-datasets` or `COGNEE_PLUGIN_DATASET`); delete the file to
 drop the pin.
 
 **During the upgrade.** A local server that 1.8.3 started on the observer keeps running
 on it, with the shim that version started, until it restarts (it stops on its own once
-every session using it has closed); session start says so. The shim's token and
-pidfile in `~/.cognee-plugin/observer/` are deleted on the first session start after
-that shim is gone. Its logs there are left alone.
+every session using it has closed); session start says so. This version no longer
+uses `~/.cognee-plugin/observer/` and does not touch it: once no such server is
+running you can delete the folder.
 
 ## Visible Cognee searches
 
@@ -940,8 +953,8 @@ A connection glyph precedes the line:
 **Local-mode LLM.** The plugin checks no LLM key of yours: it imports
 no cognee or litellm code and calls no provider, so a bad LLM API key option shows up
 only as failures in the local server's log. The one thing it knows is whether an LLM
-is configured at all: with no LLM API key and no LLM provider option, the background
-idle watcher records that, and it shows **in the same leading glyph slot**:
+is configured at all: with no LLM API key option (and a provider that needs one), the
+background idle watcher records that, and it shows **in the same leading glyph slot**:
 
 ```
 ✕ (incorrect_llm_api_key) cognee: agent_sessions · local

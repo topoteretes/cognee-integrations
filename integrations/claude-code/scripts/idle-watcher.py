@@ -2,9 +2,9 @@
 """Background watcher daemon.
 
 Launched detached from ``session-start.py`` (and respawned by the next prompt
-if it is not running). Runs the update check and the LLM-configured check once
-at start, then refreshes shared agent memory every ``SHARED_REFRESH_SECONDS``
-until stopped.
+if it is not running). Runs the update check once at start, then refreshes shared agent memory every
+``SHARED_REFRESH_SECONDS`` and renews the LLM-configured check every
+``LLM_CHECK_SECONDS`` until stopped.
 
 Stops cleanly on:
   * ``~/.cognee-plugin/watcher.stop`` sentinel file.
@@ -32,6 +32,9 @@ POLL_SECONDS = float(os.environ.get("COGNEE_IDLE_POLL", "10"))
 # backfill the shared role's grants, so a dataset another plugin created shows
 # up here within this interval rather than at the next session start.
 SHARED_REFRESH_SECONDS = float(os.environ.get("COGNEE_SHARED_MEMORY_REFRESH", "60"))
+# How often the "local server has no LLM" verdict is renewed. Well inside the
+# status line's 30-minute TTL for it, so the mark holds for the whole session.
+LLM_CHECK_SECONDS = 300.0
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "claude-code"
 _PIDFILE = _PLUGIN_DIR / "watcher.pid"
@@ -76,22 +79,47 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
+def _llm_options() -> tuple[bool, str] | None:
+    """``(LLM key option set, LLM provider)`` for this launch, or None when unknown.
+
+    Session start had the plugin options and recorded both on the launch
+    record. This process may have none: the watcher a Bash-run skill restarts
+    (a dataset switch) is given no options, and reading "no key" from its own
+    environment put a false mark on the bar of a user whose key is set. So the
+    record decides, and this process's own key option only ever says "set".
+    """
+    from _env_file import option
+    from _plugin_common import _read_map_record, get_session_key
+
+    provider = os.environ.get("LLM_PROVIDER", "").strip()
+    facts = _read_map_record(get_session_key()).get("launch_facts")
+    recorded = isinstance(facts, dict) and "llm_key_option_set" in facts
+    if recorded:
+        provider = str(facts.get("llm_provider") or "").strip() or provider
+    if option("llm_api_key"):
+        return True, provider
+    if recorded:
+        return bool(facts["llm_key_option_set"]), provider
+    return None
+
+
 def _check_llm_key(config: dict) -> None:
     """Say on the status line when the local server has no LLM (local mode).
 
-    The local server's LLM comes from the plugin options alone, so "no LLM key
-    or provider option" is something this process knows without asking anyone:
-    it writes ``not_set`` to the llm-state marker, and withdraws the verdict
-    otherwise. Whether a configured key works is not checked (SDK-1411): the
-    plugin imports no cognee or litellm code and calls no provider, so a bad
-    key shows up only as failures in the server's logs.
+    The local server's LLM comes from the plugin options alone, so "no usable
+    LLM option" is known without asking anyone (``_llm_options``): it writes
+    ``not_set`` to the llm-state marker, and withdraws the verdict otherwise.
+    Run at start and again every ``LLM_CHECK_SECONDS``, because the status line
+    drops a verdict older than its TTL. Whether a configured key works is not
+    checked (SDK-1411): the plugin imports no cognee or litellm code and calls
+    no provider, so a bad key shows up only as failures in the server's logs.
     """
     try:
         sys.path.insert(0, os.path.dirname(__file__))
-        from _env_file import option
         from _plugin_common import (
             clear_llm_state,
             live_server_record,
+            llm_configured,
             llm_key_owner,
             service_url_is_local,
             write_llm_state,
@@ -107,7 +135,12 @@ def _check_llm_key(config: dict) -> None:
             clear_llm_state()
             _log("llm_key_check_skipped", reason=owner)
             return
-        if option("llm_api_key") or os.environ.get("LLM_PROVIDER", "").strip():
+        options = _llm_options()
+        if options is None:
+            # Nothing says what this launch was given: no verdict either way.
+            _log("llm_key_check_skipped", reason="no_launch_facts")
+            return
+        if llm_configured(*options):
             clear_llm_state()
             _log("llm_key_check_skipped", reason="configured")
             return
@@ -138,8 +171,9 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         user_id=config.get("user_id", ""),
         poll=POLL_SECONDS,
     )
-    # Note once, at session start, whether the local server has an LLM.
+    # Whether the local server has an LLM: now, and again while the session runs.
     _check_llm_key(config)
+    next_llm_check = time.time() + LLM_CHECK_SECONDS
     exit_reason = "loop_complete"
     # First shared-memory refresh one interval in: SessionStart just resolved
     # everything, so an immediate re-resolve would only repeat its calls.
@@ -168,6 +202,9 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         if SHARED_REFRESH_SECONDS > 0 and now >= next_shared_refresh:
             next_shared_refresh = now + SHARED_REFRESH_SECONDS
             _refresh_shared_memory()
+        if now >= next_llm_check:
+            next_llm_check = now + LLM_CHECK_SECONDS
+            _check_llm_key(config)
         await asyncio.sleep(POLL_SECONDS)
 
     if _should_stop:

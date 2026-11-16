@@ -191,7 +191,6 @@ EVENT_NAMES = {
     "hook:llm_state_write_failed": "llm.state_write_failed",
     "hook:local_llm": "llm.local",
     "hook:local_llm_error": "llm.local_error",
-    "hook:observer_leftovers_failed": "llm.observer_leftovers_failed",
     "hook:managed_endpoint_boot_refused": "boot.refused_managed_endpoint",
     "hook:managed_endpoint_down": "endpoint.managed_down",
     "hook:map_create_failed": "map.create_failed",

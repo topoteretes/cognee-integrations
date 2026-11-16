@@ -339,10 +339,38 @@ def _resolve_llm() -> str:
     mode = _resolve_mode()
     if mode == "Cloud":
         return "Remote server (not applicable)"
+    owner = _server_owner()
+    if owner:
+        return f"Server not started by the plugin ({owner}) — its own LLM settings apply"
     return _computed_llm() if _has_options() else _recorded_llm()
 
 
 _NO_LLM = "None — no LLM API key option set; the server cannot build new memory into the graph"
+
+
+def _server_owner() -> str:
+    """Why the local server is not the plugin's (``llm_key_owner``), or "".
+
+    A managed endpoint, or a server on the port this plugin did not start,
+    reads its LLM from its own environment: the options say nothing about it.
+    """
+    try:
+        from _plugin_common import llm_key_owner
+        from config import load_config
+
+        return llm_key_owner(load_config())
+    except Exception:
+        return ""
+
+
+def _no_llm(provider: str) -> str:
+    """The row for a local server the options give no usable LLM."""
+    if provider:
+        return (
+            f"None — LLM provider option is {provider} but no LLM API key option set; "
+            "the server cannot build new memory into the graph"
+        )
+    return _NO_LLM
 
 
 def _recorded_llm() -> str:
@@ -350,26 +378,30 @@ def _recorded_llm() -> str:
     if not facts:
         return NOT_VISIBLE
     as_of = _as_of(facts)
-    if facts.get("llm_key_option_set") or facts.get("llm_provider"):
-        provider = str(facts.get("llm_provider") or "") or "openai (default)"
+    from _plugin_common import llm_configured
+
+    recorded_provider = str(facts.get("llm_provider") or "").strip()
+    if llm_configured(bool(facts.get("llm_key_option_set")), recorded_provider):
+        provider = recorded_provider or "openai (default)"
         model = str(facts.get("llm_model") or "") or "Default"
         return f"Configured provider ({provider}, model {model}) {as_of}"
     observer = facts.get("observer") if isinstance(facts.get("observer"), dict) else {}
     if observer.get("active"):
         # Recorded by 1.8.3 or older: no session of this version has started yet.
         return f"Claude observer {as_of}, which this version removed — set the LLM API key option"
-    return f"{_NO_LLM} {as_of}"
+    return f"{_no_llm(recorded_provider)} {as_of}"
 
 
 def _computed_llm() -> str:
     """What this process's plugin options configure."""
     from _env_file import option
+    from _plugin_common import llm_configured
 
     provider = (os.environ.get("LLM_PROVIDER") or "").strip()
-    if option("llm_api_key") or provider:
+    if llm_configured(bool(option("llm_api_key")), provider):
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
         return f"Configured provider ({provider or 'openai (default)'}, model {model})"
-    return _NO_LLM
+    return _no_llm(provider)
 
 
 def _resolve_env_file() -> str:

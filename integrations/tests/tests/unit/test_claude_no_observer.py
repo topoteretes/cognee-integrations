@@ -17,11 +17,13 @@ hold afterwards:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -33,10 +35,12 @@ def start(suite, hook_module, monkeypatch, tmp_path):
     module = hook_module(suite, "session-start.py")
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
     monkeypatch.setattr(module, "_EMBEDDER_PIN", tmp_path / "state" / "embedder.json")
-    monkeypatch.setattr(module, "_OBSERVER_STATE_DIR", tmp_path / "observer")
+    # The server is the plugin's own unless a test says otherwise (no probe).
+    monkeypatch.setattr(sys.modules["_plugin_common"], "llm_key_owner", lambda config=None: "")
     for name in ("EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "LLM_PROVIDER"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", raising=False)
     return module
 
 
@@ -50,6 +54,24 @@ def _old_launch(pc, key: str, *, observer_active: bool, key_source: str, age: fl
     pc._write_map_record(key, record)
 
 
+def _legacy_launch(
+    pc, key: str, *, observer_active: bool, age: float = 0, base_url: str = "http://localhost:8011"
+) -> None:
+    """A launch record as 1.6.0 to 1.8.1 wrote it: no ``launch_facts``, the
+    observer on a top-level ``llm_observer``, stamped by ``created_at``."""
+    created = datetime.fromtimestamp(time.time() - age, timezone.utc).isoformat(timespec="seconds")
+    pc._write_map_record(
+        key,
+        {
+            "session_id": key,
+            "host_key": key,
+            "created_at": created,
+            "base_url": base_url,
+            "llm_observer": {"active": observer_active, "model": "haiku", "endpoint": ""},
+        },
+    )
+
+
 # ── nothing shipped runs or names the observer ─────────────────────────────
 
 
@@ -60,7 +82,7 @@ def test_no_shipped_file_runs_claude_or_names_the_shim(suite):
     assert not (scripts / "_observer.py").exists()
     assert not (scripts / "claude-observer.py").exists()
     pattern = re.compile(
-        r"claude-observer|observer_token|\.credentials\.json|keychain|"
+        r"claude-observer|observer_token|observer\.pid|\.credentials\.json|keychain|"
         r"[\"']claude[\"'],\s*[\"']-p[\"']|COGNEE_OBSERVER_(?!CHILD)|COGNEE_LLM_OBSERVER"
     )
     offenders = []
@@ -90,7 +112,13 @@ def test_the_observer_settings_are_no_longer_tuning_names(suite, isolated_module
 
 def test_a_local_session_without_an_llm_key_is_told_so(start):
     llm = start._local_llm_state("http://localhost:8011")
-    assert llm == {"configured": False, "embedder_pinned": False, "server_observer": False}
+    assert llm == {
+        "configured": False,
+        "provider_without_key": "",
+        "embedder_pinned": False,
+        "server_observer": False,
+        "server_owner": "",
+    }
     note = start._llm_note(llm)
     assert "local mode has no LLM" in note
     assert "LLM API key option" in note
@@ -100,12 +128,8 @@ def test_a_local_session_without_an_llm_key_is_told_so(start):
     assert "local mode has no LLM" in output["systemMessage"]
 
 
-@pytest.mark.parametrize("option", ["llm_api_key", "llm_provider"])
-def test_a_configured_llm_gets_no_note(start, monkeypatch, option):
-    if option == "llm_api_key":
-        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-option")
-    else:
-        monkeypatch.setenv("LLM_PROVIDER", "anthropic")  # as the option is applied
+def test_a_configured_llm_gets_no_note(start, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-option")
     llm = start._local_llm_state("http://localhost:8011")
     assert llm["configured"] is True
     assert start._llm_note(llm) == ""
@@ -167,6 +191,29 @@ def test_the_users_own_embedding_provider_is_never_replaced(start, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "name, value",
+    [
+        ("EMBEDDING_MODEL", "openai/text-embedding-3-large"),
+        ("EMBEDDING_DIMENSIONS", "3072"),
+        ("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "sk-embed"),
+    ],
+    ids=["model only", "dimensions only", "embedding key only"],
+)
+def test_any_embedding_option_replaces_the_kept_embedder_as_a_whole(
+    start, monkeypatch, name, value
+):
+    """fastembed with the user's model name or dimensions cannot embed."""
+    pc = sys.modules["_plugin_common"]
+    _old_launch(pc, "old-local", observer_active=True, key_source="local_owner_key")
+    monkeypatch.setenv(name, value)  # as the option is applied
+    assert start._apply_embedder_pin() is False
+    assert "EMBEDDING_PROVIDER" not in os.environ
+    for pinned in ("EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS"):
+        if pinned != name:
+            assert pinned not in os.environ
+
+
+@pytest.mark.parametrize(
     "records",
     [
         [],
@@ -195,6 +242,51 @@ def test_a_cloud_launch_in_between_does_not_hide_the_observer_install(start):
     assert start._apply_embedder_pin() is True
 
 
+def test_an_observer_install_from_before_launch_facts_is_pinned(start):
+    """1.6.0 to 1.8.1 recorded the observer without ``launch_facts``."""
+    pc = sys.modules["_plugin_common"]
+    _legacy_launch(pc, "old-local", observer_active=True)
+    assert pc.last_local_launch_used_observer() is True
+    assert start._apply_embedder_pin() is True
+    assert os.environ["EMBEDDING_PROVIDER"] == "fastembed"
+    assert start._EMBEDDER_PIN.exists()
+
+
+def test_a_legacy_install_that_moved_off_the_observer_is_not_pinned(start):
+    pc = sys.modules["_plugin_common"]
+    _legacy_launch(pc, "older", observer_active=True, age=3600)
+    _legacy_launch(pc, "newer", observer_active=False, age=60)
+    assert start._apply_embedder_pin() is False
+    assert not start._EMBEDDER_PIN.exists()
+
+
+def test_a_legacy_cloud_launch_does_not_hide_the_observer_install(start):
+    pc = sys.modules["_plugin_common"]
+    _legacy_launch(pc, "local", observer_active=True, age=3600)
+    _legacy_launch(
+        pc, "cloud", observer_active=False, age=60, base_url="https://tenant.cognee.example"
+    )
+    assert pc.last_local_launch_used_observer() is True
+
+
+def test_a_newer_launch_on_a_key_outranks_a_legacy_observer_record(start):
+    """Both shapes are ordered on one clock: 1.8.1 on the observer, then 1.8.3 on a key."""
+    pc = sys.modules["_plugin_common"]
+    _legacy_launch(pc, "legacy", observer_active=True, age=3600)
+    _old_launch(pc, "later", observer_active=False, key_source="local_owner_key", age=60)
+    assert pc.last_local_launch_used_observer() is False
+
+
+def test_an_unreadable_record_does_not_hide_the_observer_install(start):
+    pc = sys.modules["_plugin_common"]
+    _legacy_launch(pc, "old-local", observer_active=True)
+    _old_launch(pc, "broken", observer_active=False, key_source="local_owner_key")
+    record = pc._read_map_record("broken")
+    record["launch_facts"]["recorded_at"] = "not a number"
+    pc._write_map_record("broken", record)
+    assert pc.last_local_launch_used_observer() is True
+
+
 def test_this_version_records_no_observer_fact(start):
     pc = sys.modules["_plugin_common"]
     pc._write_map_record("now", {"session_id": "s", "conn_uuid": "c", "cwd": "/p"})
@@ -203,48 +295,79 @@ def test_this_version_records_no_observer_fact(start):
     assert pc.last_local_launch_used_observer() is False
 
 
-# ── what an older version left running or on disk ──────────────────────────
+# ── a server an older version started on the observer ──────────────────────
 
 
-def _leftovers(start, pid: int) -> None:
-    start._OBSERVER_STATE_DIR.mkdir(parents=True)
-    (start._OBSERVER_STATE_DIR / "token").write_text("shim-token", encoding="utf-8")
-    (start._OBSERVER_STATE_DIR / "observer.pid").write_text(str(pid), encoding="utf-8")
-    (start._OBSERVER_STATE_DIR / "observer.log").write_text("log", encoding="utf-8")
-
-
-def test_the_shim_token_is_deleted_once_the_shim_is_gone(start, monkeypatch):
-    _leftovers(start, pid=424242)
-    monkeypatch.setattr(start, "_pid_alive", lambda pid: False)
-    start._local_llm_state("http://localhost:8011")
-    assert not (start._OBSERVER_STATE_DIR / "token").exists()
-    assert not (start._OBSERVER_STATE_DIR / "observer.pid").exists()
-    assert (start._OBSERVER_STATE_DIR / "observer.log").exists()  # the user's log stays
-
-
-def test_a_live_shim_keeps_its_token(start, monkeypatch):
-    _leftovers(start, pid=424242)
-    monkeypatch.setattr(start, "_pid_alive", lambda pid: True)
-    start._local_llm_state("http://localhost:8011")
-    assert (start._OBSERVER_STATE_DIR / "token").read_text(encoding="utf-8") == "shim-token"
-
-
-def test_a_server_started_on_the_observer_is_left_alone_and_named(start, monkeypatch):
+def test_a_server_started_on_the_observer_is_named(start, monkeypatch):
     pc = sys.modules["_plugin_common"]
-    _leftovers(start, pid=424242)
-    monkeypatch.setattr(start, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(pc, "live_server_record", lambda port: {"llm_observer": True})
     llm = start._local_llm_state("http://localhost:8011")
     assert llm["server_observer"] is True
-    assert (start._OBSERVER_STATE_DIR / "token").exists()  # its shim may restart
     note = start._llm_note(llm)
     assert "started by an earlier plugin version on the Claude observer" in note
     assert "LLM API key option" in note
 
 
-def test_no_leftovers_is_not_an_error(start):
-    start._remove_observer_leftovers()
-    assert not start._OBSERVER_STATE_DIR.exists()
+def test_session_start_has_no_code_for_the_shim_files(start):
+    """This version neither reads nor deletes what the removed shim left."""
+    assert not hasattr(start, "_remove_observer_leftovers")
+    assert not hasattr(start, "_OBSERVER_STATE_DIR")
+
+
+# ── a provider without the key it needs ────────────────────────────────────
+
+
+def test_a_provider_without_a_key_is_not_an_llm(start, monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    llm = start._local_llm_state("http://localhost:8011")
+    assert llm["configured"] is False
+    note = start._llm_note(llm)
+    assert "LLM provider option is set to anthropic but the LLM API key option is empty" in note
+
+
+@pytest.mark.parametrize("provider", ["bedrock", "llama_cpp", "Bedrock"])
+def test_a_provider_that_needs_no_key_is_an_llm(start, monkeypatch, provider):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    llm = start._local_llm_state("http://localhost:8011")
+    assert llm["configured"] is True
+    assert start._llm_note(llm) == ""
+
+
+# ── a local server the plugin did not start ────────────────────────────────
+
+
+@pytest.mark.parametrize("owner", ["managed_endpoint", "unowned_server"])
+def test_a_server_the_plugin_did_not_start_gets_no_note_and_no_pin(start, monkeypatch, owner):
+    """It has its own LLM and embedder: the options say nothing about it."""
+    pc = sys.modules["_plugin_common"]
+    _old_launch(pc, "old-local", observer_active=True, key_source="local_owner_key")
+    monkeypatch.setattr(pc, "llm_key_owner", lambda config=None: owner)
+    llm = start._local_llm_state("http://localhost:8011", {"base_url": "http://localhost:8011"})
+    assert llm["server_owner"] == owner
+    assert llm["embedder_pinned"] is False
+    assert start._llm_note(llm) == ""
+    assert "EMBEDDING_PROVIDER" not in os.environ
+    assert not start._EMBEDDER_PIN.exists()
+
+
+# ── nothing is installed in the observer's place ───────────────────────────
+
+
+def test_a_server_without_an_llm_may_not_install_the_local_extractor(start, monkeypatch):
+    assert start._server_env()["GLINER_AUTO_INSTALL"] == "false"
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")  # a provider alone is no LLM
+    assert start._server_env()["GLINER_AUTO_INSTALL"] == "false"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"CLAUDE_PLUGIN_OPTION_LLM_API_KEY": "sk-option"}, {"LLM_PROVIDER": "bedrock"}],
+    ids=["key", "provider that needs none"],
+)
+def test_a_server_with_an_llm_keeps_cognees_default(start, monkeypatch, env):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert "GLINER_AUTO_INSTALL" not in start._server_env()
 
 
 # ── the status line's LLM sign ─────────────────────────────────────────────
@@ -266,7 +389,15 @@ def watcher(suite, hook_module, isolated_modules, monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", raising=False)
     module.pc = pc
+    _recorded(module, monkeypatch, key=False)
     return module, verdicts
+
+
+def _recorded(module, monkeypatch, *, key: bool | None, provider: str = "") -> None:
+    """What session start recorded about the LLM options for this launch
+    (``key=None``: it recorded nothing)."""
+    facts = None if key is None else {"llm_key_option_set": key, "llm_provider": provider}
+    monkeypatch.setattr(module.pc, "_read_map_record", lambda host_key: {"launch_facts": facts})
 
 
 def test_the_watcher_marks_a_local_session_without_an_llm(watcher):
@@ -280,6 +411,61 @@ def test_the_watcher_withdraws_the_mark_once_a_key_is_set(watcher, monkeypatch):
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-option")
     module._check_llm_key({"base_url": "http://localhost:8011"})
     assert verdicts == ["cleared"]
+
+
+def test_a_watcher_without_options_trusts_what_session_start_recorded(watcher, monkeypatch):
+    """The watcher a dataset switch restarts is given no options: a key that
+    session start saw must not turn into a "no LLM" mark."""
+    module, verdicts = watcher
+    _recorded(module, monkeypatch, key=True)
+    module._check_llm_key({"base_url": "http://localhost:8011"})
+    assert verdicts == ["cleared"]
+
+
+def test_a_watcher_that_knows_nothing_gives_no_verdict(watcher, monkeypatch):
+    module, verdicts = watcher
+    _recorded(module, monkeypatch, key=None)
+    module._check_llm_key({"base_url": "http://localhost:8011"})
+    assert verdicts == []
+
+
+def test_the_watcher_marks_a_provider_without_its_key(watcher, monkeypatch):
+    module, verdicts = watcher
+    _recorded(module, monkeypatch, key=False, provider="anthropic")
+    module._check_llm_key({"base_url": "http://localhost:8011"})
+    assert verdicts == ["not_set"]
+    verdicts.clear()
+    _recorded(module, monkeypatch, key=False, provider="bedrock")
+    module._check_llm_key({"base_url": "http://localhost:8011"})
+    assert verdicts == ["cleared"]
+
+
+def test_the_watcher_renews_the_mark_while_the_session_runs(
+    suite, watcher, isolated_modules, monkeypatch, tmp_path
+):
+    """The status line drops a verdict older than its TTL, so one check at
+    start would let a long session without an LLM go back to the plain dot."""
+    module, _ = watcher
+    bar = isolated_modules(suite, "cognee_statusline_render")
+    assert module.LLM_CHECK_SECONDS < bar._LLM_STATE_STALE_SECONDS
+
+    checks: list = []
+
+    def check(config):
+        checks.append(config)
+        if len(checks) == 3:
+            module._should_stop = True
+
+    monkeypatch.setattr(module, "_check_llm_key", check)
+    monkeypatch.setattr(module, "LLM_CHECK_SECONDS", 0.0)
+    monkeypatch.setattr(module, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(module, "SHARED_REFRESH_SECONDS", 0.0)
+    monkeypatch.setattr(module, "_STOPFILE", tmp_path / "watcher.stop")
+    monkeypatch.setattr(module, "_PIDFILE", tmp_path / "watcher.pid")
+    monkeypatch.setattr(module, "_owns_pidfile", lambda: True)
+    monkeypatch.setattr(module, "_should_stop", False)
+    asyncio.run(module._main_loop("s", "d", {"base_url": "http://localhost:8011"}))
+    assert len(checks) == 3
 
 
 def test_the_watcher_says_nothing_about_a_remote_server(watcher):

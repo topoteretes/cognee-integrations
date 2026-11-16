@@ -12,6 +12,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.8.4]
 
+**Breaking for local mode without an LLM API key.** Until 1.8.3 such an install built
+memory on your Claude subscription. From 1.8.4 it builds nothing new until you set a
+key: `/plugin`, cognee-memory, Configure options, LLM API key, then start a new session.
+Memory already in the graph is still recalled and sessions are still captured. Cloud
+mode is unaffected.
+
 1.8.3 was held by the plugin directory with the same two findings as 1.8.2 (*Uses a
 credential from the user's machine*, *Update adds credential forward*): "no new
 findings, none fixed". Two releases that removed code patterns cleared nothing, so this
@@ -33,19 +39,29 @@ under the user's stored Claude login (SDK-1411).
 
 - **A local session without an LLM says so.** Session start names the missing LLM API
   key option every time, doctor's LLM row reads `None — no LLM API key option set`,
-  and the status line shows `✕ (incorrect_llm_api_key)`. The idle watcher no longer
-  probes anything: it records only whether an LLM key or provider option is set.
+  and the status line shows `✕ (incorrect_llm_api_key)` for as long as the session
+  runs. The idle watcher no longer probes anything: it reads what session start
+  recorded about the LLM options and renews the mark every five minutes. The LLM
+  provider option without a key gets the same notices (only `bedrock` and `llama_cpp`
+  need no key). A local server the plugin did not start (a managed endpoint, or your
+  own Cognee on the port) has its own LLM settings and gets none of them.
+- **Nothing is installed in the observer's place.** Without a usable LLM, cognee would
+  switch to its local extractor and download gliner2 and torch on the first build. The
+  plugin starts the server with `GLINER_AUTO_INSTALL=false` in that case, so the build
+  is refused instead.
 - **An install that ran on the observer keeps its embedder.** The observer paired its
   LLM with cognee's local embedder (fastembed, `BAAI/bge-small-en-v1.5`, 384
   dimensions), and a dataset can only be searched with the embedder that built it. So
-  when the newest local session on record ran on the observer, the first session start
-  of 1.8.4 records that in `~/.cognee-plugin/claude-code/embedder.json` and keeps
-  fastembed from then on, also after an LLM key is added, unless the embedding provider
-  option is set. Doctor shows the kept embedder.
+  when the newest local session on record ran on the observer (on any version from
+  1.6.0 to 1.8.3), the first session start of 1.8.4 records that in
+  `~/.cognee-plugin/claude-code/embedder.json` and keeps fastembed from then on, also
+  after an LLM key is added, unless an embedding option (provider, model, dimensions or
+  key) is set: the kept embedder is applied as a whole or not at all. Doctor shows the
+  kept embedder.
 - **Upgrading mid-flight.** A local server that 1.8.3 started on the observer keeps
   that LLM, and the shim that version started, until it restarts; session start says
-  so. The shim's token and pidfile in `~/.cognee-plugin/observer/` are deleted on the
-  first session start after that shim is gone.
+  so. This version does not touch `~/.cognee-plugin/observer/`: once no such server is
+  running, the folder can be deleted.
 - **Option descriptions.** The LLM API key and LLM provider options no longer offer
   the Claude subscription as the alternative to a key.
 

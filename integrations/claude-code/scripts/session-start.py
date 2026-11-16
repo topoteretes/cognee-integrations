@@ -596,6 +596,14 @@ def _server_env() -> dict:
             env[name] = value
     # The user's LLM and embedding keys, straight from the options.
     env.update(server_secret_env())
+    # Without a usable LLM, cognee would switch to its GLiNER demo extractor and
+    # pip-install gliner2 and torch on the first cognify. The plugin installs
+    # nothing at run time: with this off, cognify refuses with a clear error.
+    from _env_file import option
+    from _plugin_common import llm_configured
+
+    if not llm_configured(bool(option("llm_api_key")), env.get("LLM_PROVIDER", "")):
+        env["GLINER_AUTO_INSTALL"] = "false"
     # With a proxy copied over, exempt loopback in both spellings so a call the
     # server makes to this machine never reaches the proxy host, keeping the
     # user's own entries.
@@ -1750,7 +1758,6 @@ _OBSERVER_EMBEDDER = {
 #: Written once, on the first start after the observer was removed, for an
 #: install whose last local launch ran on it.
 _EMBEDDER_PIN = _STATE_DIR / "embedder.json"
-_OBSERVER_STATE_DIR = _GLOBAL_STATE_DIR / "observer"
 
 
 def _embedder_pinned() -> bool:
@@ -1784,17 +1791,23 @@ def _apply_embedder_pin() -> bool:
     The observer ran embeddings on fastembed. Without it, a user who adds an
     LLM key would get that provider's embedder by default, which cannot search
     what fastembed built. So an install that ran on the observer keeps
-    fastembed until the user sets the embedding provider option themselves.
+    fastembed until the user sets an embedding option themselves.
     Applied before the install check and the boot: the first reads
     ``EMBEDDING_PROVIDER`` for the fastembed extra, the second builds the
     server's environment from these.
     """
-    if os.environ.get("EMBEDDING_PROVIDER", "").strip():
-        return False  # the user's own embedding option
+    from _env_file import option
+
+    # Any embedding option is the user's own choice of embedder. The three
+    # pinned values only work together, so they are applied all or not at all:
+    # fastembed with the user's model name or dimensions cannot embed.
+    if option("embedding_api_key") or any(
+        os.environ.get(name, "").strip() for name in _OBSERVER_EMBEDDER
+    ):
+        return False
     if not _embedder_pinned():
         return False
-    for name, value in _OBSERVER_EMBEDDER.items():
-        os.environ.setdefault(name, value)
+    os.environ.update(_OBSERVER_EMBEDDER)
     return True
 
 
@@ -1811,49 +1824,42 @@ def _running_server_on_observer(target_url: str) -> bool:
         return False
 
 
-def _remove_observer_leftovers() -> None:
-    """Delete what the removed observer left on disk. Never raises.
-
-    Its shim's bearer token and pidfile, once that shim is gone. A shim an
-    older version started may still be serving a server that was booted on it;
-    it retires itself, and the files go on a later start.
-    """
-    try:
-        pidfile = _OBSERVER_STATE_DIR / "observer.pid"
-        try:
-            pid = int(pidfile.read_text(encoding="utf-8").strip() or 0)
-        except (OSError, ValueError):
-            pid = 0
-        if pid and _pid_alive(pid):
-            return
-        for name in ("token", "observer.pid"):
-            try:
-                (_OBSERVER_STATE_DIR / name).unlink()
-            except FileNotFoundError:
-                pass
-    except Exception as exc:
-        hook_log("observer_leftovers_failed", {"error": str(exc)[:200]})
-
-
-def _local_llm_state(target_url: str) -> dict:
+def _local_llm_state(target_url: str, config: dict | None = None) -> dict:
     """What the local server has for an LLM this launch. Never raises.
 
-    ``configured``: the user set an LLM key or provider option.
+    ``server_owner``: why the server is not the plugin's (``llm_key_owner``): a
+    managed endpoint, or a server on the port this plugin did not start. It has
+    its own LLM and embedder, so the options say nothing about it and nothing
+    below is decided.
+    ``configured``: the options give the server a usable LLM (``llm_configured``).
+    ``provider_without_key``: the provider option, when it is set without the
+    key it needs.
     ``embedder_pinned``: the observer's embedder is kept (see ``_apply_embedder_pin``).
     ``server_observer``: the running server was started on the observer by an
     older version and keeps that LLM until it restarts.
     """
-    state = {"configured": False, "embedder_pinned": False, "server_observer": False}
+    state = {
+        "configured": False,
+        "provider_without_key": "",
+        "embedder_pinned": False,
+        "server_observer": False,
+        "server_owner": "",
+    }
     try:
         from _env_file import option
+        from _plugin_common import llm_configured, llm_key_owner
 
-        state["configured"] = bool(
-            option("llm_api_key") or os.environ.get("LLM_PROVIDER", "").strip()
-        )
+        owner = llm_key_owner({**(config or {}), "base_url": target_url})
+        if owner:
+            state["server_owner"] = owner
+            hook_log("local_llm", dict(state))
+            return state
+        provider = os.environ.get("LLM_PROVIDER", "").strip()
+        state["configured"] = llm_configured(bool(option("llm_api_key")), provider)
+        if not state["configured"]:
+            state["provider_without_key"] = provider
         state["embedder_pinned"] = _apply_embedder_pin()
         state["server_observer"] = _running_server_on_observer(target_url)
-        if not state["server_observer"]:
-            _remove_observer_leftovers()
         hook_log("local_llm", dict(state))
     except Exception as exc:
         hook_log("local_llm_error", {"error": str(exc)[:200]})
@@ -1868,7 +1874,7 @@ _SET_LLM_KEY = (
 
 def _llm_note(llm: dict) -> str:
     """The SessionStart systemMessage line about the local server's LLM, or ''."""
-    if llm.get("cloud"):
+    if llm.get("cloud") or llm.get("server_owner"):
         return ""
     embedder = (
         " Embeddings stay on fastembed ({EMBEDDING_MODEL}, {EMBEDDING_DIMENSIONS} dims), the "
@@ -1885,8 +1891,14 @@ def _llm_note(llm: dict) -> str:
             f"After that, local mode needs an LLM key: {_SET_LLM_KEY}." + embedder
         )
     if not llm.get("configured"):
+        provider = str(llm.get("provider_without_key") or "")
+        why = (
+            f"the LLM provider option is set to {provider} but the LLM API key option is empty"
+            if provider
+            else "local mode has no LLM"
+        )
         return (
-            "Cognee Memory: local mode has no LLM, so the server cannot build new memory "
+            f"Cognee Memory: {why}, so the server cannot build new memory "
             f"into the graph. To fix it, {_SET_LLM_KEY}." + embedder
         )
     return ""
@@ -2039,7 +2051,7 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     from _cloud_worker import enabled as cloud_enabled
 
     cloud = cloud_enabled({"base_url": target_url})
-    llm = {"cloud": True} if cloud else _local_llm_state(target_url)
+    llm = {"cloud": True} if cloud else _local_llm_state(target_url, config)
 
     # The host (Claude) session id is a local correlation key only: it keeps every
     # hook process of this launch resolving the SAME Cognee session id (via the

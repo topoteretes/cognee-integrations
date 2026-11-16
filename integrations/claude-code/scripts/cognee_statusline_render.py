@@ -503,10 +503,9 @@ def _llm_prefix(session_id: str = "") -> str:
 
     Verdicts expire (`_LLM_STATE_STALE_SECONDS`): the marker is shared by every
     session, so without a TTL one stale write could keep accusing a key that has
-    since been fixed. The watcher refreshes it when it launches (session start, or
-    a prompt that finds no live watcher), throttled to at most once per five
-    minutes — so an active session stays well inside the window,
-    while a session quiet for longer simply drops the glyph until the next check.
+    since been fixed. The watcher renews its verdict at launch and every five
+    minutes while it runs, so a live session stays well inside the window, and a
+    verdict left by a session whose watcher is gone drops off after it.
     """
     if _active_mode() != "local":
         return ""

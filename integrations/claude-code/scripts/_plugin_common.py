@@ -4111,15 +4111,60 @@ def latest_launch_facts(cwd: str = "") -> dict:
     return dict(best_here or best_any)
 
 
+#: The LLM providers cognee runs without an API key (its own
+#: ``_NO_API_KEY_LLM_PROVIDERS``). Every other provider needs the key option.
+LLM_PROVIDERS_WITHOUT_A_KEY = frozenset({"bedrock", "llama_cpp"})
+
+
+def llm_configured(key_set: bool, provider: str = "") -> bool:
+    """Whether the plugin options give the local server a usable LLM.
+
+    The LLM API key option, or a provider that needs none. A provider option
+    alone is not enough: the server would start and then fail at its first LLM
+    call.
+    """
+    return bool(key_set) or str(provider or "").strip().lower() in LLM_PROVIDERS_WITHOUT_A_KEY
+
+
+def _observer_launch_evidence(rec: dict, path: Path) -> tuple[float, bool] | None:
+    """``(when, ran on the observer)`` for one local launch record, else None.
+
+    Two shapes say it. 1.8.2 and 1.8.3 wrote ``launch_facts.observer`` with the
+    launch's ``key_source``. 1.6.0 to 1.8.1 had no ``launch_facts``: they wrote
+    only a top-level ``llm_observer`` beside the launch's ``base_url``, stamped
+    by the record's ``created_at``. A Cloud launch says nothing about the local
+    server and gives None, as does a record with neither shape.
+    """
+    facts = rec.get("launch_facts")
+    if isinstance(facts, dict):
+        if facts.get("key_source") != "local_owner_key":
+            return None
+        observer = facts.get("observer")
+        active = isinstance(observer, dict) and observer.get("active") is True
+        return float(facts.get("recorded_at") or 0), active
+    legacy = rec.get("llm_observer")
+    if not isinstance(legacy, dict):
+        return None
+    base_url = str(rec.get("base_url") or "")
+    if base_url and not service_url_is_local(base_url):
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(rec.get("created_at") or "")).timestamp()
+    except ValueError:
+        stamp = path.stat().st_mtime
+    return stamp, legacy.get("active") is True
+
+
 def last_local_launch_used_observer() -> bool:
     """Whether the newest local launch on record ran on the Claude observer.
 
-    Only a launch of 1.8.3 or older records that (``launch_facts.observer``);
-    the observer was removed in 1.8.4. Read once, on the first start after the
-    upgrade, to keep the embedder of the datasets such an install built. A
-    Cloud launch says nothing about the local server and is skipped.
+    Only a launch of 1.8.3 or older records that (see
+    ``_observer_launch_evidence`` for the two shapes); the observer was removed
+    in 1.8.4. Read once, on the first start after the upgrade, to keep the
+    embedder of the datasets such an install built. A record that cannot be
+    read is skipped, so one bad file does not hide the others.
     """
-    newest: dict = {}
+    newest: tuple[float, bool] = (0.0, False)
     try:
         paths = list(_SESSIONS_MAP_DIR.glob("*.json"))
     except Exception:
@@ -4127,15 +4172,12 @@ def last_local_launch_used_observer() -> bool:
     for path in paths:
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
+            evidence = _observer_launch_evidence(rec, path) if isinstance(rec, dict) else None
         except Exception:
             continue
-        facts = rec.get("launch_facts") if isinstance(rec, dict) else None
-        if not isinstance(facts, dict) or facts.get("key_source") != "local_owner_key":
-            continue
-        if float(facts.get("recorded_at") or 0) > float(newest.get("recorded_at") or 0):
-            newest = facts
-    observer = newest.get("observer")
-    return isinstance(observer, dict) and observer.get("active") is True
+        if evidence and evidence[0] > newest[0]:
+            newest = evidence
+    return newest[1]
 
 
 def set_launch_base_url(host_key: str, base_url: str) -> None:

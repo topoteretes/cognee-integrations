@@ -29,8 +29,12 @@ import pytest
 
 
 @pytest.fixture
-def doctor(suite, isolated_modules):
+def doctor(suite, isolated_modules, monkeypatch):
     module = isolated_modules(suite, "doctor")
+    # The local server is the plugin's own unless a test says otherwise: the
+    # real check probes the port, which a developer's own server may answer.
+    if hasattr(module, "_server_owner"):
+        monkeypatch.setattr(module, "_server_owner", lambda: "")
     # Load the settings layer now, as the doctor process does before any
     # test sets a variable: the Claude Code plugin replaces the shell's
     # connection settings with its options when that layer loads.
@@ -288,6 +292,38 @@ def test_doctor_says_when_local_mode_has_no_llm(options_doctor, pc, project_dir,
     llm = doctor._resolve_llm()
     assert llm.startswith("None — no LLM API key option set")
     assert "(as of session start, " in llm
+
+
+def test_doctor_names_a_provider_recorded_without_its_key(
+    options_doctor, pc, project_dir, monkeypatch
+):
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(
+        pc,
+        project_dir,
+        {"llm_key_option_set": False, "llm_provider": "anthropic", "key_source": "local_owner_key"},
+    )
+    llm = doctor._resolve_llm()
+    assert llm.startswith("None — LLM provider option is anthropic but no LLM API key option set")
+
+
+@pytest.mark.parametrize("owner", ["managed_endpoint", "unowned_server"])
+def test_doctor_leaves_the_llm_of_a_server_it_did_not_start_alone(
+    options_doctor, pc, project_dir, monkeypatch, owner
+):
+    """A docker or systemd Cognee on the port has its own LLM: "no LLM API key
+    option set" would be false for it."""
+    doctor = options_doctor
+    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
+    _launch_record(
+        pc,
+        project_dir,
+        {"llm_key_option_set": False, "llm_provider": "", "key_source": "local_owner_key"},
+    )
+    monkeypatch.setattr(doctor, "_server_owner", lambda: owner)
+    llm = doctor._resolve_llm()
+    assert llm == f"Server not started by the plugin ({owner}) — its own LLM settings apply"
 
 
 def test_doctor_names_the_removed_observer_for_a_record_of_an_older_version(

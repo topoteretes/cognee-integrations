@@ -481,6 +481,95 @@ def test_a_request_to_this_machine_never_goes_through_the_proxy(
     assert any(c["path"] == "/api/v1/datasets" for c in mock_server.calls)
 
 
+def test_a_remote_request_still_uses_the_proxy(suite, isolated_modules, proxy):
+    net = isolated_modules(suite, "_net")
+    request = urllib.request.Request("http://tenant-x.cognee.invalid/health")
+    with net.open_url(request, timeout=5) as response:
+        response.read()
+    assert proxy.requests and proxy.requests[0].startswith(
+        "GET http://tenant-x.cognee.invalid/health"
+    )
+
+
+def test_no_shipped_script_opens_a_url_except_through_the_shared_opener(suite):
+    # _coding_memory.py is kept byte-identical with the Codex plugin's copy;
+    # its one direct call is an ImportError fallback this plugin never reaches
+    # (the request goes through urlopen_following_307, which uses the opener).
+    exempt = {"_net.py", "_coding_memory.py"}
+    offenders = []
+    for path in sorted(suite.scripts_dir.parent.rglob("*.py")):
+        if "__pycache__" in path.parts or path.name in exempt:
+            continue
+        # The bare name: a default argument or a reference sends a request
+        # through the proxy just as a call does.
+        if "urllib.request.urlopen" in path.read_text(encoding="utf-8"):
+            offenders.append(str(path.relative_to(suite.scripts_dir.parent)))
+    assert offenders == []
+
+
+# ── the env-file parser keeps allowlisted values only ─────────────────────
+
+SHARED_FILE = """\
+COGNEE_RECALL_TIMEOUT=8
+OPENAI_API_KEY=sk-upper-SECRET
+openai_api_key=sk-lower-SECRET
+OpenAI_Api_Key=sk-mixed-SECRET
+DATABASE_URL=postgres://user:db-SECRET@db/prod
+GH_PAT=ghp-SECRET
+DB_PASS=pass-SECRET
+COGNEE_LOCAL_API_URL=http://user:url-SECRET@tenant.example.com
+"""
+
+
+def test_the_parser_keeps_no_value_outside_the_allowlist(suite, isolated_modules, temp_home):
+    env_file = isolated_modules(suite, "_env_file")
+    path = _env_file(temp_home, SHARED_FILE)
+
+    values, refused, ignored = env_file._parse(path)
+
+    assert values == {"COGNEE_RECALL_TIMEOUT": "8"}
+    assert "SECRET" not in json.dumps([values, refused, ignored])
+    assert env_file.parse_env_file(path) == {"COGNEE_RECALL_TIMEOUT": "8"}
+    assert {"OPENAI_API_KEY", "openai_api_key", "OpenAI_Api_Key"} <= set(refused)
+    assert {"DATABASE_URL", "GH_PAT", "DB_PASS", "COGNEE_LOCAL_API_URL"} <= set(ignored)
+
+
+def test_doctor_names_ignored_settings_without_their_values(
+    suite, isolated_modules, temp_home, monkeypatch
+):
+    _as_hook(monkeypatch, suite)
+    _env_file(temp_home, SHARED_FILE)
+    env_file = isolated_modules(suite, "_env_file")
+    status = env_file.env_file_status()
+    assert status["keys"] == ["COGNEE_RECALL_TIMEOUT"]
+    assert "DATABASE_URL" in status["ignored"] and "openai_api_key" in status["refused"]
+    assert "SECRET" not in json.dumps(status)
+
+
+# ── the allowlist covers every setting the scripts read ───────────────────
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("COGNEE_PLUGIN_READ_DATASET_IDS", '["11111111-1111-4111-8111-111111111111"]'),
+        ("COGNEE_SESSION_COMPANION_DATASET", "true"),
+    ],
+)
+def test_the_two_dataset_settings_load_from_the_env_file(
+    suite, isolated_modules, temp_home, monkeypatch, name, value
+):
+    import os
+
+    _as_hook(monkeypatch, suite)
+    monkeypatch.delenv(name, raising=False)
+    _env_file(temp_home, f"{name}={value}\n")
+    isolated_modules(suite, "_env_file").load_env_file()
+    assert os.environ.get(name) == value
+
+
+# Read by the scripts, deliberately not loadable from the file: hand-offs the
+# plugin sets for its own child processes, and settings that are shell-only.
 _NOT_FROM_THE_FILE = {
     # set by the plugin for its own processes
     "COGNEE_AGENT_SESSION_NAME",
