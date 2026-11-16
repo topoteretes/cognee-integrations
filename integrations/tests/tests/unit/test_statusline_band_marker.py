@@ -163,3 +163,37 @@ def test_the_modules_logo_is_the_asset(sl):
     module = (plugin / "hooks" / "register.ts").read_text(encoding="utf-8")
     assert "const WAVE_SVG = `" + asset + "`" in module
     assert "fs.read" not in module and "fs.write" not in module
+
+
+@pytest.mark.parametrize(
+    ("forced", "theme", "light"),
+    [
+        ("light", "dark", True),
+        ("dark", "light", False),
+        ("", "light-daltonized", True),
+        ("", "", False),
+    ],
+)
+def test_the_json_answer_says_which_purple_the_module_should_use(
+    sl, temp_home, monkeypatch, capsys, forced, theme, light
+):
+    """The module reads neither the override nor Claude Code's settings itself."""
+    settings = {"enabledPlugins": {"cognee-memory@cognee": True}}
+    if theme:
+        settings["theme"] = theme
+    write_json(temp_home / ".claude" / "settings.json", settings)
+    if forced:
+        monkeypatch.setenv("COGNEE_STATUSLINE_THEME", forced)
+    else:
+        monkeypatch.delenv("COGNEE_STATUSLINE_THEME", raising=False)
+    assert _ask(sl, monkeypatch, capsys, {"session_id": _SESSION})["light"] is light
+
+
+def test_the_module_makes_no_local_read_of_its_own(sl):
+    from pathlib import Path
+
+    module = (Path(sl.__file__).resolve().parent.parent / "hooks" / "register.ts").read_text(
+        encoding="utf-8"
+    )
+    for call in ("$.fs.", "$.config.", "$.env."):
+        assert call not in module, call

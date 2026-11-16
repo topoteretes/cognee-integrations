@@ -1321,6 +1321,9 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         "activity": activity,
         "update": update,
         "text": line,
+        # The hooks module picks its purple from this, so it reads neither the
+        # theme override nor Claude Code's settings itself.
+        "light": _light_theme(),
     }
 
 

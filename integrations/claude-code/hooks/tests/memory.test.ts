@@ -105,12 +105,19 @@ function wire(
     writes.push({ path: e.path, text: e.text })
     return { value: undefined }
   })
-  // The remember tool sizes a file before storing it: a small one by default.
-  on('fs.stat', ($, e) => ({ value: { kind: 'file' as const, size: e.path.includes('huge') ? 500_000 : 1_200, mtimeMs: 0, isLink: false } }))
+  // The module inspects no file: the remember script sizes it (`--file-size`).
+  on('fs.stat', ($, e) => {
+    throw new Error(`unexpected stat of ${e.path}`)
+  })
   on('process.run', ($, e) => {
     // The once-a-second marker poll: the renderer prints the session's marker
     // (`--phase`). Answered from what a test says the marker file holds, and
     // left out of `calls`, which tests read as the work the module started.
+    if (e.argv.includes('--file-size')) {
+      // The remember tool sizes a file before storing it: a small one by default.
+      const path = e.argv[e.argv.indexOf('--file-size') + 1] ?? ''
+      return ok(JSON.stringify({ kind: 'file', size: path.includes('huge') ? 500_000 : 1_200 }))
+    }
     if (e.argv.includes('--phase')) {
       const asked = JSON.parse(e.init?.stdin ?? '{}').session_id
       return ok(readFile(`${HOME}/.cognee-plugin/claude-code/phase/${asked}.json`) ?? '')

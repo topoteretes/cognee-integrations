@@ -63,6 +63,9 @@ type Snapshot = {
   billing_url?: string
   update: string
   text: string
+  // Whether the row should use the light-background purple; absent from an
+  // older renderer (then the dark-background one stands).
+  light?: boolean
 }
 
 // The brand lavender (#BC9BFF), a deeper violet on a light theme so it keeps
@@ -489,21 +492,6 @@ function splitCredit(text: string): { body: string; tags: string; note: string }
   return { body: lines.slice(0, -1).join('\n').replace(/\s+$/u, ''), tags: (m[1] ?? '').trim(), note }
 }
 
-// Whether the row should use the light-background purple: the env override
-// first, then Claude Code's theme row ("light", "light-daltonized", ...).
-async function lightTheme($: any): Promise<boolean> {
-  const forced = ((await $.env.get('COGNEE_STATUSLINE_THEME')) ?? '').toLowerCase()
-  if (forced === 'light') return true
-  if (forced === 'dark') return false
-  try {
-    const rows = (await $.config.list()) as { key?: string; value?: unknown }[]
-    const theme = String(rows.find(r => r.key === 'theme')?.value ?? '').toLowerCase()
-    return theme.startsWith('light')
-  } catch {
-    return false
-  }
-}
-
 function drawsSomething(tree: unknown): boolean {
   if (tree === null || tree === undefined || tree === false) return false
   if (typeof tree === 'string') return tree.trim().length > 0
@@ -843,6 +831,15 @@ async function runSearch($: any, query: string, args: string[]): Promise<Ran | n
   return { ...ran, stdout: trimmed.stdout }
 }
 
+// A file's kind and size, as the remember script reports them. Throws when
+// the script could not be run, so the tool call fails closed.
+async function fileSize($: any, file: string): Promise<{ kind: string; size: number }> {
+  const ran = await runPython($, [`${$.plugin.root}/scripts/cognee_remember.py`, '--file-size', file], { timeoutMs: RENDERER_TIMEOUT_MS })
+  if (!ran || ran === 'timeout' || ran.exitCode !== 0) throw new Error('could not size the file')
+  const stat = JSON.parse(ran.stdout) as { kind?: unknown; size?: unknown }
+  return { kind: String(stat.kind ?? ''), size: Number(stat.size ?? 0) }
+}
+
 // One run of the plugin's own renderer in --json mode: the dataset, mode,
 // connection state, credits and update nudge, as the terminal bar shows them.
 // Local process, no network. Runs only on events, never on a timer.
@@ -866,6 +863,7 @@ async function refreshSnapshot($: any): Promise<void> {
         const previous = snapshot === null ? null : JSON.stringify(snapshot)
         snapshot = JSON.parse(ran.stdout) as Snapshot
         rendererFailures = 0
+        purple = snapshot?.light === true ? PURPLE_LIGHT : PURPLE_DARK
         // The session moved to another dataset without the picker (the
         // cognee-switch-datasets skill runs the switch script from a shell):
         // the listing still marks the old one current and may lack the new
@@ -1101,10 +1099,10 @@ export const register: Register = (on, options) => {
     pollTicks = 0
     resetDatasets()
     // The brand lavender reads on a dark background; a light one gets the
-    // darker purple. COGNEE_STATUSLINE_THEME says which; without it, Claude
-    // Code's own theme does (a light theme, or auto on a light system, is
-    // only known to Claude Code when the theme is set explicitly).
-    purple = (await lightTheme($)) ? PURPLE_LIGHT : PURPLE_DARK
+    // darker purple. The renderer says which with each snapshot (`light`):
+    // COGNEE_STATUSLINE_THEME first, then Claude Code's own theme setting.
+    // The module reads neither itself; until the first snapshot the
+    // dark-background purple stands.
     if (markOn && !waveSvg) waveSvg = WAVE_SVG
     await bindSession($)
     await readPhase($)
@@ -1244,8 +1242,10 @@ export const register: Register = (on, options) => {
         deny: `content is ${content.length} characters; the remember tool takes up to ${REMEMBER_MAX_CHARS}. Store a longer text with the cognee-remember skill.`,
       }
     }
-    if (file) {
-      const stat = await $.fs.stat(file)
+    // The remember script sizes the file (`--file-size`): the module opens and
+    // inspects no file itself.
+    const stat = file ? await fileSize($, file) : null
+    if (file && stat) {
       if (stat.kind !== 'file') return { deny: `${file} is not a file` }
       if (stat.size > REMEMBER_MAX_FILE_BYTES) {
         return {
@@ -1253,7 +1253,7 @@ export const register: Register = (on, options) => {
         }
       }
     }
-    const size = file ? (await $.fs.stat(file)).size : content.length
+    const size = stat ? stat.size : content.length
     if (rememberCalls >= REMEMBER_SESSION_CALLS || rememberBytes + size > REMEMBER_SESSION_BYTES) {
       return {
         deny:

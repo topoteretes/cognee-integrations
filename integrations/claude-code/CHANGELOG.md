@@ -45,6 +45,11 @@ what the plugin does for a user, except that `cognee-forget.sh env` is gone (SDK
   setting themselves and pass the value. The settings-file loader is the one exception:
   it copies whatever names `~/.cognee/.env` holds. No behaviour change.
 
+- **The hooks module reads no settings and inspects no file** (SDK-1411). It asked Claude
+  Code for its theme, read `COGNEE_STATUSLINE_THEME`, and checked a file's size before
+  the remember tool stored it. The status line renderer now says which purple to use
+  (`light` in its `--json` answer), and `cognee_remember.py --file-size` reports the
+  size. The purple may correct itself a moment after a session starts on a light theme.
 - **The hooks module reads no file** (SDK-1411). It read the session's activity marker
   once a second while something ran, and the logo once per session. The status line
   renderer prints the marker now (`--phase`), about 23 ms per run, and the logo is held
