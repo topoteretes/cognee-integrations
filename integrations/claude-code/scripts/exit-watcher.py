@@ -75,8 +75,6 @@ def _spawn_sync(
             env["COGNEE_SESSION_REF"] = session_key
         if agent_session_name:
             env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
-        if api_key:
-            env["COGNEE_API_KEY"] = api_key
         if service_url:
             env["COGNEE_BASE_URL"] = service_url
         subprocess.Popen(
@@ -190,8 +188,13 @@ def main() -> None:
     dataset = str(bootstrap.get("dataset") or "agent_sessions")
     session_key = str(bootstrap.get("session_key") or "")
     agent_session_name = str(bootstrap.get("agent_session_name") or "")
-    api_key = os.environ.get("COGNEE_API_KEY", "")
     service_url = str(bootstrap.get("base_url") or "")
+    try:
+        from _plugin_common import _api_key_with_source
+
+        api_key = _api_key_with_source(service_url)[0]
+    except Exception:
+        api_key = ""
     pidfile_raw = str(bootstrap.get("pidfile") or "").strip()
     pidfile = Path(pidfile_raw) if pidfile_raw else _PIDFILE
     if not parent_pid:

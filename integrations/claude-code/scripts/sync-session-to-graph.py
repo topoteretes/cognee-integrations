@@ -212,10 +212,9 @@ def _load_resolved() -> tuple:
     env_session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
     env_dataset = str(os.environ.get("COGNEE_SYNC_DATASET", "") or "").strip()
     env_agent_session_name = str(os.environ.get("COGNEE_AGENT_SESSION_NAME", "") or "").strip()
-    env_api_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
     env_service_url = str(os.environ.get("COGNEE_BASE_URL", "") or "").strip()
     resolved_service_url, resolved_api_key = resolved_http_endpoint_auth()
-    env_api_key = env_api_key or resolved_api_key
+    env_api_key = resolved_api_key
     env_service_url = env_service_url or resolved_service_url
 
     if not session_key:
@@ -583,4 +582,8 @@ def main():
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     main()

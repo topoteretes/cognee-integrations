@@ -1,7 +1,15 @@
-"""One-time plugin configuration via ~/.cognee/.env.
+"""Plugin configuration: keys from the plugin options, the rest from ~/.cognee/.env.
 
-Users historically had to `export COGNEE_BASE_URL=...`, `export LLM_API_KEY=...`
-in every shell. This module makes that a one-time step: values placed in
+Every key comes from the plugin's options (the ``userConfig`` section of the
+plugin manifest): the Cognee API key, the LLM key and the embedding
+key. Claude Code keeps them in its secure store and hands them to the plugin's
+hooks, and to the processes those hooks start, as ``CLAUDE_PLUGIN_OPTION_*``.
+The plugin reads a key nowhere else: a value for one of the names in
+``OPTION_ONLY`` in the shell or in the file is dropped and never used.
+A process Claude Code gives no options (a script a skill runs through Bash)
+has no key; it hands its work to the relay a hook started (``_relay.py``).
+
+Everything that is not a key is a one-time step here: values placed in
 ``~/.cognee/.env`` (the durable, venv-rebuild-safe cognee home shared by the
 Claude Code and Codex plugins) are injected into ``os.environ`` at process
 start with **setdefault** semantics, so:
@@ -39,9 +47,19 @@ from pathlib import Path
 _COGNEE_HOME = Path.home() / ".cognee"
 _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 
+# The keys, which come from the plugin options only: never loaded from the
+# file and removed from the environment the process was started with.
+OPTION_ONLY = ("COGNEE_API_KEY", "COGNEE_PRINCIPAL_API_KEY", "LLM_API_KEY", "EMBEDDING_API_KEY")
+# Which of those names this process found in the shell or in the file (names
+# only, never a value): what the session-start notice and doctor report.
+_ignored_key_names: list = []
+# The same names, carried to the processes this one starts: they see an
+# environment the names were already removed from.
+_IGNORED_KEYS_VAR = "COGNEE_PLUGIN_IGNORED_SETTINGS"
+
 # Vars that could hijack process behavior if injected from a config file.
-# Everything else (COGNEE_*, LLM_*, EMBEDDING_*, provider keys, ...) is allowed
-# so the values also flow through to the spawned local cognee server.
+# Everything else (COGNEE_*, LLM_*, EMBEDDING_*, ...) is allowed so the values
+# also flow through to the spawned local cognee server.
 _DENYLIST_EXACT = {"PATH", "HOME", "PYTHONPATH", "PYTHONHOME", "SHELL", "USER"}
 _DENYLIST_PREFIXES = ("LD_", "DYLD_")
 
@@ -66,15 +84,20 @@ _TEMPLATE = """\
 #   export COGNEE_BACKEND=cloud    # this terminal: cloud mode
 # (COGNEE_CLAUDE_BACKEND / COGNEE_CODEX_BACKEND target one plugin only.)
 
+## Keys: the Claude Code plugin takes its keys from its own options, not from
+## this file (run /plugin in Claude Code, select Cognee Memory, then Configure
+## options). A key written here is ignored by the Claude Code plugin; the Codex
+## plugin still reads it:
+# COGNEE_API_KEY="ck_..."
+# LLM_API_KEY="sk-..."
+
 ## Cloud / remote mode — point the plugins at a Cognee instance:
 # COGNEE_BASE_URL="<your Cognee Cloud URL>"
-# COGNEE_API_KEY="ck_..."
 
 ## Local mode (default when COGNEE_BASE_URL is unset) — the plugin runs a
-## local Cognee API. Give it an LLM key of your own:
-# LLM_API_KEY="sk-..."
+## local Cognee API, with an LLM key of your own:
 # LLM_MODEL="openai/gpt-4o-mini"
-## ...or leave LLM_API_KEY unset: with the `claude` CLI on PATH the Claude Code
+## ...or give it no LLM key: with the `claude` CLI on PATH the Claude Code
 ## plugin runs the server's LLM calls on your Claude subscription instead (the
 ## "observer"; embeddings then run locally on fastembed). Claude Code only.
 ## It spends your Claude usage limits, and a dataset built on fastembed cannot
@@ -113,11 +136,68 @@ def _unquote(value: str) -> str:
 
 
 def _blocked(name: str) -> bool:
-    return name in _DENYLIST_EXACT or name.startswith(_DENYLIST_PREFIXES)
+    return name in _DENYLIST_EXACT or name.startswith(_DENYLIST_PREFIXES) or name in OPTION_ONLY
 
 
-def parse_env_file(path: Path) -> dict:
+def cloud_key_option() -> str:
+    """The Cognee API key option as Claude Code handed it to this process, or ""."""
+    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "").strip()
+
+
+def llm_key_option() -> str:
+    """The LLM key option (local mode), or ""."""
+    return os.environ.get("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "").strip()
+
+
+def embedding_key_option() -> str:
+    """The embedding key option (local mode), or ""."""
+    return os.environ.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "").strip()
+
+
+def has_options() -> bool:
+    """Whether Claude Code handed this process the plugin's options: true in a
+    hook and in what a hook started, false in a script run from a shell."""
+    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip())
+
+
+def server_key_env() -> dict:
+    """The LLM and embedding key options under the names the local server reads
+    them by. Only for the environment of the server this plugin starts; a
+    plugin process never carries them in its own."""
+    wanted = {"LLM_API_KEY": llm_key_option(), "EMBEDDING_API_KEY": embedding_key_option()}
+    return {name: value for name, value in wanted.items() if value}
+
+
+def ignored_key_names() -> list:
+    """Names of the keys found in the shell or in ~/.cognee/.env and ignored."""
+    carried = [n for n in os.environ.get(_IGNORED_KEYS_VAR, "").split(",") if n.strip()]
+    return sorted(set(carried) | set(_ignored_key_names))
+
+
+def _note_ignored(name: str) -> None:
+    if name not in _ignored_key_names:
+        _ignored_key_names.append(name)
+    os.environ[_IGNORED_KEYS_VAR] = ",".join(ignored_key_names())
+
+
+def _drop_shell_keys() -> None:
+    """Remove the keys the process was started with: the options replace them."""
+    # Each by its own name, so the plugin's files show what it touches.
+    if os.environ.pop("COGNEE_API_KEY", ""):
+        _note_ignored("COGNEE_API_KEY")
+    if os.environ.pop("COGNEE_PRINCIPAL_API_KEY", ""):
+        _note_ignored("COGNEE_PRINCIPAL_API_KEY")
+    if os.environ.pop("LLM_API_KEY", ""):
+        _note_ignored("LLM_API_KEY")
+    if os.environ.pop("EMBEDDING_API_KEY", ""):
+        _note_ignored("EMBEDDING_API_KEY")
+
+
+def parse_env_file(path: Path, key_names: list | None = None) -> dict:
     """Parse a dotenv-style file into a dict. Malformed lines are skipped.
+
+    A key (``OPTION_ONLY``) is never returned with its value. Pass a list as
+    ``key_names`` to learn which keys the file sets: their names are appended.
 
     Supported: ``KEY=VALUE``, blank lines, ``#`` comments, an optional leading
     ``export ``, and single/double quotes around the value. No interpolation,
@@ -144,6 +224,13 @@ def parse_env_file(path: Path) -> dict:
         name, _, value = line.partition("=")
         name = name.strip()
         if not name or not all(c.isalnum() or c == "_" for c in name):
+            continue
+        # A key's value is dropped as it is parsed: only its name is kept, so
+        # the notice can say that it is ignored.
+        if name in OPTION_ONLY:
+            if key_names is not None and _unquote(value) and name not in key_names:
+                key_names.append(name)
+            result[name] = ""
             continue
         result[name] = _unquote(value)
     return result
@@ -172,11 +259,16 @@ def load_env_file() -> None:
         return
     _loaded = True
 
+    _drop_shell_keys()
     try:
         path = env_file_path()
         if path.is_file():
             _tighten_permissions(path)
-            for name, value in parse_env_file(path).items():
+            named: list = []
+            values = parse_env_file(path, named)
+            for name in named:
+                _note_ignored(name)
+            for name, value in values.items():
                 if _blocked(name):
                     continue
                 if name not in os.environ:
@@ -256,7 +348,7 @@ def forced_backend() -> str:
 def _apply_backend_switch() -> None:
     """Make a forced-local terminal actually local, everywhere.
 
-    ``config.load_config`` clears base_url/api_key on the backend switch, but
+    ``config.load_config`` clears base_url on the backend switch, but
     the HTTP hot paths (``_plugin_common``) and every child process read
     ``COGNEE_BASE_URL`` from the environment directly — so the switch must land
     in the environment itself. Overwrite with EMPTY strings rather than
@@ -270,14 +362,12 @@ def _apply_backend_switch() -> None:
     if forced_backend() != "local":
         return
     os.environ["COGNEE_BASE_URL"] = ""
-    os.environ["COGNEE_API_KEY"] = ""
     # The loader's doing, so a refresh may undo it when the switch is lifted.
     _injected["COGNEE_BASE_URL"] = ""
-    _injected["COGNEE_API_KEY"] = ""
 
 
 def _tighten_permissions(path: Path) -> None:
-    """Best-effort chmod 0600: the file may hold API keys."""
+    """Best-effort chmod 0600: the file is the user's private configuration."""
     if os.name == "nt":
         return
     try:
@@ -325,7 +415,8 @@ def env_file_status() -> dict:
         pass
     values = parse_env_file(path)
     info["keys"] = sorted(values)
-    info["blocked"] = sorted(k for k in values if _blocked(k))
+    info["blocked"] = sorted(k for k in values if _blocked(k) and k not in OPTION_ONLY)
+    info["ignored_keys"] = ignored_key_names()
     # A shell export (or another source) that set a different value wins over
     # the file; surface those so mode-selection surprises are debuggable.
     info["overridden"] = sorted(
@@ -334,36 +425,9 @@ def env_file_status() -> dict:
     return info
 
 
-def append_env_value(name: str, value: str) -> Path:
-    """Append ``NAME="value"`` to the env file (``COGNEE_ENV_FILE`` honoured),
-    creating it owner-only. One line; the value may not hold a newline."""
-    if not name or not all(c.isalnum() or c == "_" for c in name):
-        raise ValueError("not a variable name")
-    if "\n" in value or "\r" in value:
-        raise ValueError("one line only")
-    path = env_file_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-    head = existing if not existing or existing.endswith("\n") else existing + "\n"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    with os.fdopen(os.open(path, flags, 0o600), "w", encoding="utf-8") as handle:
-        handle.write(f'{head}{name}="{value}"\n')
-    _tighten_permissions(path)
-    return path
-
-
 if __name__ == "__main__":
     import json
 
-    if len(sys.argv) >= 3 and sys.argv[1] == "--append":
-        # The value comes on stdin, never on the command line (ps would show it).
-        try:
-            written = append_env_value(sys.argv[2], sys.stdin.read().strip())
-        except Exception as exc:
-            print(str(exc), file=sys.stderr)
-            sys.exit(1)
-        print(written)
-        sys.exit(0)
     load_env_file()
     json.dump(env_file_status(), sys.stdout, indent=2)
     print()

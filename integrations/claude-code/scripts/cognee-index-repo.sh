@@ -41,6 +41,14 @@ set -euo pipefail
 
 PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+
+# A shell has no key (the keys are plugin options, handed to hooks only). When a
+# hook's relay is up it runs this script; exit code 111 means there is none.
+if [ "${COGNEE_RELAYED:-}" != "1" ]; then
+    relay_code=0
+    python3 "${SELF_DIR}/_relay.py" run "$(basename "${BASH_SOURCE[0]:-$0}")" "$@" || relay_code=$?
+    if [ "$relay_code" -ne 111 ]; then exit "$relay_code"; fi
+fi
 runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
 import json
 import pathlib
@@ -56,7 +64,15 @@ try:
 except Exception:
     pass
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
-api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
+# The key the hooks send: the plugin option (present when this script runs
+# through the relay a hook started), else the cached key of the local server.
+api_key = ""
+os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
+try:
+    import _plugin_common
+    api_key = _plugin_common.shell_api_key(service_url)
+except Exception:
+    pass
 
 if not api_key:
     cache_path = plugin_dir.parent / "api_key.json"
@@ -93,7 +109,6 @@ PY
 )"
 
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
-[ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 
 REPO="${1:-}"
 DATASET=""

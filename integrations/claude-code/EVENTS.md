@@ -288,6 +288,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:mod_pick_applied` | `mod.pick_applied` |
 | `hook:mod_pick_failed` | `mod.pick_failed` |
 | `hook:mod_listing_start_failed` | `mod.listing_start_failed` |
+| `hook:key_options_notice` | `keys.options_notice` |
+| `hook:key_options_notice_failed` | `keys.options_notice_failed` |
 | `hook:switch_old_handle_released` | `switch.old_handle_released` |
 | `hook:switch_sync_forced_past_failure` | `switch.sync_forced_past_failure` |
 | `hook:switch_sync_not_started` | `switch.sync_not_started` |

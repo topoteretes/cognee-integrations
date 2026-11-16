@@ -23,7 +23,7 @@ instead of silently falling back to local.
 
 Two modes, both over HTTP — the hooks never import cognee in-process:
   - Local: the plugin boots a Cognee server on localhost and talks to it
-  - Cloud: connect to a remote Cognee server via COGNEE_BASE_URL + COGNEE_API_KEY
+  - Cloud: connect to a remote Cognee server via COGNEE_BASE_URL + the Cognee API key option
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from _env_file import load_env_file
+from _env_file import cloud_key_option, llm_key_option, load_env_file
 from _logfiles import append_line as _append_log_line
 from event_names import event_fields
 
@@ -121,13 +121,11 @@ _ENV_MAP = {
     "COGNEE_SESSION_STRATEGY": "session_strategy",
     "COGNEE_SESSION_PREFIX": "session_prefix",
     "COGNEE_BASE_URL": "base_url",
-    "COGNEE_API_KEY": "api_key",
     # base_url is an externally managed deployment: never boot a local fallback
     # server on its port; fail loudly when it is unreachable.
     "COGNEE_MANAGED_ENDPOINT": "managed_endpoint",
     "COGNEE_USER_EMAIL": "user_email",
     "COGNEE_USER_PASSWORD": "user_password",
-    "LLM_API_KEY": "llm_api_key",
     "LLM_MODEL": "llm_model",
     "COGNEE_PREFER_MEMORY": "prefer_cognee_memory",
     "COGNEE_PLUGIN_IDENTITY": "plugin_identity",
@@ -174,11 +172,9 @@ def _env_settings() -> dict:
         "COGNEE_SESSION_STRATEGY": os.environ.get("COGNEE_SESSION_STRATEGY", ""),
         "COGNEE_SESSION_PREFIX": os.environ.get("COGNEE_SESSION_PREFIX", ""),
         "COGNEE_BASE_URL": os.environ.get("COGNEE_BASE_URL", ""),
-        "COGNEE_API_KEY": os.environ.get("COGNEE_API_KEY", ""),
         "COGNEE_MANAGED_ENDPOINT": os.environ.get("COGNEE_MANAGED_ENDPOINT", ""),
         "COGNEE_USER_EMAIL": os.environ.get("COGNEE_USER_EMAIL", ""),
         "COGNEE_USER_PASSWORD": os.environ.get("COGNEE_USER_PASSWORD", ""),
-        "LLM_API_KEY": os.environ.get("LLM_API_KEY", ""),
         "LLM_MODEL": os.environ.get("LLM_MODEL", ""),
         "COGNEE_PREFER_MEMORY": os.environ.get("COGNEE_PREFER_MEMORY", ""),
         "COGNEE_PLUGIN_IDENTITY": os.environ.get("COGNEE_PLUGIN_IDENTITY", ""),
@@ -197,6 +193,10 @@ def load_config() -> dict:
     for env_key, val in _env_settings().items():
         if val:
             config[_ENV_MAP[env_key]] = val
+
+    # The keys come from the plugin options only (see _env_file).
+    config["api_key"] = cloud_key_option()
+    config["llm_api_key"] = llm_key_option()
 
     raw_dataset = str(config.get("dataset") or "")
     if raw_dataset.strip().lower() == "auto":

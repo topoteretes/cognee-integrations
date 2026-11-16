@@ -2,7 +2,7 @@
 # Cognee forget helper — server access for the cognee-forget skill.
 #
 # Wraps the endpoints used to inspect and delete documents so every request
-# carries resolved credentials. Raw curl with $COGNEE_API_KEY breaks in local
+# carries resolved credentials. Raw curl with a key from the shell breaks in local
 # mode: the key is auto-minted at bootstrap into ~/.cognee-plugin/api_key.json
 # and is never exported to the user's shell.
 #
@@ -34,6 +34,14 @@ set -euo pipefail
 PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 
+# A shell has no key (the keys are plugin options, handed to hooks only). When a
+# hook's relay is up it runs this script; exit code 111 means there is none.
+if [ "${COGNEE_RELAYED:-}" != "1" ]; then
+    relay_code=0
+    python3 "${SELF_DIR}/_relay.py" run "$(basename "${BASH_SOURCE[0]:-$0}")" "$@" || relay_code=$?
+    if [ "$relay_code" -ne 111 ]; then exit "$relay_code"; fi
+fi
+
 # `sync` delegates to the plugin's session sync (it resolves its own auth and
 # session id): flushes the live session's cache into dataset documents so
 # content that hasn't been persisted yet becomes findable — and deletable —
@@ -56,7 +64,15 @@ try:
 except Exception:
     pass
 service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
-api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
+# The key the hooks send: the plugin option (present when this script runs
+# through the relay a hook started), else the cached key of the local server.
+api_key = ""
+os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
+try:
+    import _plugin_common
+    api_key = _plugin_common.shell_api_key(service_url)
+except Exception:
+    pass
 
 if not api_key:
     cache_path = plugin_dir.parent / "api_key.json"
@@ -92,7 +108,6 @@ except Exception:
 PY
 )"
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
-[ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 SERVICE_URL="${SERVICE_URL%/}"
 
 usage() {
@@ -121,8 +136,8 @@ validate_uuid() {
 }
 
 if [ -z "$API_KEY" ]; then
-    echo "Error: no API key resolved (checked COGNEE_API_KEY, ~/.cognee/.env, ${PLUGIN_DIR%/*}/api_key.json)." >&2
-    echo "Cloud mode: set COGNEE_API_KEY in ~/.cognee/.env. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
+    echo "Error: no API key resolved (checked the plugin option and ${PLUGIN_DIR%/*}/api_key.json)." >&2
+    echo "Cloud mode: set the Cognee API key option of this plugin (/plugin, Cognee Memory, Configure options) and start a session. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
     exit 2
 fi
 

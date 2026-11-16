@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
-  "version": "1.8.6",
+  "version": "1.8.7",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -23,6 +23,24 @@
     "persistent-memory"
   ],
   "userConfig": {
+    "cognee_api_key": {
+      "type": "string",
+      "title": "Cognee API key",
+      "description": "Your Cognee Cloud API key (ck_…), or the key of your own Cognee server. Needed when COGNEE_BASE_URL points the plugin at a server; local mode needs none. Kept in Claude Code's secure store and sent only to that server.",
+      "sensitive": true
+    },
+    "llm_api_key": {
+      "type": "string",
+      "title": "LLM API key (local mode)",
+      "description": "The model provider key the local Cognee server builds memory with. Leave empty to run local mode on your Claude subscription (the observer). Not used with Cognee Cloud.",
+      "sensitive": true
+    },
+    "embedding_api_key": {
+      "type": "string",
+      "title": "Embedding API key (local mode)",
+      "description": "A separate key for the local server's embedding provider, when it differs from the LLM key. Usually left empty.",
+      "sensitive": true
+    },
     "icon": {
       "type": "string",
       "title": "Cognee logo",

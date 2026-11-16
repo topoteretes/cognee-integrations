@@ -29,7 +29,7 @@ from typing import Optional
 import _proc
 from _dataset_access import dataset_id as parse_dataset_id
 from _dataset_access import recall_fields, write_fields
-from _env_file import load_env_file
+from _env_file import cloud_key_option, forced_backend, load_env_file
 from _logfiles import append_line as _append_log_line
 from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
 from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
@@ -149,8 +149,8 @@ def apply_cognee_env() -> None:
     """Pin cognee's data dirs + caching into the environment.
 
     Uses setdefault so an explicit user/env override always wins. Called on
-    import so any process that spawns the cognee server (via os.environ.copy())
-    inherits a stable, upgrade-safe data location. CACHING and AUTO_FEEDBACK are
+    import so any process that starts the cognee server hands on a stable,
+    upgrade-safe data location. CACHING and AUTO_FEEDBACK are
     already cognee's defaults but are set explicitly so a future default change
     can't silently disable session-context distillation.
 
@@ -589,9 +589,9 @@ def shell_runtime_overrides(service_url: str = "", host_key: str = "") -> dict:
     ``host_key`` handed in (``--session-key``) when several launches share a
     directory. Returns that ``host_key``, the record's ``session_id`` /
     ``dataset`` (both empty when unrecorded), the dataset's canonical
-    ``dataset_id`` and comma-joined ``dataset_ids``, and ``api_key`` — the
-    provisioned plugin-agent key when one is cached, so the skills act as the
-    same identity as the hooks (see ``_api_key_with_source``). Kept to one call
+    ``dataset_id`` and comma-joined ``dataset_ids``, and ``api_key`` — the key
+    the hooks send (``shell_api_key``), so the skills act as the same identity
+    as the hooks. Kept to one call
     on purpose: the skills embed Python in a ``$( <<'PY' )`` block that macOS's
     bash 3.2 mis-parses once it grows past a few lines.
     """
@@ -606,7 +606,7 @@ def shell_runtime_overrides(service_url: str = "", host_key: str = "") -> dict:
         "dataset": str(rec.get("dataset") or "").strip(),
         "dataset_id": write_id,
         "dataset_ids": ",".join(read_ids),
-        "api_key": active_agent_key(service_url),
+        "api_key": shell_api_key(service_url),
         # "1" when graph recall names no dataset (auto, routed server-side).
         "recall_auto": "1" if auto_recall_active(host_key) else "",
     }
@@ -1628,7 +1628,7 @@ def _reexec_into_venv() -> None:
     runner = os.environ.get("COGNEE_HOOK_RUNNER", "")
     prefix = [runner] if runner and os.path.isfile(runner) else []
     try:
-        # execv inherits os.environ (incl. the loop guard just set above).
+        # The new interpreter inherits the loop guard just set above.
         os.execv(str(vpy), [str(vpy), *prefix, *sys.argv])
     except OSError as exc:
         # Better to run degraded under the host interpreter than to die.
@@ -2431,6 +2431,43 @@ def _normalize_service_url(value: str) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+# The keys this process settled on. SessionStart picks between the user's key
+# and the plugin's agent key and records the choice here for the rest of its
+# own run; every other process works the same choice out with
+# ``_api_key_with_source``. Nothing here is written to the environment.
+_process_keys: dict = {}
+
+
+def set_process_api_key(key: str) -> None:
+    """Record the key this process sends from now on."""
+    _process_keys["api_key"] = str(key or "").strip()
+
+
+def process_api_key() -> str:
+    return str(_process_keys.get("api_key") or "")
+
+
+def set_process_principal_key(key: str) -> None:
+    """Record the user's own key for this process's control-plane calls."""
+    _process_keys["principal"] = str(key or "").strip()
+
+
+def user_cloud_key(service_url: str = "") -> str:
+    """The Cognee API key option when it is the key for ``service_url``.
+
+    The option is the user's key for the server they configured. The server
+    this plugin starts on this machine has a key of its own (minted at session
+    start and cached), so the option is never sent to it.
+    """
+    key = cloud_key_option()
+    if not key:
+        return ""
+    url = _normalize_service_url(service_url or _local_api_url())
+    if url == _DEFAULT_LOCAL_SERVICE_URL and forced_backend() != "cloud":
+        return ""
+    return key
+
+
 def load_cached_api_key(service_url: str = "") -> str:
     """Return the single cached principal key (matching service_url if recorded)."""
     data = _load_json_file(_API_KEY_CACHE)
@@ -2447,8 +2484,12 @@ def load_cached_api_key(service_url: str = "") -> str:
 
 
 def save_cached_api_key(service_url: str, key: str) -> None:
-    """Persist the single principal key (env key takes precedence at read time)."""
-    if not str(key or "").strip():
+    """Persist the key the plugin minted on its own local server.
+
+    The Cognee API key option is never written here: it lives in Claude Code's
+    secure store only.
+    """
+    if not str(key or "").strip() or str(key).strip() == cloud_key_option():
         return
     _write_json_file(
         _API_KEY_CACHE,
@@ -2582,17 +2623,15 @@ def _save_shared_memory_marker(marker: dict) -> None:
 def principal_key_for_control_plane(service_url: str = "") -> str:
     """The PARENT user's key, for tenant/role/grant calls.
 
-    Never the provisioned agent key: ``_api_key_with_source`` stamps that one
-    into the env, so an env key equal to the cached agent key is the agent's,
-    not the user's. Falls through to the cached principal key (SessionStart
-    caches an env-provided principal when it provisions, so detached workers
-    can still act as the parent).
+    Never the provisioned agent key. The user's key is the Cognee API key
+    option (a hook and everything it starts has it); on the plugin's own local
+    server it is the key minted there and cached.
     """
     service_url = _normalize_service_url(service_url or _local_api_url())
     agent_key = load_cached_agent_key(service_url)
     for candidate in (
-        os.environ.get("COGNEE_PRINCIPAL_API_KEY", ""),
-        os.environ.get("COGNEE_API_KEY", ""),
+        _process_keys.get("principal", ""),
+        user_cloud_key(service_url),
         load_cached_api_key(service_url),
     ):
         candidate = str(candidate or "").strip()
@@ -2614,6 +2653,20 @@ def active_agent_key(service_url: str = "") -> str:
     except RuntimeError:
         return ""
     return key if source == "plugin_agent_key" else ""
+
+
+def shell_api_key(service_url: str = "") -> str:
+    """The key a script run outside a hook sends: the one the hooks send.
+
+    The plugin-agent key when it is in force, else the user's own: the Cognee
+    API key option (present when the script runs through the relay a hook
+    started, see ``_relay.py``) or the key cached for the plugin's own local
+    server. "" when there is none, never an exception.
+    """
+    try:
+        return _api_key_with_source(service_url)[0]
+    except RuntimeError:
+        return ""
 
 
 def _control_plane_request(
@@ -3304,14 +3357,15 @@ def _write_credential(data: dict) -> None:
 
 
 def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
-    """Select a bound agent credential without replacing the principal in env."""
+    """Select the key to send: the bound agent key, else the user's own."""
+    if _process_keys.get("api_key"):
+        return str(_process_keys["api_key"]), "session_start"
     service_url = _normalize_service_url(service_url or _local_api_url())
     agent_key = load_cached_agent_key(service_url)
-    env_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
-    principal = str(os.environ.get("COGNEE_PRINCIPAL_API_KEY", "") or "").strip()
-    if env_key and env_key != agent_key:
-        principal = env_key
-    principal = principal or load_cached_api_key(service_url)
+    option_key = user_cloud_key(service_url)
+    principal = (
+        str(_process_keys.get("principal") or "") or option_key or load_cached_api_key(service_url)
+    )
     mode = plugin_identity_mode()
     if agent_key and mode != "disabled":
         record = _load_json_file(_AGENT_KEY_CACHE)
@@ -3331,17 +3385,12 @@ def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
         # that would fail every request quietly instead of naming the cause.
         if mode == "enabled" or not principal:
             raise RuntimeError(
-                problem
-                if principal
-                else problem + " — and no principal key is available (COGNEE_API_KEY unset)"
+                problem if principal else problem + " — and the Cognee API key option is not set"
             )
     if mode == "enabled":
         raise RuntimeError("Plugin identity is enabled but not connected; run SessionStart")
     if principal:
-        return principal, "env_api_key" if principal in (
-            env_key,
-            os.environ.get("COGNEE_PRINCIPAL_API_KEY"),
-        ) else "cache_single_key"
+        return principal, "plugin_option" if principal == option_key else "cache_single_key"
     return "", "missing"
 
 
@@ -3352,18 +3401,14 @@ def _api_key() -> str:
 def resolved_http_endpoint_auth() -> tuple[str, str]:
     """Return (service_url, api_key) for runtime HTTP calls.
 
-    Service URL always falls back to localhost. API key is the single principal
-    key: env first, then the single cached key.
+    Service URL always falls back to localhost. The key is the one
+    ``_api_key_with_source`` selects; it is returned, never put in the
+    environment.
     """
     service_url = _normalize_service_url(_local_api_url())
     api_key = _api_key().strip()
     if service_url:
         os.environ["COGNEE_BASE_URL"] = service_url
-    if api_key:
-        previous = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
-        if previous and previous != api_key:
-            os.environ["COGNEE_PRINCIPAL_API_KEY"] = previous
-        os.environ["COGNEE_API_KEY"] = api_key
     return service_url, api_key
 
 
@@ -4425,8 +4470,6 @@ def resolve_runtime_mode() -> dict:
     api_key, key_source = _api_key_with_source(service_url)
     if service_url:
         os.environ["COGNEE_BASE_URL"] = service_url
-    if api_key:
-        os.environ["COGNEE_API_KEY"] = api_key
     return {
         "mode": "http",
         "base_url": service_url,
