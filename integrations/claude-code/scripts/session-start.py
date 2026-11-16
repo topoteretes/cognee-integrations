@@ -2921,15 +2921,6 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
         hook_log("bootstrap_owns_ready", {"session_id": session_id, "ready_now": bool(ready)})
     else:
         phase_end("connecting", session_key=session_key, ok=bool(ready))
-    if ready:
-        # The hooks module's dataset picker reads its list from a file: fetch
-        # it in the background, so session start does not wait for it.
-        try:
-            import _mod_bridge
-
-            _mod_bridge.refresh_listing_in_background(session_key)
-        except Exception as exc:
-            hook_log("mod_listing_start_failed", {"error": str(exc)[:200]})
     return _with_system_note(
         _with_system_note(
             _with_observer_note(
@@ -3289,5 +3280,28 @@ def _coding_session_start(output: dict, payload: dict) -> dict:
     return result
 
 
+def _prepare_mod_files() -> None:
+    """Write what the hooks module draws from, at the end of every session start.
+
+    The module starts no program: its status row comes from a file the hooks
+    keep, and its dataset picker from another. Whatever path session start
+    took (local, Cloud, a boot handed to the worker), the row's data is
+    written here, and the datasets are listed in the background so the hook
+    does not wait for the server.
+    """
+    try:
+        import _mod_bridge
+
+        key = get_session_key()
+        if key:
+            _mod_bridge.refresh_status(key)
+            _mod_bridge.refresh_listing_in_background(key)
+    except Exception as exc:
+        hook_log("mod_listing_start_failed", {"error": str(exc)[:200]})
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        _prepare_mod_files()
