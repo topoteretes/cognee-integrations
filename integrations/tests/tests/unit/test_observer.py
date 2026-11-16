@@ -90,6 +90,28 @@ def test_auto_yields_to_a_configured_key(observer, fake_claude, monkeypatch):
     assert decision["error"] == ""
 
 
+def test_auto_stays_off_when_a_legacy_key_was_ignored(observer, fake_claude, monkeypatch):
+    # A 1.8.1 user's LLM_API_KEY in the shell or ~/.cognee/.env is dropped; it
+    # must not hand their datasets to the observer's embedder.
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    decision = observer.resolve_observer({})
+    assert decision["active"] is False
+    assert decision["reason"] == "llm_key_ignored"
+    assert "options" in observer.describe(decision)
+
+
+def test_an_ignored_key_with_the_option_set_is_a_configured_key(observer, fake_claude, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    assert observer.resolve_observer({})["reason"] == "llm_key_configured"
+
+
+def test_forced_true_runs_despite_an_ignored_key(observer, fake_claude, monkeypatch):
+    monkeypatch.setenv("COGNEE_LLM_OBSERVER", "true")
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    assert observer.resolve_observer({})["active"] is True
+
+
 def test_auto_yields_to_a_configured_provider(observer, fake_claude, monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     decision = observer.resolve_observer({})

@@ -51,13 +51,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **The shell scripts hold no key.** `cognee-forget.sh` and
   `cognee-index-repo.sh` no longer keep the key in a shell variable or pass it
   on a command line: `scripts/_authed_request.py` sends each request.
+- **The key goes to the configured server only.** A script the relay runs sends
+  the Cognee API key option only to the server the relay resolved from the
+  options. A shell that points the script at another address gets no key and is
+  told why, and a shell's `COGNEE_ENV_FILE` is no longer passed to it.
+- **The broad forgets take exactly their arguments and a typed confirmation.**
+  `cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset` and
+  `forget-memory <dataset_id> --confirm-clear-memory`; every other command refuses
+  a missing or extra argument, so a mistyped single-document delete can never
+  remove a dataset.
 - **The redaction deny-list is a data file** (`scripts/capture_deny_paths.txt`).
   If it cannot be read, every path is refused.
 
 ### Upgrade note
 
 - Enter your keys once in the plugin's options. Until then Cognee Cloud is not
-  connected, and local mode runs on the Claude observer when it can.
+  connected. If your LLM key was in the shell or `~/.cognee/.env`, local memory
+  pauses until you enter it in the options; the Claude observer starts only if you
+  set `COGNEE_LLM_OBSERVER=true`, and it uses a different embedder, so it needs a
+  new dataset.
 
 ## [1.8.6]
 
@@ -97,8 +109,8 @@ The hooks module changes as described below, and `cognee-forget.sh env` is gone.
   search skills and the `cognee-recall` agent told Claude to print the key with
   `cognee-forget.sh env` and send its own request. The helpers do it now:
   `cognee-search.sh --category <user_context|project_docs|agent_actions>` filters a
-  graph search, and `cognee-forget.sh forget-memory <dataset_id>`,
-  `forget-dataset <dataset_id>` and `forget-everything --confirm-delete-all` cover the
+  graph search, and `cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory`,
+  `forget-dataset <dataset_id> --confirm-delete-dataset` and `forget-everything --confirm-delete-all` cover the
   broader deletions. `cognee-forget.sh env` is removed, so no command prints the key.
 
 - **Two variables renamed** (SDK-1411). `COGNEE_SESSION_KEY`, which the plugin sets and

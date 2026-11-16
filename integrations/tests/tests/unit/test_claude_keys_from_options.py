@@ -230,9 +230,18 @@ def test_the_url_option_wins_over_the_env_file(tmp_path):
 
 
 def _start_relay(home: Path, url: str, key: str, **env: str) -> dict:
-    """Start the relay the way a hook does; its state once it is up."""
-    code = "import json, _relay; _relay.ensure_relay(); print(json.dumps(1))"
-    hook_env = dict(env, COGNEE_BASE_URL=url, **{_OPTION: key})
+    """Start the relay the way a hook does (the URL and the key are options);
+    its state once it is up."""
+    code = (
+        "import json, _env_file; _env_file.load_env_file(); import _relay; "
+        "_relay.ensure_relay(); print(json.dumps(1))"
+    )
+    hook_env = dict(
+        env,
+        CLAUDE_PLUGIN_ROOT=str(_SCRIPTS.parent),
+        CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL=url,
+        **{_OPTION: key},
+    )
     hook_env["COGNEE_IDLE_DISABLED"] = "0"
     _python(code, home, **hook_env)
     state_file = home / ".cognee-plugin" / "claude-code" / "relay" / "relay.json"
@@ -273,12 +282,72 @@ def test_a_shell_script_reaches_the_server_through_the_relay(temp_home, mock_ser
     state = _start_relay(temp_home, mock_server.url, "ck_option", **extra)
     try:
         assert bool(state.get("port")) is bool(port_mode)
-        ran = _shell(temp_home, "list-datasets.py", COGNEE_BASE_URL=mock_server.url)
+        ran = _shell(temp_home, "list-datasets.py")
         assert ran.returncode == 0, ran.stderr
         # The shell had no key; the request the relayed script sent carried the option.
         sent = mock_server.assert_called("GET", "/api/v1/datasets")
         assert sent["headers"].get("X-Api-Key") == "ck_option"
         assert "ck_option" not in ran.stdout + ran.stderr
+    finally:
+        _stop(state)
+
+
+def test_a_shell_export_of_the_same_server_still_gets_the_key(temp_home, mock_server):
+    state = _start_relay(temp_home, mock_server.url, "ck_option")
+    try:
+        ran = _shell(temp_home, "list-datasets.py", COGNEE_BASE_URL=mock_server.url + "/")
+        assert ran.returncode == 0, ran.stderr
+        sent = mock_server.assert_called("GET", "/api/v1/datasets")
+        assert sent["headers"].get("X-Api-Key") == "ck_option"
+    finally:
+        _stop(state)
+
+
+_ELSEWHERE = "http://127.0.0.1:9"  # the relay's server: nothing listens there
+
+
+@pytest.mark.parametrize("name", ["COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL"])
+def test_a_shell_cannot_send_the_key_to_another_server(temp_home, mock_server, name):
+    # The relay's key is for _ELSEWHERE; the shell aims the run at the mock.
+    state = _start_relay(temp_home, _ELSEWHERE, "ck_option")
+    try:
+        _shell(temp_home, "list-datasets.py", **{name: mock_server.url})
+        for call in mock_server.calls:
+            assert call["headers"].get("X-Api-Key") != "ck_option", call["path"]
+    finally:
+        _stop(state)
+
+
+def test_a_shells_env_file_does_not_reach_the_relayed_script(temp_home, mock_server, tmp_path):
+    other = tmp_path / "other.env"
+    other.write_text("COGNEE_LOCAL_API_URL=%s\n" % mock_server.url, encoding="utf-8")
+    state = _start_relay(temp_home, _ELSEWHERE, "ck_option")
+    try:
+        _shell(temp_home, "list-datasets.py", COGNEE_ENV_FILE=str(other))
+        for call in mock_server.calls:
+            assert call["headers"].get("X-Api-Key") != "ck_option", call["path"]
+    finally:
+        _stop(state)
+
+
+def test_the_forget_helper_says_why_no_key_was_sent(temp_home, mock_server):
+    bash = __import__("shutil").which("bash")
+    if not bash or os.name == "nt":
+        pytest.skip("needs a POSIX bash")
+    state = _start_relay(temp_home, _ELSEWHERE, "ck_option")
+    try:
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(temp_home)}
+        env.update({"COGNEE_IDLE_DISABLED": "1", "COGNEE_BASE_URL": mock_server.url})
+        ran = subprocess.run(
+            [bash, str(_SCRIPTS / "cognee-forget.sh"), "datasets"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert ran.returncode == 2
+        assert "only sent to %s" % _ELSEWHERE in ran.stderr
+        assert [c for c in mock_server.calls if c["path"].startswith("/api/v1/")] == []
     finally:
         _stop(state)
 
@@ -347,15 +416,49 @@ def test_cloud_without_the_key_option_is_said_at_every_start(start, monkeypatch)
     assert start._key_options_message() == ""
 
 
+def _said(start) -> str:
+    """The notice as session start emits it (and records the once-only names)."""
+    return str(start._apply_key_options_notice({}).get("systemMessage") or "")
+
+
 def test_an_ignored_local_key_is_said_once(start, monkeypatch):
-    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
-    first = start._key_options_message()
-    assert "no longer reads LLM_API_KEY" in first
-    assert start._key_options_message() == ""
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "EMBEDDING_API_KEY")
+    first = _said(start)
+    assert "no longer reads EMBEDDING_API_KEY" in first
+    assert _said(start) == ""
     # A key whose option is filled in is not mentioned at all.
-    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY,EMBEDDING_API_KEY")
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "EMBEDDING_API_KEY,COGNEE_USER_EMAIL")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "sk_option")
+    assert "no longer reads COGNEE_USER_EMAIL from" in _said(start)
+
+
+def test_a_once_only_notice_is_recorded_only_when_emitted(start, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "EMBEDDING_API_KEY")
+    # Composed but never put in the hook's output: still said next time.
+    assert "EMBEDDING_API_KEY" in start._key_options_message()
+    start._pending_notice.clear()
+    assert "EMBEDDING_API_KEY" in _said(start)
+    assert _said(start) == ""
+
+
+def test_an_ignored_llm_key_pauses_local_memory_at_every_start(start, monkeypatch):
+    monkeypatch.delenv("COGNEE_LLM_OBSERVER", raising=False)
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    first = _said(start)
+    assert "local memory is paused" in first
+    assert "COGNEE_LLM_OBSERVER=true" in first and "new dataset" in first
+    assert _said(start) == first
+    # The option settles it.
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk_option")
-    assert "no longer reads EMBEDDING_API_KEY from" in start._key_options_message()
+    assert _said(start) == ""
+
+
+def test_an_ignored_llm_key_with_the_observer_forced_is_said_once(start, monkeypatch):
+    monkeypatch.setenv("COGNEE_LLM_OBSERVER", "true")
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
+    first = _said(start)
+    assert "paused" not in first and "no longer reads LLM_API_KEY" in first
+    assert _said(start) == ""
 
 
 def test_nothing_is_said_when_no_key_was_found(start, monkeypatch):

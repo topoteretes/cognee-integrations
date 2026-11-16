@@ -12,16 +12,20 @@
 #   cognee-forget.sh data <dataset_id>               List the data items in a dataset
 #   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
 #   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-#   cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
-#   cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
+#   cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory     Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
+#   cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset  Delete a whole dataset (IRREVERSIBLE)
 #   cognee-forget.sh forget-everything --confirm-delete-all   Delete ALL of the user's data (IRREVERSIBLE)
 #
 # The key never leaves this script: no command prints it, and the skills send
 # no request of their own.
 #
+# Every command takes exactly the arguments shown, and the broad deletions a
+# typed confirmation word, so a mistyped, truncated or overlong command line is
+# refused before anything is sent.
+#
 # Every API command prints the response body followed by a final
-# "HTTP <status>" line — callers must check it (curl without -f exits 0 on
-# HTTP errors, deliberately, so 404 "already deleted" stays inspectable).
+# "HTTP <status>" line — callers must check it (an HTTP error still exits 0,
+# deliberately, so 404 "already deleted" stays inspectable).
 #
 # Configuration:
 #   Resolves auth like cognee-search.sh / cognee-remember.sh:
@@ -47,6 +51,7 @@ fi
 # content that hasn't been persisted yet becomes findable — and deletable —
 # by the listing steps below. Dispatched before credential resolution.
 if [ "${1:-}" = "sync" ]; then
+    if [ "$#" -ne 1 ]; then echo "Error: sync takes no arguments" >&2; exit 1; fi
     exec python3 "${SELF_DIR}/sync-session-to-graph.py"
 fi
 # The server address, resolved the way the hooks resolve it. The key never
@@ -63,8 +68,8 @@ Usage:
   cognee-forget.sh data <dataset_id>               List the data items in a dataset
   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-  cognee-forget.sh forget-memory <dataset_id>      Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
-  cognee-forget.sh forget-dataset <dataset_id>     Delete a whole dataset (IRREVERSIBLE)
+  cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory     Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
+  cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset  Delete a whole dataset (IRREVERSIBLE)
   cognee-forget.sh forget-everything --confirm-delete-all   Delete ALL of the user's data (IRREVERSIBLE)
 EOF
 }
@@ -80,13 +85,25 @@ validate_uuid() {
     fi
 }
 
-if ! python3 "${SELF_DIR}/_authed_request.py" has-key; then
+key_code=0
+python3 "${SELF_DIR}/_authed_request.py" has-key || key_code=$?
+# 3: the run was aimed at a server the key is not for; the helper said so.
+if [ "$key_code" -eq 3 ]; then exit 2; fi
+if [ "$key_code" -ne 0 ]; then
     echo "Error: no API key resolved (checked the plugin option and ${PLUGIN_DIR%/*}/api_key.json)." >&2
     echo "Cloud mode: set the Cognee API key option of this plugin (/plugin, Cognee Memory, Configure options) and start a session. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
     exit 2
 fi
 
 CMD="${1:-}"
+# Refuse any command line that does not have exactly the expected shape.
+expect() {
+    if [ "$1" -ne "$2" ]; then
+        echo "Error: ${CMD} requires exactly: $3" >&2
+        usage
+        exit 1
+    fi
+}
 api_get() {
     python3 "${SELF_DIR}/_authed_request.py" GET "$1"
 }
@@ -98,21 +115,22 @@ api_forget() {
 
 case "$CMD" in
     datasets)
+        expect "$#" 1 "datasets"
         api_get "${SERVICE_URL}/api/v1/datasets"
         ;;
     data)
-        [ -n "${2:-}" ] || { echo "Error: data requires <dataset_id>" >&2; usage; exit 1; }
+        expect "$#" 2 "data <dataset_id>"
         validate_uuid "$2"
         api_get "${SERVICE_URL}/api/v1/datasets/$2/data"
         ;;
     raw)
-        [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "Error: raw requires <dataset_id> <data_id>" >&2; usage; exit 1; }
+        expect "$#" 3 "raw <dataset_id> <data_id>"
         validate_uuid "$2"
         validate_uuid "$3"
         api_get "${SERVICE_URL}/api/v1/datasets/$2/data/$3/raw"
         ;;
     forget)
-        [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "Error: forget requires <dataset_id> <data_id>" >&2; usage; exit 1; }
+        expect "$#" 3 "forget <dataset_id> <data_id>"
         validate_uuid "$2"
         validate_uuid "$3"
         # Body built with json.dumps, not string interpolation, from the two
@@ -123,12 +141,20 @@ case "$CMD" in
         api_forget "$payload"
         ;;
     forget-memory)
-        [ -n "${2:-}" ] || { echo "Error: forget-memory requires <dataset_id>" >&2; usage; exit 1; }
+        # A typed flag, like forget-everything: a mistyped or truncated
+        # single-document command can never clear a whole dataset.
+        if [ "$#" -ne 3 ] || [ "$3" != "--confirm-clear-memory" ]; then
+            echo "Error: forget-memory clears a whole dataset's memory and takes exactly: <dataset_id> --confirm-clear-memory" >&2
+            exit 1
+        fi
         validate_uuid "$2"
         api_forget "$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1], "memoryOnly": True}))' "$2")"
         ;;
     forget-dataset)
-        [ -n "${2:-}" ] || { echo "Error: forget-dataset requires <dataset_id>" >&2; usage; exit 1; }
+        if [ "$#" -ne 3 ] || [ "$3" != "--confirm-delete-dataset" ]; then
+            echo "Error: forget-dataset deletes a whole dataset and takes exactly: <dataset_id> --confirm-delete-dataset" >&2
+            exit 1
+        fi
         validate_uuid "$2"
         api_forget "$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1]}))' "$2")"
         ;;

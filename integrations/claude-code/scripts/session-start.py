@@ -338,8 +338,12 @@ def _key_options_message() -> str:
 
     * Cloud with no Cognee API key option: said at every session start, since
       the plugin cannot work until the option is set.
-    * An LLM key, an embedding key or a login that is ignored while its option
-      is empty: said once per set of names.
+    * Local mode with an ignored ``LLM_API_KEY`` and no LLM key option: said at
+      every session start, since local memory is paused until the user enters
+      the option or chooses the observer (``_observer.llm_key_ignored``).
+    * Any other key or login that is ignored while its option is empty: said
+      once per set of names. The names are recorded as seen only once the
+      message is on its way to the user (``_commit_key_options_notice``).
     """
     from _env_file import (
         cloud_key_option,
@@ -366,10 +370,19 @@ def _key_options_message() -> str:
                 cloud_names
             )
         lines.append(line)
+    paused = _llm_paused_by_ignored_key(config, ignored, llm_key_option())
+    if paused:
+        lines.append(
+            "Cognee no longer reads LLM_API_KEY from your shell or ~/.cognee/.env, so local "
+            "memory is paused. Enter the key in this plugin's options (%s) to continue with "
+            "the same datasets. Or set COGNEE_LLM_OBSERVER=true to run on your Claude "
+            "subscription instead; that uses a different embedder, so switch to a new "
+            "dataset." % _KEY_OPTIONS_HOW.rstrip(".")
+        )
     local_names = [
         name
         for name, option in (
-            ("LLM_API_KEY", llm_key_option()),
+            ("LLM_API_KEY", llm_key_option() or paused),
             ("EMBEDDING_API_KEY", embedding_key_option()),
             ("COGNEE_USER_EMAIL", login_email_option()),
             ("COGNEE_USER_PASSWORD", login_password_option()),
@@ -387,12 +400,37 @@ def _key_options_message() -> str:
                 "them from this plugin's options. %s"
                 % (" and ".join(local_names), _KEY_OPTIONS_HOW)
             )
-            try:
-                _KEY_OPTIONS_NOTICE.parent.mkdir(parents=True, exist_ok=True)
-                _KEY_OPTIONS_NOTICE.write_text(json.dumps({"names": local_names}), encoding="utf-8")
-            except Exception:
-                pass
+            _pending_notice["names"] = local_names
     return "\n\n".join(lines)
+
+
+#: The once-only names composed into the last message, recorded as seen by
+#: ``_commit_key_options_notice`` once that message is in the hook's output.
+_pending_notice: dict = {}
+
+
+def _llm_paused_by_ignored_key(config: dict, ignored: list, option: str) -> bool:
+    """Local mode, an ``LLM_API_KEY`` dropped, no LLM key option, and the
+    observer not forced on: the server has no LLM until the user chooses."""
+    if option or "LLM_API_KEY" not in ignored or is_cloud_mode(config):
+        return False
+    try:
+        from _observer import setting
+
+        return setting() != "true"
+    except Exception:
+        return True
+
+
+def _commit_key_options_notice() -> None:
+    names = _pending_notice.pop("names", None)
+    if not names:
+        return
+    try:
+        _KEY_OPTIONS_NOTICE.parent.mkdir(parents=True, exist_ok=True)
+        _KEY_OPTIONS_NOTICE.write_text(json.dumps({"names": names}), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _apply_key_options_notice(output: dict) -> dict:
@@ -413,6 +451,7 @@ def _apply_key_options_notice(output: dict) -> dict:
     result["hookSpecificOutput"] = hso
     top = str(result.get("systemMessage") or "").strip()
     result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    _commit_key_options_notice()
     return result
 
 

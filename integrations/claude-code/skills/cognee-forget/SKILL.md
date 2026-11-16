@@ -97,12 +97,12 @@ The helper can also delete more than a single document. Each of these is irrever
 | Command | Effect |
 |---------|--------|
 | `cognee-forget.sh forget <dataset_id> <data_id>` | Forget one document (the default for this skill) |
-| `cognee-forget.sh forget-memory <dataset_id>` | Clear the dataset's memory (graph + vector) but keep raw data |
-| `cognee-forget.sh forget-dataset <dataset_id>` | Delete the **entire dataset** |
+| `cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory` | Clear the dataset's memory (graph + vector) but keep raw data |
+| `cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset` | Delete the **entire dataset** |
 | `cognee-forget.sh forget-everything --confirm-delete-all` | Delete **all** user data |
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-dataset <dataset_id>
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-dataset <dataset_id> --confirm-delete-dataset
 ```
 
 Send no request of your own: the helper holds the key and never prints it.

@@ -2458,6 +2458,10 @@ def user_cloud_key(service_url: str = "") -> str:
     The option is the user's key for the server they configured. The server
     this plugin starts on this machine has a key of its own (minted at session
     start and cached), so the option is never sent to it.
+
+    A script the relay runs is told which server the relay resolved from the
+    options (``COGNEE_RELAY_KEY_URL``); the caller's shell can point the script
+    elsewhere, but the option goes to that server only.
     """
     key = cloud_key_option()
     if not key:
@@ -2465,7 +2469,22 @@ def user_cloud_key(service_url: str = "") -> str:
     url = _normalize_service_url(service_url or _local_api_url())
     if url == _DEFAULT_LOCAL_SERVICE_URL and forced_backend() != "cloud":
         return ""
+    if os.environ.get("COGNEE_RELAYED", "") == "1":
+        bound = _normalize_service_url(os.environ.get("COGNEE_RELAY_KEY_URL", ""))
+        if not bound or url != bound:
+            return ""
     return key
+
+
+def key_refused_for(service_url: str) -> str:
+    """In a relayed script, the server the option is bound to when it differs
+    from ``service_url`` (so the caller can say why no key was sent), else ""."""
+    if os.environ.get("COGNEE_RELAYED", "") != "1":
+        return ""
+    bound = _normalize_service_url(os.environ.get("COGNEE_RELAY_KEY_URL", ""))
+    if bound and _normalize_service_url(service_url) != bound:
+        return bound
+    return ""
 
 
 def load_cached_api_key(service_url: str = "") -> str:

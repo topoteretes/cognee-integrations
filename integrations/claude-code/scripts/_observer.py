@@ -272,6 +272,14 @@ def llm_key_configured() -> bool:
     return bool(llm_key_option())
 
 
+def llm_key_ignored() -> bool:
+    """Whether an ``LLM_API_KEY`` was found in the shell or ~/.cognee/.env and
+    dropped, with the LLM key option still empty."""
+    from _env_file import ignored_key_names
+
+    return "LLM_API_KEY" in ignored_key_names() and not llm_key_configured()
+
+
 def server_dotenv_path() -> Path | None:
     """The ``.env`` the local cognee server will load, if any.
 
@@ -387,6 +395,15 @@ def resolve_observer(config: dict | None = None) -> dict:
         if os.environ.get("COGNEE_LLM_OBSERVER_ACTIVE", "") != "1":
             if llm_key_configured():
                 result["reason"] = "llm_key_configured"
+                return result
+            # A key the user keeps in the shell or ~/.cognee/.env is no longer
+            # read, but it shows they chose a provider of their own: their
+            # datasets are built with that key's embedder, and the observer
+            # would switch the server to fastembed and bill their Claude
+            # subscription. Stay off until they enter the option (or force
+            # the observer with COGNEE_LLM_OBSERVER=true).
+            if llm_key_ignored():
+                result["reason"] = "llm_key_ignored"
                 return result
             if llm_provider_configured():
                 result["reason"] = "llm_provider_configured"
@@ -632,7 +649,11 @@ def describe(decision: dict | None = None) -> str:
         "disabled": f"off ({SETTING_ENV}=false)",
         "cloud_mode": "off (cloud mode: the remote server owns its LLM key)",
         "managed_endpoint": "off (COGNEE_MANAGED_ENDPOINT: the deployment owns its LLM key)",
-        "llm_key_configured": "off (LLM_API_KEY is configured)",
+        "llm_key_configured": "off (the LLM API key option is set)",
+        "llm_key_ignored": (
+            "off (an LLM_API_KEY is set in your shell or ~/.cognee/.env but no longer "
+            "read: enter it in the plugin's options)"
+        ),
         "llm_provider_configured": "off (LLM_PROVIDER is configured)",
         "server_dotenv_configured": (
             f"off (the server's {decision.get('dotenv') or '.env'} configures its LLM)"

@@ -55,6 +55,7 @@ class MockCogneeServer:
         self.identity = identity or IdentityFake()
         self._recall_results: list[Any] = []
         self._health_status = 200
+        self._forget_status = 200
         # Cognify/memify status reported for every dataset id: a status string,
         # or a list walked one entry per poll (see set_dataset_status).
         self._dataset_status: Any = STATUS_COMPLETED
@@ -93,6 +94,10 @@ class MockCogneeServer:
     def set_recall_results(self, results: list[Any]) -> None:
         """Configure the JSON array returned by POST /api/v1/recall."""
         self._recall_results = list(results)
+
+    def set_forget_status(self, status: int) -> None:
+        """Configure the HTTP status POST /api/v1/forget answers with."""
+        self._forget_status = status
 
     def set_health_status(self, status: int) -> None:
         """Configure GET /health (e.g. 503 for the not-ready / skip path)."""
@@ -645,6 +650,8 @@ class MockCogneeServer:
 
     def _forget(self, req: Request) -> Response:
         self._record(req)
+        if self._forget_status != 200:
+            return _json(self._forget_status, {"detail": "forget failed"})
         return _json(200, {"status": "success"})
 
     def _datasets_status(self, req: Request) -> Response:

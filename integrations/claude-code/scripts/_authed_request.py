@@ -5,13 +5,16 @@ the key: they name the request and this helper sends it, with the server
 address and key resolved the way the hooks resolve them.
 
     _authed_request.py url              print the server address
-    _authed_request.py has-key          exit 0 when a key is available, else 2
+    _authed_request.py has-key          exit 0 when a key is available, 3 when the
+                                        key is not for this server, else 2
     _authed_request.py GET <url>        send the request, print the answer
     _authed_request.py POST <url>       the JSON body is read from stdin
 
 The answer is printed as the body, then a line ``HTTP <status>``, which the
 callers check. A request is only sent to the configured server: any other
-address is refused, so the key cannot be sent elsewhere.
+address is refused. When the relay runs this helper, the Cognee API key option
+goes only to the server the relay resolved from the options; a caller that
+points the run at another server gets no key (``has-key`` exits 3 and says so).
 
 Stdlib only.
 """
@@ -41,6 +44,19 @@ def _server_key(server: str) -> str:
     import _plugin_common
 
     return _plugin_common.shell_api_key(server)
+
+
+def _say_refused(server: str) -> bool:
+    """Explain a key withheld because the run was aimed at another server."""
+    import _plugin_common
+
+    bound = _plugin_common.key_refused_for(server)
+    if bound:
+        sys.stderr.write(
+            "Error: the Cognee API key is only sent to %s; this command asked for %s.\n"
+            % (bound, server)
+        )
+    return bool(bound)
 
 
 def _send(method: str, url: str, body: bytes | None) -> int:
@@ -75,7 +91,10 @@ def main(argv: list) -> int:
         print(_server())
         return 0
     if command == "has-key":
-        return 0 if _server_key(_server()) else 2
+        server = _server()
+        if _server_key(server):
+            return 0
+        return 3 if _say_refused(server) else 2
     if command == "GET" and len(argv) == 3:
         return _send("GET", argv[2], None)
     if command == "POST" and len(argv) == 3:

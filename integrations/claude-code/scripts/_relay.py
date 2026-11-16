@@ -75,7 +75,9 @@ _RUN_TIMEOUT_SECONDS = 1800.0
 _MAX_REQUEST_BYTES = 8 * 1024 * 1024
 #: What the relayed script takes from the caller's shell instead of the
 #: relay's own: the session, and the settings one terminal can set for itself
-#: (the mode switch, the server address, the dataset). Never a key.
+#: (the mode switch, the server address, the dataset). Never a key, and never
+#: the server the key goes to: a caller's address that differs from the
+#: relay's (``KEY_URL_VAR``) gets a child without the key option.
 PASSED = (
     "COGNEE_SESSION_REF",
     "CLAUDE_CODE_SESSION_ID",
@@ -84,8 +86,12 @@ PASSED = (
     "COGNEE_BASE_URL",
     "COGNEE_LOCAL_API_URL",
     "COGNEE_PLUGIN_DATASET",
-    "COGNEE_ENV_FILE",
 )
+#: Set in a relayed script's environment, after the caller's values: the server
+#: the relay resolved from the options. The Cognee API key option is sent to
+#: this address only (``_plugin_common.user_cloud_key``).
+KEY_URL_VAR = "COGNEE_RELAY_KEY_URL"
+_DEFAULT_URL = "http://localhost:8011"
 
 
 def _on_port() -> bool:
@@ -121,10 +127,25 @@ def _key_option() -> str:
     return cloud_key_option()
 
 
+def _normalized(url: str) -> str:
+    return str(url or "").strip().rstrip("/")
+
+
+def _bound_url() -> str:
+    """The server this process resolved, the way ``_plugin_common`` does: the
+    hook that starts the relay has loaded the options and ~/.cognee/.env, and
+    the relay inherits that environment."""
+    return _normalized(
+        os.environ.get("COGNEE_LOCAL_API_URL", "").strip()
+        or os.environ.get("COGNEE_BASE_URL", "").strip()
+        or _DEFAULT_URL
+    )
+
+
 def _fingerprint() -> str:
-    """Changes when the key option or the plugin's code does, so that the
-    running relay is replaced and never answers with what it was started with.
-    A hash: the key itself is not stored."""
+    """Changes when the key option, the server it is for, or the plugin's code
+    does, so that the running relay is replaced and never answers with what it
+    was started with. A hash: the key itself is not stored."""
     try:
         from _version import PLUGIN_VERSION as version
     except Exception:
@@ -133,7 +154,7 @@ def _fingerprint() -> str:
         changed = str(os.path.getmtime(os.path.abspath(__file__)))
     except OSError:
         changed = ""
-    text = "\n".join((_key_option(), str(_SCRIPTS), sys.executable, version, changed))
+    text = "\n".join((_key_option(), _bound_url(), str(_SCRIPTS), sys.executable, version, changed))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -224,6 +245,13 @@ def _child_env(extra: dict) -> dict:
             env[name] = value
         else:
             env.pop(name, None)
+    bound = _bound_url()
+    # The caller may aim this run at another server (a local one, say), but the
+    # key option is for the relay's server only.
+    asked = _normalized(env.get("COGNEE_LOCAL_API_URL") or env.get("COGNEE_BASE_URL") or "")
+    if asked and asked != bound:
+        env.pop("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", None)
+    env[KEY_URL_VAR] = bound
     env[RELAYED_VAR] = "1"
     return env
 
@@ -414,7 +442,6 @@ def relay(script: str, argv: list) -> int | None:
         "COGNEE_BASE_URL": _shell_value("COGNEE_BASE_URL"),
         "COGNEE_LOCAL_API_URL": _shell_value("COGNEE_LOCAL_API_URL"),
         "COGNEE_PLUGIN_DATASET": _shell_value("COGNEE_PLUGIN_DATASET"),
-        "COGNEE_ENV_FILE": os.environ.get("COGNEE_ENV_FILE", ""),
     }
     request = {"script": script, "argv": list(argv), "cwd": cwd, "settings": env}
     if state.get("code"):

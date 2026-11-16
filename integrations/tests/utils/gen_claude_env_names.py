@@ -40,6 +40,8 @@ _KEYS = {
     "COGNEE_USER_EMAIL",
     "COGNEE_USER_PASSWORD",
 }
+#: Set by the plugin for its own processes; a line in the file must not set it.
+_INTERNAL = {"COGNEE_RELAY_KEY_URL"}
 
 
 def names() -> list:
@@ -53,7 +55,10 @@ def names() -> list:
     return sorted(
         name
         for name in found
-        if name not in _NEVER and name not in _KEYS and not name.startswith(_NEVER_PREFIXES)
+        if name not in _NEVER
+        and name not in _KEYS
+        and name not in _INTERNAL
+        and not name.startswith(_NEVER_PREFIXES)
     )
 
 
