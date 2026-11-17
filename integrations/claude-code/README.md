@@ -118,7 +118,8 @@ when enabled, the Claude observer shim. All are scripts from this folder.
 **Credentials it uses.** The plugin takes its keys from its own options and reads
 them nowhere else: the Cognee API key, the LLM API key and the embedding API key
 (local mode), and the login for a server without an API key. Claude Code keeps
-them in its secure store. A key in your shell or in `~/.cognee/.env` is ignored.
+them in its secure store and hands them to the plugin's options holder (below).
+A key in your shell or in `~/.cognee/.env` is ignored.
 The plugin also keeps two key files of its own:
 `~/.cognee-plugin/claude-code/agent_key.json` (the plugin's own identity,
 provisioned on your Cognee server) and `~/.cognee-plugin/api_key.json` (the key
@@ -223,7 +224,9 @@ Key resolution order for data-plane traffic:
 3. `~/.cognee-plugin/api_key.json` (the key minted on the plugin's own local server)
 4. Auto-mint from the default local user (local mode only), then cache to `api_key.json`
 
-**Skills and the relay.** Claude Code hands the options to the plugin's hooks, and to nothing else: a script that a skill runs through Bash has no key. A hook therefore starts a small relay (`scripts/_relay.py`) while sessions are in use. The script hands its command line to the relay, the relay runs that same script as its own child, which has the options, and returns the output. The relay accepts only the plugin's own scripts, on a Unix socket in a folder only you can enter (`~/.cognee-plugin/claude-code/relay`). Where Unix sockets do not exist (Windows) it listens on a loopback port and asks for a random one-time code kept in a file only you can read. It starts only when the Cognee API key option is set, and stops after an hour without a prompt.
+**The options holder.** Claude Code starts `scripts/_holder.py` with each session, as one of the plugin's MCP servers (it offers no tools), and passes it the plugin's options as arguments; an option you have not set arrives empty. The holder immediately re-runs itself with the values on a pipe, so no command line keeps them (on macOS and Linux `ps` shows only `_holder.py --from-fd 3`). It then hands them to the plugin's own scripts over a socket in `~/.cognee-plugin/claude-code/holder`, a folder only you can enter, and removes its files when the session ends. The hooks find their session's holder by Claude Code's process id, and session start waits up to 8 seconds for it. Where Unix sockets do not exist (Windows) it listens on a loopback port and answers only with a random code kept in a file only you can read; there the values stay on its command line, which other users cannot read on Windows.
+
+**Skills and the relay.** The holder's options reach the plugin's hooks and what those hooks start, and nothing else: a script that a skill runs through Bash has no key. A hook therefore starts a small relay (`scripts/_relay.py`) while sessions are in use. The script hands its command line to the relay, the relay runs that same script as its own child, which reaches the holder, and returns the output. The relay accepts only the plugin's own scripts, on a Unix socket in a folder only you can enter (`~/.cognee-plugin/claude-code/relay`). Where Unix sockets do not exist (Windows) it listens on a loopback port and asks for a random one-time code kept in a file only you can read. It starts only when the Cognee API key option is set, and stops after an hour without a prompt.
 
 Provisioning policy:
 - `COGNEE_PLUGIN_IDENTITY` selects the identity policy:

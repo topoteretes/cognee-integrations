@@ -10,6 +10,26 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.8]
+
+### Changed
+
+- **The keys reach the hooks through an options holder.** Claude Code now
+  starts `scripts/_holder.py` with each session, as a local MCP server with no
+  tools, and passes it the plugin's options as arguments. The hooks read the
+  options from it instead of from Claude Code's `CLAUDE_PLUGIN_OPTION_*`
+  variables. This is the form the plugin directory accepts for a plugin's keys
+  (SDK-1620). The holder moves the values off its command line at once, serves
+  them over a socket only you can open, and removes its files when the session
+  ends. Session start waits up to 8 seconds for it.
+- **`.*rc` replaces `.npmrc` and `.netrc` in the capture deny-list**, in every
+  host. It also keeps other dot-rc files, such as shell profiles, out of memory.
+
+### Upgrade note
+
+- Start a new session after updating: a session that was open before has no
+  options holder, so its hooks have no keys until it is restarted.
+
 ## [1.8.7]
 
 ### Changed
