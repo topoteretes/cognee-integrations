@@ -66,6 +66,19 @@ def _record(home: Path, pid: int) -> Path:
     return home / ".cognee-plugin" / "claude-code" / "holder" / ("%d.json" % pid)
 
 
+def _record_of_holder(home: Path) -> Path:
+    """The record the holder writes: ``<pid>.json``, under the pid of the
+    process that started it (this test; on Windows a virtualenv's launcher may
+    sit in between and is skipped, so the pid is looked up, not assumed)."""
+    folder = home / ".cognee-plugin" / "claude-code" / "holder"
+    for _ in range(200):
+        found = sorted(folder.glob("*.json")) if folder.is_dir() else []
+        if found:
+            return found[0]
+        time.sleep(0.05)
+    raise AssertionError("no holder record appeared in %s" % folder)
+
+
 def _wait_for(path: Path) -> None:
     for _ in range(100):
         if path.is_file():
@@ -93,8 +106,7 @@ def holder(tmp_path):
     proc = _start_holder(tmp_path)
     # The holder is keyed by its parent's pid: the parent is this test process,
     # as Claude Code is for a real one.
-    record = _record(tmp_path, os.getpid())
-    _wait_for(record)
+    record = _record_of_holder(tmp_path)
     yield tmp_path, proc, record
     if proc.poll() is None:
         proc.stdin.close()
@@ -115,8 +127,8 @@ def test_the_values_leave_the_command_line(holder):
 
 @_POSIX_ONLY
 def test_a_hook_finds_its_sessions_holder_by_claude_codes_pid(checked_holder):
-    home, scripts, _ = checked_holder
-    got = _hook_reads(home, scripts, CLAUDE_PID=str(os.getpid()))["mine"]
+    home, scripts, record = checked_holder
+    got = _hook_reads(home, scripts, CLAUDE_PID=record.stem)["mine"]
     assert got["cognee_api_key"] == "ck-s3cr3t-value"
     assert got["cognee_base_url"] == "https://tenant.cognee.test"
     assert got["cognee_user_password"] == "pw-s3cr3t"
@@ -133,14 +145,14 @@ def test_a_hook_finds_the_holder_through_its_ancestors_without_claude_pid(checke
 
 def test_a_shell_finds_no_holder(holder):
     """A skill's command is neither a hook nor started by one: it uses the relay."""
-    home, _, _ = holder
-    assert _read_options(home, CLAUDE_PID=str(os.getpid())) == {}
+    home, _, record = holder
+    assert _read_options(home, CLAUDE_PID=record.stem) == {}
 
 
 @_POSIX_ONLY
 def test_a_hook_records_the_holder_for_what_it_starts(checked_holder):
     home, scripts, record = checked_holder
-    got = _hook_reads(home, scripts, "--and-a-child", CLAUDE_PID=str(os.getpid()))
+    got = _hook_reads(home, scripts, "--and-a-child", CLAUDE_PID=record.stem)
     assert got["holder"] == str(record)
     # The child finds the holder through that variable alone.
     assert got["child"]["cognee_api_key"] == "ck-s3cr3t-value"
@@ -424,8 +436,7 @@ def checked_holder(tmp_path):
         env=_env(home),
         text=True,
     )
-    record = _record(home, os.getpid())
-    _wait_for(record)
+    record = _record_of_holder(home)
     yield home, scripts, record
     proc.stdin.close()
     proc.wait(timeout=10)

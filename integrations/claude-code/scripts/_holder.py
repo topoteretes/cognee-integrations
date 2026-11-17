@@ -333,6 +333,37 @@ def _mcp(stdin, stdout) -> None:
         stdout.flush()
 
 
+#: Programs that only start Python: a virtualenv's ``python.exe`` and the
+#: ``py`` launcher run the real interpreter as their child on Windows.
+_LAUNCHERS = frozenset({"python.exe", "python3.exe", "pythonw.exe", "py.exe", "pyw.exe"})
+
+
+def _session_pid() -> int:
+    """The pid of the Claude Code process that started this holder.
+
+    On macOS and Linux that is the parent: a launcher there replaces itself
+    (``exec``). On Windows a launcher stays as a process of its own between
+    Claude Code and this one, so launchers are skipped.
+    """
+    pid = os.getppid()
+    if os.name != "nt":
+        return pid
+    try:
+        from _proc import _process_table_windows
+
+        table = _process_table_windows()
+    except Exception:
+        return pid
+    seen = set()
+    while pid in table and pid not in seen:
+        seen.add(pid)
+        parent, exe = table[pid]
+        if str(exe).lower() not in _LAUNCHERS or not parent:
+            break
+        pid = parent
+    return pid
+
+
 def main(argv: list) -> int:
     if len(argv) == 3 and argv[1] == _FROM_FD:
         values = _read_fd(int(argv[2]))
@@ -341,9 +372,9 @@ def main(argv: list) -> int:
         return 1  # not reached: the process was replaced
     else:
         values = _named(argv[1:])
-    # This process's parent is Claude Code, which started it; the hooks of the
-    # same session look the holder up by that pid.
-    state = DIR / ("%d.json" % os.getppid())
+    # Recorded under the pid of the Claude Code that started it; the hooks of
+    # the same session look the holder up by that pid.
+    state = DIR / ("%d.json" % _session_pid())
     port_mode = not hasattr(socket, "AF_UNIX")
     check = caller_allowed if not port_mode and _checks_callers() else None
     _, cleanup = serve(values, state, port_mode=port_mode, check=check)
