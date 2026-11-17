@@ -37,7 +37,7 @@ capture off; recall and explicit remember keep working.
   to `localhost:8011`. Memory is stored on this machine. To build the graph, that
   server sends captured text to the LLM and embedding provider you configured
   (the LLM API key option, `LLM_PROVIDER`), or to Claude Code through the observer below.
-- *Cloud mode*: your Cognee Cloud instance at `COGNEE_BASE_URL`, over HTTPS,
+- *Cloud mode*: your Cognee Cloud instance (the Cognee server URL option), over HTTPS,
   authenticated with your Cognee API key option. The status line's credit balance comes
   from the Cognee platform API (`api.aws.cognee.ai`).
 
@@ -156,7 +156,7 @@ Then configure the plugin — **once**. Two places hold its settings:
 
 | Option | For | Needed |
 |---|---|---|
-| Cognee server URL | Cognee Cloud or your own server | Cloud. `COGNEE_BASE_URL` in the shell or `~/.cognee/.env` is used when the option is empty |
+| Cognee server URL | Cognee Cloud or your own server | Cloud. The option wins; `COGNEE_BASE_URL` in the shell or `~/.cognee/.env` is used only when the option is empty |
 | Cognee API key | That server | Cloud |
 | LLM API key | The local server's LLM | Local mode, unless it runs on your Claude subscription |
 | Embedding API key | The local server's embedder | Only when it differs from the LLM key |
@@ -182,10 +182,10 @@ Settings in `~/.cognee/.env` can be edited directly (`nano ~/.cognee/.env`): whe
 You can configure **both modes at once** — set the server URL and Cognee API key *and* the LLM API key together. The mode is then decided per terminal, by three rules in order:
 
 1. **A `COGNEE_BACKEND` export wins.** `export COGNEE_BACKEND=local` (or `=cloud`) pins that terminal to that mode. Nothing else needs to change.
-2. **Otherwise, cloud wins when configured.** If `COGNEE_BASE_URL` is set (in the file or the shell), the plugin connects to it.
+2. **Otherwise, cloud wins when configured.** If a server URL is configured, the plugin connects to it: the **Cognee server URL** option, or, when the option is empty, `COGNEE_BASE_URL` in the shell or `~/.cognee/.env`.
 3. **Otherwise, local.** With no URL anywhere, the plugin boots the local server.
 
-So with both modes in `~/.cognee/.env`:
+So with both modes configured:
 
 ```bash
 claude                          # → cloud (the configured URL routes)
@@ -196,7 +196,7 @@ export COGNEE_BACKEND=local     # → local for every launch from this shell
 Details worth knowing:
 
 - **The switch is pinned.** `COGNEE_BACKEND=cloud` with no `COGNEE_BASE_URL` configured still counts as cloud: the plugin does **not** silently fall back to local, and the status line shows `✕ (missing_cognee_base_url)` so you know exactly what to fix.
-- **To go local, use the switch — not `unset COGNEE_BASE_URL`.** Unsetting doesn't work: the env file re-injects the URL at the next launch. (Deleting the line from the file works, but that changes the default for *every* terminal.)
+- **To go local, use the switch — not `unset COGNEE_BASE_URL`.** Unsetting doesn't work: the option (or the env file) supplies the URL again at the next launch. (Emptying the option, or deleting the line from the file, works, but that changes the default for *every* terminal.)
 - The shared `COGNEE_BACKEND` flips both the Claude Code **and** Codex plugins in that terminal. To flip only one, use `COGNEE_CLAUDE_BACKEND` / `COGNEE_CODEX_BACKEND` — the plugin-specific name beats the shared one.
 - Accepted values: `local` (aliases: `native`, `sdk`) and `cloud` (aliases: `http`, `api`, `server`). Anything else is ignored.
 - `COGNEE_BACKEND` can also live in `~/.cognee/.env` to make a mode the durable default; a shell export still overrides it per terminal.
@@ -1156,7 +1156,7 @@ uninstalled but its files linger.
 
 The status line reads only local state — no network calls on every refresh:
 1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
-2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then `COGNEE_BASE_URL` env var
+2. Mode: `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch, then the server URL a hook recorded from the option (`server-url.json`), then `COGNEE_BASE_URL`
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM key: `llm-state/<session>.json`, then `llm-state.json`
@@ -1476,8 +1476,8 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 ## Troubleshooting
 
 **Terminal connects to cloud when you wanted local (or the reverse)**
-- The mode is routed by `COGNEE_BASE_URL`: configured anywhere (env file or shell) → cloud; otherwise → local. An exported `COGNEE_BACKEND=local` / `=cloud` overrides that for the terminal — see [Which mode wins](#which-mode-wins-and-how-to-switch).
-- `unset COGNEE_BASE_URL` does **not** go local: the env file re-injects the URL at the next launch. Export `COGNEE_BACKEND=local` instead.
+- The mode is routed by the server URL: the Cognee server URL option, or `COGNEE_BASE_URL` in the env file or shell when the option is empty → cloud; otherwise → local. An exported `COGNEE_BACKEND=local` / `=cloud` overrides that for the terminal — see [Which mode wins](#which-mode-wins-and-how-to-switch).
+- `unset COGNEE_BASE_URL` does **not** go local: the option or the env file supplies the URL again at the next launch. Export `COGNEE_BACKEND=local` instead.
 - Check what the terminal actually resolved: the status line's mode field shows it live, and `doctor.py` prints the decision with its cause (`Mode: Local — forced by COGNEE_BACKEND=local`).
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
@@ -1505,13 +1505,14 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 ## Configuration reference
 
 Config precedence:
-1. env vars (shell exports)
-2. `~/.cognee/.env` (one-time setup file, shared with the Codex plugin; loaded into the environment at process start, so every env var below can live here)
-3. defaults
+1. the plugin's options (keys, login, server URL — `/plugin`, Cognee Memory, Configure options)
+2. env vars (shell exports)
+3. `~/.cognee/.env` (one-time setup file, shared with the Codex plugin; loaded into the environment at process start, so every env var below can live here)
+4. defaults
 
 There is no `config.json`. Older versions wrote `~/.cognee-plugin/claude-code/config.json` and SessionStart read a `base_url` from it while the per-turn hooks did not, so a stale URL there could point the two halves of the plugin at different servers. SessionStart now deletes a leftover file; put everything in `~/.cognee/.env` instead.
 
-One exception sits above all three layers: the `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
+One exception sits above all four layers: the `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` mode switch. When exported, it pins the mode regardless of where the connection variables are defined — forced local ignores a configured `COGNEE_BASE_URL` entirely (it is scrubbed from the process environment), and forced cloud stays cloud even when the URL is missing. See [Which mode wins](#which-mode-wins-and-how-to-switch).
 
 `~/.cognee/.env` is created with a commented template on first session start (permissions `0600`; the path can be overridden with `COGNEE_ENV_FILE`). Run `doctor.py` to see which keys the file defines, which are overridden by shell exports, and — in the mode row — whether a backend switch forced the mode decision.
 
@@ -1545,7 +1546,7 @@ Since the file starts as a commented template, editing usually means uncommentin
 
 ```bash
 # Comments start with '#'; blank lines are ignored.
-COGNEE_BASE_URL="https://your-instance.cognee.ai"
+COGNEE_BACKEND=local
 COGNEE_PLUGIN_DATASET=my-project-memory # quotes are optional
 export LLM_MODEL="openai/gpt-4o-mini"   # a leading 'export ' is tolerated, so
                                         # shell profile lines paste verbatim
@@ -1553,9 +1554,9 @@ export LLM_MODEL="openai/gpt-4o-mini"   # a leading 'export ' is tolerated, so
 
 Keys are letters, digits, and underscores. Values are taken literally — no `$VAR` interpolation, no multi-line values. Malformed lines are skipped silently, never fatal, and process-critical variables (`PATH` and friends) are ignored by design.
 
-**Remove a variable** — delete (or comment out) its line in the editor. To switch modes you usually don't need to remove anything: keep both modes' variables in the file and export the switch instead — `export COGNEE_BACKEND=local` (see [Which mode wins](#which-mode-wins-and-how-to-switch)). Remove the `COGNEE_BASE_URL` line only when you want local to become the permanent default for every terminal.
+**Remove a variable** — delete (or comment out) its line in the editor. To switch modes you usually don't need to remove anything: keep both modes' variables in the file and export the switch instead — `export COGNEE_BACKEND=local` (see [Which mode wins](#which-mode-wins-and-how-to-switch)). Empty the server URL option (or remove a `COGNEE_BASE_URL` line) only when you want local to become the permanent default for every terminal.
 
-**Apply and verify** — changes take effect on the next `claude` launch: the session registers on its server at start. Hooks re-read the file in every process, so a `COGNEE_BASE_URL` edited mid-session is detected: the next prompt shows a one-time notice naming the old and new server, and a new session applies the change. If a value seems to be ignored, check whether the same variable is `export`ed in your shell: real exports always win over the file. The doctor's **Env File** row lists which keys the file defines and flags any that a shell export is overriding.
+**Apply and verify** — changes take effect on the next `claude` launch: the session registers on its server at start. Hooks re-read the file in every process, so a server URL changed mid-session (the option, or `COGNEE_BASE_URL` when the option is empty) is detected: the next prompt shows a one-time notice naming the old and new server, and a new session applies the change. If a value seems to be ignored, check whether the same variable is `export`ed in your shell: real exports win over the file, and the plugin's options win over both. The doctor's **Env File** row lists which keys the file defines and flags any that a shell export is overriding.
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
@@ -1564,7 +1565,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `cc` | Prefix for auto-generated session IDs |
-| `base_url` | `COGNEE_BASE_URL` | unset | Set to enable managed endpoint mode |
+| `base_url` | plugin option **Cognee server URL**; `COGNEE_BASE_URL` when the option is empty | unset | The server to connect to (Cognee Cloud or your own); unset runs the local server |
 | `managed_endpoint` | `COGNEE_MANAGED_ENDPOINT` | unset | `true` = the URL is an externally managed deployment: never boot a local fallback on its port; outages fail loudly |
 | `api_key` | plugin option **Cognee API key** | unset | API key; auto-minted in local mode |
 | mode switch | `COGNEE_BACKEND` | unset | `local` or `cloud` — pins the terminal's mode, overriding the URL rule; flips the Claude Code **and** Codex plugins |

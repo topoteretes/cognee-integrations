@@ -108,7 +108,9 @@ _TEMPLATE = """\
 # COGNEE_API_KEY="ck_..."
 # LLM_API_KEY="sk-..."
 
-## Cloud / remote mode — point the plugins at a Cognee instance:
+## Cloud / remote mode — the Claude Code plugin takes the server URL from its
+## options too (Cognee server URL, next to the API key); this line is used
+## only when that option is empty. The Codex plugin reads it from here:
 # COGNEE_BASE_URL="<your Cognee Cloud URL>"
 
 ## Local mode (default when COGNEE_BASE_URL is unset) — the plugin runs a
@@ -173,15 +175,16 @@ def _in_hook() -> bool:
 
 
 def _apply_url_option() -> None:
-    """Take the server URL from its option when the shell exports none.
+    """Take the server URL from its option.
 
-    Order: a real ``COGNEE_BASE_URL`` export, then the option, then
-    ~/.cognee/.env. A hook records the option's value so that a process with
-    no options (the status line) resolves the same server; an emptied option
-    removes the record.
+    Order: the option, then a ``COGNEE_BASE_URL`` export, then ~/.cognee/.env:
+    the shell and the file are used only when the option is empty, as the
+    option's description says. The Cognee API key option is sent to the server
+    this resolves, so a leftover export must never outrank the option. A hook
+    records the option's value so that a process with no options (the status
+    line, a skill's script) resolves the same server; an emptied option removes
+    the record.
     """
-    if os.environ.get("COGNEE_BASE_URL", "").strip():
-        return
     if _in_hook():
         url = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "").strip()
         try:
@@ -203,7 +206,7 @@ def _apply_url_option() -> None:
         except Exception:
             url = ""
     if url:
-        # Like an export: the file's own value does not replace it.
+        # Over any export; the file's own value does not replace it either.
         os.environ["COGNEE_BASE_URL"] = url
 
 

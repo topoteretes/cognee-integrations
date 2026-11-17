@@ -26,7 +26,7 @@
     "cognee_base_url": {
       "type": "string",
       "title": "Cognee server URL",
-      "description": "Your Cognee Cloud instance, such as https://your-instance.cognee.ai, or your own Cognee server. Leave empty to run Cognee locally on this machine. A COGNEE_BASE_URL in your shell or ~/.cognee/.env is used when this is empty.",
+      "description": "Your Cognee Cloud instance, such as https://your-instance.cognee.ai, or your own Cognee server. Leave empty to run Cognee locally on this machine. A COGNEE_BASE_URL in your shell or ~/.cognee/.env is used only when this is empty.",
       "default": ""
     },
     "cognee_api_key": {

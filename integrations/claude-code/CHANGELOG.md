@@ -32,8 +32,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Server URL option.** The Cognee server URL can be set in the options. A
-  `COGNEE_BASE_URL` in the shell or in `~/.cognee/.env` is used when it is empty.
+- **Server URL option.** The Cognee server URL is set in the options, next to the
+  Cognee API key, so Cloud is configured in one place. The option wins: a
+  `COGNEE_BASE_URL` in the shell or in `~/.cognee/.env` is used only when it is
+  empty, and the Cognee API key option is sent only to the URL that results. (An
+  export used to beat the option, which sent the key to a leftover server.)
 - **Relay for the skills' scripts.** Claude Code hands options to hooks only, so
   a script a skill runs has no key. A hook starts a relay (`scripts/_relay.py`)
   that runs the script as its own child and returns the output. It accepts only
@@ -176,9 +179,10 @@ did not clear the holds: 1.8.4 is held for the same three reasons as the publish
 this version, each checked with the validator (SDK-1411).
 
 **If you set up on 1.8.2 to 1.8.4,** you entered the Cloud URL and the keys as plugin
-options. This version does not read those options. Put the settings in `~/.cognee/.env`
-again (`COGNEE_BASE_URL`, `COGNEE_API_KEY`, and `LLM_API_KEY` for local mode); until you
-do, Cognee runs locally with defaults.
+options. 1.8.5 alone did not read them. 1.8.5 was not released on its own: 1.8.7, the
+version that ships, reads the server URL, the Cognee API key, the LLM API key and the
+embedding API key from the same options again, and ignores keys in `~/.cognee/.env`
+(see 1.8.7).
 
 ### Restored
 
@@ -190,7 +194,7 @@ do, Cognee runs locally with defaults.
   check, Ollama and custom LLM endpoints, the `cognee-cli` fallback, and the
   `cognee-report` server check and Notion export.
 - **Credentials and connection settings** are read from the shell and `~/.cognee/.env`
-  again, as in 1.8.1.
+  again, as in 1.8.1. (Replaced in 1.8.7: keys and the server URL are plugin options.)
 - **`cognee-forget.sh env`** (removed in 1.8.3).
 
 ### Removed

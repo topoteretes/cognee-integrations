@@ -200,7 +200,8 @@ def test_the_url_option_is_used_by_hooks_and_recorded_for_the_rest(tmp_path):
     assert _python(_URL, tmp_path, CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL=_REMOTE, **hook) == _REMOTE
     # A process with no options (the status line) resolves the same server.
     assert _python(_URL, tmp_path) == _REMOTE
-    # A real export wins over the option.
+    # The option wins over an export: the Cognee API key option goes to this
+    # URL, so a leftover export must not send it elsewhere.
     assert (
         _python(
             _URL,
@@ -209,11 +210,16 @@ def test_the_url_option_is_used_by_hooks_and_recorded_for_the_rest(tmp_path):
             CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL=_REMOTE,
             **hook,
         )
-        == "https://export.test"
+        == _REMOTE
     )
-    # An emptied option removes the record.
+    # So does the recorded option, in a process with no options.
+    assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test") == _REMOTE
+    # An emptied option removes the record; an export is then used.
     assert _python(_URL, tmp_path, **hook) == ""
     assert _python(_URL, tmp_path) == ""
+    assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test", **hook) == (
+        "https://export.test"
+    )
 
 
 def test_the_url_option_wins_over_the_env_file(tmp_path):
@@ -344,7 +350,9 @@ def test_the_forget_helper_says_why_no_key_was_sent(temp_home, mock_server):
     state = _start_relay(temp_home, _ELSEWHERE, "ck_option")
     try:
         env = _bare_env(temp_home)
-        env.update({"COGNEE_IDLE_DISABLED": "1", "COGNEE_BASE_URL": mock_server.url})
+        # The URL option outranks a shell COGNEE_BASE_URL; a local API URL is
+        # the address a shell can still aim a script at.
+        env.update({"COGNEE_IDLE_DISABLED": "1", "COGNEE_LOCAL_API_URL": mock_server.url})
         ran = subprocess.run(
             [bash, str(_SCRIPTS / "cognee-forget.sh"), "datasets"],
             env=env,
