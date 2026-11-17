@@ -30,14 +30,6 @@ import pytest
 from utils.statusline import write_json
 
 
-@pytest.fixture(autouse=True)
-def _needs_update_check(request):
-    if "suite" in request.fixturenames:
-        suite = request.getfixturevalue("suite")
-        if not suite.checks_for_updates:
-            pytest.skip(f"{suite.name}: no update check (SDK-1411)")
-
-
 def _marker(installed: str, latest: str) -> dict:
     return {
         "update_available": True,

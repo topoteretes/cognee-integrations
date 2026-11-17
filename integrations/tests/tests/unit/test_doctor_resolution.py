@@ -21,7 +21,6 @@ Windows workflow runs this suite rather than that script.
 
 from __future__ import annotations
 
-import importlib
 import json
 import time
 
@@ -29,17 +28,8 @@ import pytest
 
 
 @pytest.fixture
-def doctor(suite, isolated_modules, monkeypatch):
-    module = isolated_modules(suite, "doctor")
-    # The local server is the plugin's own unless a test says otherwise: the
-    # real check probes the port, which a developer's own server may answer.
-    if hasattr(module, "_server_owner"):
-        monkeypatch.setattr(module, "_server_owner", lambda: "")
-    # Load the settings layer now, as the doctor process does before any
-    # test sets a variable: the Claude Code plugin replaces the shell's
-    # connection settings with its options when that layer loads.
-    importlib.import_module("config")
-    return module
+def doctor(suite, isolated_modules):
+    return isolated_modules(suite, "doctor")
 
 
 @pytest.fixture
@@ -118,22 +108,14 @@ def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
 # ── API key source ─────────────────────────────────────────────────────────
 
 
-def test_api_key_source_env(doctor, suite, monkeypatch):
-    monkeypatch.setenv("COGNEE_API_KEY", "test-key-from-env")
-    if suite.keys_from_plugin_options:
-        # Run from a hook (options present), against a remote server: the
-        # Cloud key is never used for a local one.
-        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
-        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "test-key-from-env")
-        monkeypatch.setenv("COGNEE_BASE_URL", "https://tenant.cognee.ai")
-    expected = "Plugin option" if suite.keys_from_plugin_options else "ENV"
-    assert doctor._resolve_api_key_source() == expected
+def test_api_key_source_env(suite, doctor, monkeypatch):
+    monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
+    monkeypatch.setenv(suite.api_key_env, "test-key-from-env")
+    assert doctor._resolve_api_key_source() == suite.api_key_source_label
 
 
-def test_api_key_source_config(doctor, pc, suite, tmp_path, monkeypatch):
+def test_api_key_source_config(doctor, pc, tmp_path, monkeypatch):
     """No env key; a cached key file resolves to "Config"."""
-    if not suite.has_plugin_identity:
-        pytest.skip(f"{suite.name}: stores no key on disk")
     cache_file = tmp_path / "api_key.json"
     cache_file.write_text(json.dumps({"api_key": "cached-key", "base_url": ""}), encoding="utf-8")
     # codex's doctor.py defines its own _API_KEY_CACHE constant.
@@ -142,10 +124,8 @@ def test_api_key_source_config(doctor, pc, suite, tmp_path, monkeypatch):
     assert doctor._resolve_api_key_source() == "Config"
 
 
-def test_cached_api_key_remains_scoped_to_its_endpoint(pc, suite, tmp_path, monkeypatch):
+def test_cached_api_key_remains_scoped_to_its_endpoint(suite, pc, tmp_path, monkeypatch):
     """A key cached for another server must never be sent to this one."""
-    if not suite.has_plugin_identity:
-        pytest.skip(f"{suite.name}: stores no key on disk")
     configured = "http://managed-cognee.internal:8012"
     monkeypatch.setenv("COGNEE_BASE_URL", configured)
     cache_file = tmp_path / "runtime-api-key.json"
@@ -156,9 +136,9 @@ def test_cached_api_key_remains_scoped_to_its_endpoint(pc, suite, tmp_path, monk
     )
     assert pc.resolved_http_endpoint_auth() == (configured, "matching-key")
 
-    # A successful resolution exports the key into the process env so sibling
-    # hooks reuse it, so that has to be cleared before the mismatch case —
-    # otherwise the env hit would mask what the cache file says.
+    # Codex, Cursor and Antigravity export a resolved key into the process env
+    # so sibling hooks reuse it, so that has to be cleared before the mismatch
+    # case — otherwise the env hit would mask what the cache file says.
     monkeypatch.delenv("COGNEE_API_KEY", raising=False)
     cache_file.write_text(
         json.dumps({"api_key": "wrong-key", "base_url": "http://other:8012"}), encoding="utf-8"
@@ -218,176 +198,3 @@ def test_breaker_open(doctor, suite, isolated_modules):
         encoding="utf-8",
     )
     assert doctor._resolve_circuit_breaker().startswith("Open")
-
-
-# ── doctor run from a shell reports what session start decided (SDK-1411) ──
-
-
-@pytest.fixture
-def options_doctor(suite, doctor):
-    if not suite.keys_from_plugin_options:
-        pytest.skip(f"{suite.name}: has no plugin options")
-    return doctor
-
-
-def _launch_record(pc, cwd, facts: dict, key: str = "sess-doctor") -> None:
-    pc._write_map_record(key, {"session_id": "s1", "conn_uuid": "c1", "cwd": str(cwd)})
-    pc.record_launch_facts(key, facts)
-
-
-def test_doctor_reads_the_cloud_launch_record_without_options(
-    options_doctor, pc, project_dir, monkeypatch
-):
-    doctor = options_doctor
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    _launch_record(
-        pc,
-        project_dir,
-        {
-            "cloud_key_option_set": True,
-            "llm_key_option_set": False,
-            "embedding_key_option_set": False,
-            "llm_provider": "",
-            "llm_model": "",
-            "key_source": "plugin_option",
-            # Anything that is not a boolean or a name is dropped.
-            "api_key": "ck_never_written",
-        },
-    )
-    assert "ck_never_written" not in (pc._SESSIONS_MAP_DIR / "sess-doctor.json").read_text()
-    source = doctor._resolve_api_key_source()
-    assert source.startswith("Plugin option (as of session start, ")
-
-
-def test_doctor_shows_the_recorded_provider_in_local_mode(
-    options_doctor, pc, project_dir, monkeypatch
-):
-    doctor = options_doctor
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    _launch_record(
-        pc,
-        project_dir,
-        {
-            "cloud_key_option_set": False,
-            "llm_key_option_set": True,
-            "llm_provider": "anthropic",
-            "llm_model": "anthropic/claude-sonnet",
-            "key_source": "local_owner_key",
-        },
-    )
-    llm = doctor._resolve_llm()
-    assert "Configured provider (anthropic, model anthropic/claude-sonnet)" in llm
-    assert "(as of session start, " in llm
-    assert doctor._resolve_api_key_source().startswith("Local server (as of session start")
-
-
-def test_doctor_says_when_local_mode_has_no_llm(options_doctor, pc, project_dir, monkeypatch):
-    doctor = options_doctor
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    _launch_record(
-        pc,
-        project_dir,
-        {"llm_key_option_set": False, "llm_provider": "", "key_source": "local_owner_key"},
-    )
-    llm = doctor._resolve_llm()
-    assert llm.startswith("None — no LLM API key option set")
-    assert "(as of session start, " in llm
-
-
-def test_doctor_names_a_provider_recorded_without_its_key(
-    options_doctor, pc, project_dir, monkeypatch
-):
-    doctor = options_doctor
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    _launch_record(
-        pc,
-        project_dir,
-        {"llm_key_option_set": False, "llm_provider": "anthropic", "key_source": "local_owner_key"},
-    )
-    llm = doctor._resolve_llm()
-    assert llm.startswith("None — LLM provider option is anthropic but no LLM API key option set")
-
-
-@pytest.mark.parametrize("owner", ["managed_endpoint", "unowned_server"])
-def test_doctor_leaves_the_llm_of_a_server_it_did_not_start_alone(
-    options_doctor, pc, project_dir, monkeypatch, owner
-):
-    """A docker or systemd Cognee on the port has its own LLM: "no LLM API key
-    option set" would be false for it."""
-    doctor = options_doctor
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    _launch_record(
-        pc,
-        project_dir,
-        {"llm_key_option_set": False, "llm_provider": "", "key_source": "local_owner_key"},
-    )
-    monkeypatch.setattr(doctor, "_server_owner", lambda: owner)
-    llm = doctor._resolve_llm()
-    assert llm == f"Server not started by the plugin ({owner}) — its own LLM settings apply"
-
-
-def test_doctor_names_the_removed_observer_for_a_record_of_an_older_version(
-    options_doctor, pc, project_dir, monkeypatch
-):
-    """Before any session of this version has started, the newest record is
-    one 1.8.3 wrote: the Claude observer was the LLM, and it is gone."""
-    doctor = options_doctor
-    monkeypatch.setenv("CLAUDE_CWD", str(project_dir))
-    _launch_record(pc, project_dir, {"key_source": "local_owner_key"})
-    record = pc._read_map_record("sess-doctor")
-    record["launch_facts"]["observer"] = {"active": True, "reason": "", "model": "haiku"}
-    pc._write_map_record("sess-doctor", record)
-    llm = doctor._resolve_llm()
-    assert llm.startswith("Claude observer (as of session start, ")
-    assert "set the LLM API key option" in llm
-
-
-def test_doctor_with_options_reports_what_they_configure(options_doctor, monkeypatch):
-    doctor = options_doctor
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", raising=False)
-    assert doctor._computed_llm().startswith("None — no LLM API key option set")
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-option")
-    assert doctor._computed_llm() == "Configured provider (openai (default), model Default)"
-
-
-def test_doctor_shows_the_embedder_kept_from_the_observer(options_doctor, pc, monkeypatch):
-    """A shell has no options, so doctor reads the pin session start wrote."""
-    doctor = options_doctor
-    for name in ("EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS"):
-        monkeypatch.delenv(name, raising=False)
-    assert doctor._resolve_embedding() == ("Default", "Default")
-    pc._PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-    (pc._PLUGIN_DIR / "embedder.json").write_text(
-        json.dumps(
-            {
-                "EMBEDDING_PROVIDER": "fastembed",
-                "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5",
-                "EMBEDDING_DIMENSIONS": "384",
-            }
-        ),
-        encoding="utf-8",
-    )
-    model, dims = doctor._resolve_embedding()
-    assert model.startswith("BAAI/bge-small-en-v1.5 (fastembed, kept")
-    assert dims == "384"
-    # The user's own embedding option wins over the pin.
-    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    assert doctor._resolve_embedding()[0] == "text-embedding-3-small"
-
-
-def test_doctor_without_a_record_says_it_cannot_see_the_options(options_doctor):
-    doctor = options_doctor
-    assert "not visible from a shell" in doctor._resolve_api_key_source()
-    assert "not visible from a shell" in doctor._resolve_llm()
-
-
-def test_doctor_lists_refused_env_file_names_as_ignored(options_doctor, tmp_path, monkeypatch):
-    doctor = options_doctor
-    path = tmp_path / ".env"
-    path.write_text("COGNEE_API_KEY=ck_secret\nCOGNEE_PLUGIN_DATASET=x\n", encoding="utf-8")
-    monkeypatch.setenv("COGNEE_ENV_FILE", str(path))
-    line = doctor._resolve_env_file()
-    assert "COGNEE_API_KEY ignored (set in the plugin options)" in line
-    assert "ck_secret" not in line

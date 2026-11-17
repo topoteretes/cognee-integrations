@@ -30,6 +30,7 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     pc = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.delenv("COGNEE_SESSION_ID", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_DATASET", raising=False)
     monkeypatch.delenv("COGNEE_PLUGIN_READ_DATASET_IDS", raising=False)
@@ -49,14 +50,7 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     # key must be the PRINCIPAL's: the fake scopes GET /datasets and dataset
     # creation to the calling user, like the server, and the datasets below
     # are seeded for the principal.
-    monkeypatch.setenv("COGNEE_API_KEY", "test-api-key")
-    # Claude Code sends a local server (the mock listens on this machine) its
-    # owner key, never the key option (SDK-1411): seed that owner key.
-    owner_key = (
-        ident.seed_owner_key("default_user@example.com")
-        if suite.keys_from_plugin_options
-        else "test-api-key"
-    )
+    monkeypatch.setenv(suite.api_key_env, "test-api-key")
     # The launch as SessionStart left it: registered under conn_uuid on dataset "a".
     sid, conn = pc.ensure_launch_record(HOST, "/w", dataset="a")
     ident.agents_register({"agent_session_name": conn, "session_id": sid})
@@ -70,7 +64,6 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     e = Env()
     e.switch, e.pc, e.server, e.synced = switch, pc, mock_server, synced
     e.host, e.session_id, e.conn = HOST, sid, conn
-    e.key = owner_key
     e.rec = lambda: pc._read_map_record(HOST)
     return e
 
@@ -344,7 +337,6 @@ def test_switch_creates_an_unlisted_dataset_for_the_principal(env):
     assert result["switched"] is True
     created = [c for c in env.server.calls if c["path"] == DATASETS and c["method"] == "POST"]
     assert created and created[0]["json"]["name"] == "brand-new"
-    assert created[0]["headers"].get("X-Api-Key") == env.key
     assert env.server.identity.datasets["brand-new"]["ownerId"] == env.server.identity.principal_id
 
 
@@ -424,6 +416,7 @@ def test_main_list_json_and_missing_record(env, capsys, monkeypatch):
 
     # No flag, no hook env, and discovery finds nothing: a clear "no record" exit.
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
+    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.setattr(
         env.switch, "resolve_host_key_outside_hook", lambda cwd="": ("", "not_found")
     )

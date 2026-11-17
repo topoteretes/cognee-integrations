@@ -604,24 +604,14 @@ def test_sanitize_cli_prints_the_clean_text_and_fails_closed(suite, temp_home):
 
 
 def test_shared_policy_modules_are_identical_across_hosts():
-    from utils.suites import ALL_SUITES, CLAUDE, CODEX
+    from utils.suites import ALL_SUITES, CLAUDE
 
-    reference = (CLAUDE.scripts_dir / "_capture_policy.py").read_bytes()
-    for other in ALL_SUITES:
-        if other is not CLAUDE:
-            path = other.scripts_dir / "_capture_policy.py"
-            assert path.read_bytes() == reference, f"{other.name}/_capture_policy.py"
-    # Claude Code's _remember_http.py differs on purpose (SDK-1411): it refreshes
-    # no credits after a remember and names no key variable in its 401 message.
-    # The other hosts still share one copy.
-    reference = (CODEX.scripts_dir / "_remember_http.py").read_bytes()
-    for other in ALL_SUITES:
-        if other not in (CLAUDE, CODEX):
-            path = other.scripts_dir / "_remember_http.py"
-            assert path.read_bytes() == reference, f"{other.name}/_remember_http.py"
-    claude = (CLAUDE.scripts_dir / "_remember_http.py").read_text(encoding="utf-8")
-    assert "credits" not in claude and "COGNEE_API_KEY" not in claude
-    assert "the server rejected the key" in claude
+    for name in ("_capture_policy.py", "_remember_http.py", "capture_deny_paths.txt"):
+        reference = (CLAUDE.scripts_dir / name).read_bytes()
+        for other in ALL_SUITES:
+            if other is CLAUDE:
+                continue
+            assert (other.scripts_dir / name).read_bytes() == reference, f"{other.name}/{name}"
 
 
 def test_coding_memory_modules_are_identical_in_claude_code_and_codex():
@@ -634,20 +624,11 @@ def test_coding_memory_modules_are_identical_in_claude_code_and_codex():
         assert (CODEX.scripts_dir / name).read_bytes() == reference, name
 
 
-def test_sync_payload_log_names_fields_but_never_their_values(suite, run_hook, temp_home, request):
-    server_kwargs = {}
-    if suite.keys_from_plugin_options:
-        # Claude Code takes no key from the shell, and the default localhost URL
-        # has no owner key to look up, so the sync would stop before logging
-        # its payload. Point it at the mock (a local server) with an owner key.
-        mock_server = request.getfixturevalue("mock_server")
-        mock_server.identity.seed_owner_key("default_user@example.com")
-        server_kwargs["service_url"] = mock_server.url
+def test_sync_payload_log_names_fields_but_never_their_values(suite, run_hook, temp_home):
     result = run_hook(
         suite,
         "sync-session-to-graph.py",
         stdin={"session_id": "s1", "prompt": "SENTINEL-4b2e <private>x</private>"},
-        **server_kwargs,
     )
     assert result.returncode == 0, result.stderr
     lines = [
@@ -661,3 +642,20 @@ def test_sync_payload_log_names_fields_but_never_their_values(suite, run_hook, t
     assert "payload_preview" not in log_text
     assert "SENTINEL-4b2e" not in log_text
     assert "prompt" in log_text and "payload_bytes" in log_text
+
+
+def test_the_deny_list_is_a_data_file_and_losing_it_refuses_every_path(
+    policy, tmp_path, monkeypatch
+):
+    """The patterns never captured live in a data file beside the module
+    (SDK-1411). The list still holds the secret files it always held, and a
+    missing or empty file refuses every path instead of none."""
+    for pattern in (".env", "*.pem", "id_rsa*", ".netrc", "*/.aws/credentials", "credentials.*"):
+        assert pattern in policy._DENY_PATHS
+    assert policy._DENY_PATHS != ("*",)
+    monkeypatch.setattr(policy, "_DENY_PATHS_FILE", "no-such-file.txt")
+    assert policy._load_deny_paths() == ("*",)
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# nothing\n\n", encoding="utf-8")
+    monkeypatch.setattr(policy, "_DENY_PATHS_FILE", str(empty))
+    assert policy._load_deny_paths() == ("*",)

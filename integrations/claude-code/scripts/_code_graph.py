@@ -80,8 +80,6 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from _net import open_url
-
 # The one line that differs between the claude-code and codex copies.
 _INTEGRATION = "claude-code"
 
@@ -466,7 +464,7 @@ def do_index_repo(
     *,
     index_vectors=False,
     run_in_background=True,
-    opener=open_url,
+    opener=urllib.request.urlopen,
     timeout=120.0,
 ):
     """Submit one repository for code-graph indexing.
@@ -507,7 +505,7 @@ def do_index_repo(
         except Exception:
             pass
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — the server rejected the key" % e.code
+            msg = "unauthorized (HTTP %s) — check the Cognee API key option" % e.code
         elif e.code == 400 and "unsupported content_type" in detail.lower():
             # An older server rejects the content_type value outright, and says
             # so in those words. Matching on a bare "content_type" substring
@@ -581,7 +579,7 @@ def poll_code_graph_status(
     dataset_id,
     deadline_seconds,
     *,
-    opener=open_url,
+    opener=urllib.request.urlopen,
     interval_seconds=3.0,
     request_timeout=10.0,
 ):
@@ -639,7 +637,7 @@ def index_repo(
     *,
     index_vectors=False,
     wait_seconds=0.0,
-    opener=open_url,
+    opener=urllib.request.urlopen,
 ):
     """Index one repo AND record its state file (the opt-in the hooks honor).
 
@@ -750,7 +748,7 @@ def _clear_retry_failure(state: dict) -> None:
         state.pop(field, None)
 
 
-def reingest_if_changed(cwd, service_url, api_key, *, opener=open_url) -> dict:
+def reingest_if_changed(cwd, service_url, api_key, *, opener=urllib.request.urlopen) -> dict:
     """Stop-hook freshness pass: re-submit the cwd's indexed repo if it changed.
 
     Returns a small outcome dict for logging; {} when there is nothing to do
@@ -874,7 +872,7 @@ def autoindex_on_session_start(
     api_key,
     *,
     is_local_server=True,
-    opener=open_url,
+    opener=urllib.request.urlopen,
 ) -> dict:
     """Index (or refresh) the repo a session opened in. Never raises.
 
@@ -945,37 +943,22 @@ def autoindex_on_session_start(
         return {"error": str(exc)[:200]}
 
 
-def _resolved_auth(service_url: str) -> str:
-    """What authorizes a request to ``service_url``, or "" when nothing does."""
-    # The opt-out keeps _plugin_common from re-execing this command into the
-    # plugin venv: nothing here needs it.
-    previous = os.environ.get("COGNEE_PLUGIN_IN_VENV")
-    os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
-    try:
-        import _plugin_common
-
-        return _plugin_common._api_key_with_source(service_url)[0]
-    except Exception:
-        return ""
-    finally:
-        if previous is None:
-            os.environ.pop("COGNEE_PLUGIN_IN_VENV", None)
-        else:
-            os.environ["COGNEE_PLUGIN_IN_VENV"] = previous
-
-
 def main(argv):
     """CLI: ``index <repo-path-or-url> [dataset]`` or ``dataset <path>``.
 
     argv mirrors the sibling scripts: service_url, api_key, command, spec,
-    dataset, index_vectors, wait_seconds. An empty ``api_key`` (how
-    cognee-index-repo.sh calls this) is resolved here. The ``dataset`` command prints the
+    dataset, index_vectors, wait_seconds. The ``dataset`` command prints the
     code dataset covering a path (empty line when that path is not indexed) —
     dataset names carry a path digest, so callers resolve the name from the
     checkout instead of reconstructing it.
     """
     a = list(argv) + [""] * 7
     service_url, api_key, command, spec = a[0], a[1], a[2], a[3]
+    if api_key == "-":
+        # The caller holds no key: resolve it the way the hooks do.
+        import _plugin_common
+
+        api_key = _plugin_common.shell_api_key(service_url)
     dataset = a[4]
     index_vectors = str(a[5]).strip().lower() in ("1", "true", "yes", "on")
     try:
@@ -992,7 +975,7 @@ def main(argv):
         print(
             json.dumps(
                 {
-                    "error": "usage: _code_graph.py <service_url> <api_key> "
+                    "error": "usage: _code_graph.py <service_url> - "
                     "index <repo-path-or-url> [dataset] [index_vectors] "
                     "[wait_seconds] | dataset [path]",
                     "status": 2,
@@ -1000,11 +983,6 @@ def main(argv):
             )
         )
         return
-    if not api_key:
-        # Run from a shell (cognee-index-repo.sh): the request is authorized
-        # here, in this process, the way every plugin script is, so nothing
-        # is passed on the command line.
-        api_key = _resolved_auth(service_url)
     result = index_repo(
         service_url,
         api_key,

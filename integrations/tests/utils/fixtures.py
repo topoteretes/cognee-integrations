@@ -44,22 +44,6 @@ if not _SELECTED_SUITES:
     raise pytest.UsageError(f"Unknown COGNEE_TEST_SUITE: {_REQUESTED_SUITE!r}")
 
 
-@pytest.fixture(autouse=True)
-def _restore_os_environ():
-    """Put ``os.environ`` back after every test.
-
-    The plugin modules a unit test imports write to ``os.environ`` directly
-    (``apply_cognee_env``, the option loader), outside ``monkeypatch``. Left
-    behind, those values reach every later test and, through ``build_env``,
-    every later hook subprocess.
-    """
-    saved = dict(os.environ)
-    yield
-    if dict(os.environ) != saved:
-        os.environ.clear()
-        os.environ.update(saved)
-
-
 @pytest.fixture(params=_SELECTED_SUITES, ids=lambda s: s.name)
 def suite(request) -> Suite:
     """Run the test once per available host integration suite."""

@@ -983,22 +983,6 @@ def _doctor_hint() -> str:
     return f"{tool} --json shows the mode/URL"
 
 
-def _require_shell_auth(url: str) -> None:
-    """Exit 2, before any request, when a remote server has no key in this process.
-
-    A Cognee Cloud key is a plugin option Claude Code passes to the plugin's
-    hooks only, so a recap run from a shell has none; an unauthenticated
-    request could only 401. The check and its message live in _plugin_common.
-    """
-    try:
-        from _env_file import cloud_key
-        from _plugin_common import require_shell_auth
-    except ImportError:
-        return
-    # A remote server's key is the option alone (no lookup, no request).
-    require_shell_auth(url, cloud_key(url), "cognee-recap")
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.projects = [p.strip() for p in (args.projects or "").split(",") if p.strip()]
@@ -1006,7 +990,6 @@ def main(argv: list[str] | None = None) -> int:
     server: Server | None = None
     url = _local_api_url()
     doctor = _doctor_hint()
-    _require_shell_auth(url)
     try:
         server = Server(args.session_key)
         url = server.url
@@ -1020,7 +1003,11 @@ def main(argv: list[str] | None = None) -> int:
             events = collect_timeline(server, args.topic, cutoff, records)
     except urllib.error.HTTPError as exc:
         # HTTPError is a URLError: name the status before "unreachable" can claim it.
-        hint = " — the server rejected the key" if exc.code in (401, 403) else ""
+        hint = (
+            " — check the Cognee API key option / the plugin identity"
+            if exc.code in (401, 403)
+            else ""
+        )
         print(
             f"[cognee-recap] Cognee server at {url} answered HTTP {exc.code} "
             f"({str(exc.reason)[:60]}){hint}; no recap ({doctor}).",
@@ -1071,4 +1058,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     sys.exit(main())

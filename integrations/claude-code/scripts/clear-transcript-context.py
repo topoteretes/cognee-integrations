@@ -25,7 +25,7 @@ LOG_FILE = PLUGIN_DIR / "hook.log"
 
 
 def _enabled() -> bool:
-    return os.environ.get(ENV_NAME, "").strip().lower() in TRUTHY
+    return os.environ.get("COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE", "").strip().lower() in TRUTHY
 
 
 def _log(event: str, detail: dict | None = None) -> None:

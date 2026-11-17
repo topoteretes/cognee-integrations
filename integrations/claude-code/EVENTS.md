@@ -6,6 +6,14 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 
 | Logger and legacy name | Canonical name |
 |---|---|
+| `claude-observer:completion` | `observer.completion` |
+| `claude-observer:completion_failed` | `observer.completion_failed` |
+| `claude-observer:handler_exception` | `observer.handler_exception` |
+| `claude-observer:probe` | `observer.probe` |
+| `claude-observer:retire` | `observer.retire` |
+| `claude-observer:signal` | `observer.signal` |
+| `claude-observer:started` | `observer.started` |
+| `claude-observer:stopped` | `observer.stopped` |
 | `clear-transcript-context:claude_context_cleared` | `transcript.cleared` |
 | `clear-transcript-context:clear_context_failed` | `transcript.failed` |
 | `clear-transcript-context:clear_context_invalid_payload` | `transcript.invalid_payload` |
@@ -32,22 +40,6 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `exit-watcher:pidfile_write_failed` | `exit_watcher.pidfile_write_failed` |
 | `exit-watcher:started` | `exit_watcher.started` |
 | `hook:users_me_lookup_failed` | `config.users_me_lookup_failed` |
-| `hook:local_owner_key_lookup_failed` | `config.local_owner_key_lookup_failed` |
-| `hook:local_owner_key_lookup` | `config.local_owner_key_lookup` |
-| `hook:local_key_unavailable` | `config.local_key_unavailable` |
-| `hook:local_owner_key_minted` | `config.local_owner_key_minted` |
-| `hook:local_server_hides_keys` | `config.local_server_hides_keys` |
-| `hook:local_owner_key_rejected` | `config.local_owner_key_rejected` |
-| `hook:env_upgrade_notice_flag_failed` | `env.upgrade_notice_flag_failed` |
-| `hook:env_storage_notice_flag_failed` | `env.storage_notice_flag_failed` |
-| `hook:option_notices_failed` | `env.option_notices_failed` |
-| `hook:launch_facts_failed` | `session.launch_facts_failed` |
-| `hook:launch_facts_write_failed` | `session.launch_facts_write_failed` |
-| `hook:server_env_file_failed` | `server.env_file_failed` |
-| `hook:local_runtime_unavailable` | `server.local_runtime_unavailable` |
-| `hook:local_runtime_check_failed` | `server.local_runtime_check_failed` |
-| `hook:cognee_runtime_ready` | `server.cognee_runtime_ready` |
-| `hook:cognee_install_marker_write_failed` | `server.cognee_install_marker_write_failed` |
 | `hook:activity_log_write_failed` | `activity.log_write_failed` |
 | `hook:activity_touch_failed` | `activity.touch_failed` |
 | `hook:agent_lifecycle_error` | `agent.lifecycle_error` |
@@ -68,6 +60,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:final_sync_once_released` | `sync.sync_once_released` |
 | `hook:hook_notice_failed` | `notice.failed` |
 | `hook:boot_refused_server_present` | `boot.refused_server_present` |
+| `hook:boot_refused_no_llm` | `boot.refused_no_llm` |
+| `hook:local_boot_skipped_no_llm` | `boot.skipped_no_llm` |
 | `hook:bootstrap_complete` | `bootstrap.complete` |
 | `hook:bootstrap_owns_ready` | `bootstrap.owns_ready` |
 | `hook:bootstrap_registered` | `bootstrap.registered` |
@@ -112,6 +106,15 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:context_lookup_short_prompt` | `recall.lookup_short_prompt` |
 | `hook:context_lookup_sanitize_failed` | `recall.lookup_sanitize_failed` |
 | `hook:control_plane_request_failed` | `shared_memory.control_plane_request_failed` |
+| `hook:credits_fetch_empty` | `credits.fetch_empty` |
+| `hook:credits_fetch_failed` | `credits.fetch_failed` |
+| `hook:credits_marker_write_failed` | `credits.marker_write_failed` |
+| `hook:credits_payment_cleared` | `credits.payment_cleared` |
+| `hook:credits_payment_required` | `credits.payment_required` |
+| `hook:credits_refresh_error` | `credits.refresh_error` |
+| `hook:credits_refresh_skipped_no_tenant` | `credits.refresh_skipped_no_tenant` |
+| `hook:credits_tenant_not_in_overview` | `credits.tenant_not_in_overview` |
+| `hook:credits_turn_refresh` | `credits.turn_refresh` |
 | `hook:dataset_ensure_failed` | `dataset.ensure_failed` |
 | `hook:dataset_ensure_http_status` | `dataset.ensure_http_status` |
 | `hook:dataset_ensure_redirect_failed` | `dataset.ensure_redirect_failed` |
@@ -126,6 +129,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:drain_lock_error` | `drain.lock_error` |
 | `hook:drain_lock_release_failed` | `drain.lock_release_failed` |
 | `hook:endpoint_mode_selected` | `endpoint.mode_selected` |
+| `hook:env_file_template_created` | `env.file_template_created` |
 | `hook:exit_watcher_already_running` | `exit.watcher_already_running` |
 | `hook:exit_watcher_launch_failed` | `exit.watcher_launch_failed` |
 | `hook:exit_watcher_log_open_failed` | `exit.watcher_log_open_failed` |
@@ -168,13 +172,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:legacy_resolved_dir_remove_failed` | `legacy.resolved_dir_remove_failed` |
 | `hook:legacy_resolved_unlink_failed` | `legacy.resolved_unlink_failed` |
 | `hook:list_datasets_failed` | `datasets.list_failed` |
-| `hook:embedder_pin_failed` | `llm.embedder_pin_failed` |
-| `hook:embedder_pinned` | `llm.embedder_pinned` |
-| `hook:llm_note_failed` | `llm.note_failed` |
 | `hook:llm_state_clear_failed` | `llm.state_clear_failed` |
 | `hook:llm_state_write_failed` | `llm.state_write_failed` |
-| `hook:local_llm` | `llm.local` |
-| `hook:local_llm_error` | `llm.local_error` |
 | `hook:managed_endpoint_boot_refused` | `boot.refused_managed_endpoint` |
 | `hook:managed_endpoint_down` | `endpoint.managed_down` |
 | `hook:map_create_failed` | `map.create_failed` |
@@ -184,6 +183,13 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:missing_payload_session_id` | `missing.payload_session_id` |
 | `hook:mode_decision` | `runtime.decision` |
 | `hook:no_session_id` | `session.session_id` |
+| `hook:observer_applied` | `observer.applied` |
+| `hook:observer_error` | `observer.error` |
+| `hook:observer_record_failed` | `observer.record_failed` |
+| `hook:observer_note_failed` | `observer.note_failed` |
+| `hook:observer_refused` | `observer.refused` |
+| `hook:observer_shim_start_failed` | `observer.shim_start_failed` |
+| `hook:observer_skipped` | `observer.skipped` |
 | `hook:pending_unlink_failed` | `pending.unlink_failed` |
 | `hook:plugin_agent_provisioned` | `plugin.agent_provisioned` |
 | `hook:plugin_capability_probe_failed` | `plugin.capability_probe_failed` |
@@ -281,6 +287,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:switch_aborted_handle_cleanup_failed` | `switch.aborted_handle_cleanup_failed` |
 | `hook:switch_crashed` | `switch.crashed` |
 | `hook:switch_failed` | `switch.failed` |
+| `hook:mod_pick_applied` | `mod.pick_applied` |
+| `hook:mod_pick_failed` | `mod.pick_failed` |
+| `hook:mod_listing_start_failed` | `mod.listing_start_failed` |
+| `hook:key_options_notice` | `keys.options_notice` |
+| `hook:key_options_notice_failed` | `keys.options_notice_failed` |
 | `hook:switch_old_handle_released` | `switch.old_handle_released` |
 | `hook:switch_sync_forced_past_failure` | `switch.sync_forced_past_failure` |
 | `hook:switch_sync_not_started` | `switch.sync_not_started` |
@@ -350,9 +361,12 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:fatal_no_session_id` | `idle_watcher.fatal_no_session_id` |
 | `idle-watcher:idle_trigger` | `idle_watcher.idle_trigger` |
 | `idle-watcher:improve_throttled` | `idle_watcher.improve_throttled` |
+| `idle-watcher:llm_key_auth_failed` | `idle_watcher.llm_key_auth_failed` |
 | `idle-watcher:llm_key_check_error` | `idle_watcher.llm_key_check_error` |
+| `idle-watcher:llm_key_check_inconclusive` | `idle_watcher.llm_key_check_inconclusive` |
 | `idle-watcher:llm_key_check_skipped` | `idle_watcher.llm_key_check_skipped` |
 | `idle-watcher:llm_key_not_set` | `idle_watcher.llm_key_not_set` |
+| `idle-watcher:llm_key_ok` | `idle_watcher.llm_key_ok` |
 | `idle-watcher:pidfile_read_failed` | `idle_watcher.pidfile_read_failed` |
 | `idle-watcher:pidfile_replaced` | `idle_watcher.pidfile_replaced` |
 | `idle-watcher:pidfile_unlink_failed` | `idle_watcher.pidfile_unlink_failed` |
@@ -401,7 +415,6 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.cloud_worker_error`: cloud worker error.
 - `cloud.cloud_capture_rejected`: the server permanently rejected a queued capture (400/413/422); it was expired so the queue keeps moving.
 - `cloud.cloud_worker_idle_exit`: the worker exited with no queued work and no session active for 30 minutes; the next hook restarts it.
-- `cloud.cloud_worker_target_changed`: a hook published a different server URL or key than the worker started with (an option was changed); the worker exited and the next hook starts one with the current options. Items queued for the old key are not re-sent and expire after 7 days.
 - `cloud.cloud_delivery_bookkeeping_failed`: a capture was delivered but updating counters or queuing the follow-up improve failed; the event is not re-sent.
 - `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
 - `cloud.context_cache_refresh_failed`: a digest refresh failed; it is retried with exponential backoff and the last good digest stays in use.

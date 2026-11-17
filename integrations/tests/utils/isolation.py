@@ -38,7 +38,6 @@ ISOLATED_MODULES = (
     "_credits",
     "_cognee_client",
     "_env_file",
-    "_net",
     "_logfiles",
     "_file_lock",
     "_deadlines",
@@ -59,6 +58,7 @@ ISOLATED_MODULES = (
     "_remember_http",
     "_code_graph",
     "_coding_memory",
+    "_observer",
     "cognee_plugin",
     "cognee_statusline_render",
     "doctor",
@@ -80,12 +80,21 @@ ISOLATED_MODULES = (
 #:     reconfigure their own stdout to UTF-8, other hook scripts don't — this
 #:     keeps every child's output UTF-8 so run_hook can decode it as such.
 #:     Tests that probe encoding behavior override it via extra_env/build_env.
+#:   - COGNEE_LLM_OBSERVER=false keeps SessionStart from starting the Claude
+#:     observer shim (a detached process) on a machine with `claude` on PATH;
+#:     the observer tests opt back in.
+#:   - CLAUDE_PLUGIN_OPTION_LOCAL_MODELS=true is Claude Code's local models
+#:     option: with no LLM chosen its SessionStart starts no local server, so
+#:     the tests that boot one choose this (the mock server has no LLM). The
+#:     tests of the no-LLM pause remove it.
 DETERMINISTIC_ENV = {
     "COGNEE_PLUGIN_IN_VENV": "1",
     "COGNEE_IDLE_DISABLED": "1",
     "COGNEE_UPDATE_CHECK": "off",
     "COGNEE_LAZY_BOOTSTRAP": "0",
     "PYTHONIOENCODING": "utf-8",
+    "COGNEE_LLM_OBSERVER": "false",
+    "CLAUDE_PLUGIN_OPTION_LOCAL_MODELS": "true",
 }
 
 #: Env-var prefixes scrubbed from the inherited environment so a developer's
@@ -93,33 +102,15 @@ DETERMINISTIC_ENV = {
 _SCRUBBED_PREFIXES = ("COGNEE_", "LLM_", "CLAUDE_", "CODEX_", "AGY_")
 
 
-#: Set by the plugin itself, per HOME, on import (``apply_cognee_env``). A value
-#: left by an earlier test's home would read as a user's own storage setting.
-_SCRUBBED_NAMES = ("SYSTEM_ROOT_DIRECTORY", "DATA_ROOT_DIRECTORY", "CACHE_ROOT_DIRECTORY")
-
-#: Database provider settings: the plugin names any of these in its storage
-#: notice, so a developer's export (or an earlier test's) would show it.
-_SCRUBBED_STORAGE_PREFIXES = ("DB_", "VECTOR_DB_", "GRAPH_DATABASE_")
-
-
-def _is_scrubbed(key: str) -> bool:
-    return (
-        key.startswith(_SCRUBBED_PREFIXES)
-        or key.startswith(_SCRUBBED_STORAGE_PREFIXES)
-        or key in _SCRUBBED_NAMES
-    )
-
-
 def scrub_env_dict(env: dict[str, str]) -> dict[str, str]:
-    """Return ``env`` without any developer-exported Cognee/plugin variables,
-    the plugin's own storage directories or a database provider setting."""
-    return {k: v for k, v in env.items() if not _is_scrubbed(k)}
+    """Return ``env`` without any developer-exported Cognee/plugin variables."""
+    return {k: v for k, v in env.items() if not k.startswith(_SCRUBBED_PREFIXES)}
 
 
 def scrub_cognee_env(monkeypatch) -> None:
-    """Delete the same variables for one test (in-process)."""
+    """Delete all Cognee and host-integration vars for one test (in-process)."""
     for key in list(os.environ):
-        if _is_scrubbed(key):
+        if key.startswith(_SCRUBBED_PREFIXES):
             monkeypatch.delenv(key, raising=False)
 
 
@@ -151,48 +142,9 @@ def build_env(
         env["COGNEE_BASE_URL"] = service_url
         env.setdefault("COGNEE_PLATFORM_API_URL", service_url)
     if api_key is not None:
-        env["COGNEE_API_KEY"] = api_key
+        env[suite.api_key_env] = api_key
     if extra:
         env.update(extra)
-    return with_plugin_options(suite, env)
-
-
-#: The Claude Code plugin reads every credential and connection setting only
-#: from its plugin options, which Claude Code exports to hook processes as
-#: CLAUDE_PLUGIN_OPTION_<KEY>: the variable each option becomes, by option.
-_CLAUDE_PLUGIN_OPTIONS = {
-    "COGNEE_BASE_URL": "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL",
-    "COGNEE_API_KEY": "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY",
-    "LLM_API_KEY": "CLAUDE_PLUGIN_OPTION_LLM_API_KEY",
-    "LLM_PROVIDER": "CLAUDE_PLUGIN_OPTION_LLM_PROVIDER",
-    "LLM_MODEL": "CLAUDE_PLUGIN_OPTION_LLM_MODEL",
-    "EMBEDDING_PROVIDER": "CLAUDE_PLUGIN_OPTION_EMBEDDING_PROVIDER",
-    "EMBEDDING_MODEL": "CLAUDE_PLUGIN_OPTION_EMBEDDING_MODEL",
-    "EMBEDDING_DIMENSIONS": "CLAUDE_PLUGIN_OPTION_EMBEDDING_DIMENSIONS",
-    "EMBEDDING_API_KEY": "CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY",
-}
-#: Claude Code exports the options only to hook processes, which it marks with
-#: CLAUDE_PLUGIN_ROOT; a process without it reads the URL from settings.json.
-_HOOK_PROCESS_MARKER = "CLAUDE_PLUGIN_ROOT"
-
-
-def with_plugin_options(suite: Suite, env: dict[str, str]) -> dict[str, str]:
-    """Hand a test's settings to the Claude Code plugin the way Claude Code does.
-
-    Tests say "the user configured this" by setting COGNEE_BASE_URL /
-    COGNEE_API_KEY / LLM_* / EMBEDDING_*; for the Claude Code suite that means
-    the plugin option, since the plugin ignores the plain variables. An
-    explicit option in ``env`` wins. With any option set, the process is
-    marked as a hook process (the only kind Claude Code gives options to),
-    unless ``env`` already decides that.
-    """
-    if not suite.keys_from_plugin_options:
-        return env
-    for var, option in _CLAUDE_PLUGIN_OPTIONS.items():
-        if env.get(var) and option not in env:
-            env[option] = env[var]
-    if any(env.get(option) for option in _CLAUDE_PLUGIN_OPTIONS.values()):
-        env.setdefault(_HOOK_PROCESS_MARKER, str(suite.scripts_dir.parent))
     return env
 
 

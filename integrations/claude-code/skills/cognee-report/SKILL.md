@@ -42,6 +42,10 @@ Token counts are estimates at four characters per token. Older audit logs are
 clipped; say so if exact context counters are unavailable. A recalled or injected
 item is not proof that it changed an answer.
 
+This report measures delivery, not whether memory changed an answer. Controlled
+comparisons of task outcomes with and without memory are a separate developer
+harness in the plugin's repository; it is not part of the installed plugin.
+
 Keep recommendations tied to measured failures. Compare equal windows when
 possible. Do not infer seven-day post-release results from a short smoke test.
 Do not use export flags unless the user asks to export the report.

@@ -16,8 +16,6 @@ when_to_use: >-
 
 Search both session memory and the permanent knowledge graph, optionally filtered by data category.
 
-In Cloud mode this skill can't authenticate from the shell; automatic recall and capture still work. The command then exits 2 and says why (the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only): pass that on and stop.
-
 ## Visible search progress
 
 Before running a Cognee search, send one short user-visible progress sentence,
@@ -46,11 +44,14 @@ Knowledge is organized into three categories via `node_set`:
 - **Server first.** Search goes through the **running Cognee server**
   (`POST /api/v1/recall`) via the wrapper below — the source of truth in both
   local and cloud mode.
-- **Server only.** When the server is unreachable the wrapper prints
-  `UNREACHABLE` and exits 1: the search was not run, which is never "not
-  found". Unsure which mode you are in?
+- **`cognee-cli` is a last resort, not an alternative.** It is reachable only on a
+  machine holding a cognee **source checkout**, and in cloud mode the plugin's
+  venv is never built at all. Use it only when the server is genuinely
+  unreachable *and* that checkout exists. Unsure which mode you are in?
   `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh" --json` reports `mode`,
   `server_url` and `reachable` without importing cognee.
+- **Empty CLI output is never proof of absence.** Ground-truth against the server
+  before concluding anything.
 
 ## Instructions
 
@@ -80,25 +81,34 @@ conceptual questions that name no symbol ("how does auth work here?").
 
 ### Filter by category (optional)
 
-Categories (`user_context` / `project_docs` / `agent_actions`) filter by node set. Pass one with `--category`:
+Categories (`user_context` / `project_docs` / `agent_actions`) filter a graph search by node set:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 5 --category project_docs
 ```
 
+A category search is answered by the server only; it has no `cognee-cli` fallback.
+
 ### Ground-truth a suspicious result (debugging)
 
-The wrapper's answer already comes from the server, which is authoritative: there is no second source to check it against. If a search returns empty but you expect content, widen it once with `--graph` and a larger `top_k`, and report what the server said.
+The server is authoritative, and the wrapper asks the server first. If a search returns empty but you expect content, run the wrapper once more against the dataset by name — **do not** conclude "not found" from empty `cognee-cli` output:
 
-Do not call the server by hand with `curl`. The key is never printed or exported to your shell (in local mode it belongs to the plugin's own server and is looked up from it; a Cloud key reaches only the plugin's hooks), so a hand-rolled request 401s and looks like a server fault when nothing is wrong.
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 5 --graph --dataset <dataset-name> --user-picked
+```
 
-(If the response is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results". A `401` means the server rejected the key.)
+Send no request of your own: the wrapper resolves the key (in local mode it is never exported to your shell) and never prints it. If the output is an `{"error": ...}` object rather than a list, the server was reachable but rejected/failed the request — that's an error, **not** "no results".
 
-### Server unreachable
+### Fallback only — server unreachable
 
-The wrapper prints `UNREACHABLE` and exits 1: no search ran. Say the server is
-unreachable and show the user `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`
-output instead; do not report "not found".
+`cognee-cli` is a thin client over the same server and can print **empty stdout even when content exists**. It also requires a cognee source checkout, so on a normal install it is simply unavailable — an absent CLI is not a Cognee fault to report. Use it only when the server is down *and* a checkout exists, and treat empty output as *inconclusive*, never as "no results":
+
+```bash
+cognee-cli recall "$ARGUMENTS" -k 5 -f json
+```
+
+If the CLI is missing, say the server is unreachable and show the user
+`"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"` output instead.
 
 ## Nothing found? Check the recall mode first
 
@@ -187,11 +197,11 @@ The session cache is never a search source; it reaches the graph through the syn
 | Need a specific category | `cognee-search.sh "<query>" 5 --category <user_context\|project_docs\|agent_actions>` |
 | Auto context insufficient | `cognee-search.sh "<query>" 10` (memory is graph + code only; the session cache is written, never searched) |
 | **Server says empty and the user is recalling something** | **Auto recall: report that nothing matched. Restricted: offer the other readable datasets (`list-datasets.py --others` + AskUserQuestion), then `cognee-search.sh "<query>" 10 --graph --dataset-id <id> --user-picked`** |
-| **Result empty but you expect content** | **Widen once (`--graph`, larger `top_k`) before concluding "not found"; never a hand-rolled `curl`** |
+| **Result empty but you expect content** | **Ground-truth with the wrapper against the dataset by name (above) before concluding "not found"** |
 
 ### Inspectable evidence
 
-For source inspection, use the compact index and expand only the useful references: In Cloud mode `index` and `details` exit 2 before sending anything (the Cognee Cloud key reaches the plugin's hooks only, so they cannot authenticate from the shell); report that and stop. `explain` reads a local file and still works.
+For source inspection, use the compact index and expand only the useful references:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" index "retry policy"

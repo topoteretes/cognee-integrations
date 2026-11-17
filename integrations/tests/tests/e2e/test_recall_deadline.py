@@ -109,15 +109,9 @@ def test_a_silent_server_costs_one_deadline_and_the_hook_still_exits_clean(
     )
     assert not [d for e, d in events if e == "recall_server_down"], events
     assert not [d for e, d in events if e == "recall_budget_exceeded"], events
-    if suite.keys_from_plugin_options:
-        # A local server: its owner-key login reached the socket and timed out,
-        # so no memory request is sent without a key; the scopes still report
-        # the lookup's timeout as slow.
-        assert black_hole.accepted >= 1, black_hole.accepted
-    else:
-        assert black_hole.accepted >= 2, (
-            f"both memory requests must have reached the socket: {black_hole.accepted}"
-        )
+    assert black_hole.accepted >= 2, (
+        f"both memory requests must have reached the socket: {black_hole.accepted}"
+    )
 
     summary = next(
         (d for e, d in events if e in ("context_lookup_empty", "context_lookup_hit")), None
@@ -128,8 +122,6 @@ def test_a_silent_server_costs_one_deadline_and_the_hook_still_exits_clean(
     # Each request ran for about one deadline — and so did the recall as a
     # whole: they were in flight together, so neither waited on the other.
     for label, record in per_scope.items():
-        if suite.keys_from_plugin_options:
-            break  # no request was sent: the wait was the key lookup's
         assert DEADLINE_S * 1000 * 0.9 <= record["elapsed_ms"] <= DEADLINE_S * 1000 * 2, (
             label,
             record,

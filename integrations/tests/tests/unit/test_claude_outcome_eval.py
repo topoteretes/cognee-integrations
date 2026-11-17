@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-# Out of the plugin since 1.8.2 (SDK-1411): a developer tool, not shipped.
+# Out of the plugin since 1.8.6 (SDK-1411): a developer tool, not shipped.
 SCRIPTS = Path(__file__).resolve().parents[2] / "claude_outcome_eval"
 spec = importlib.util.spec_from_file_location("outcome_eval", SCRIPTS / "outcome_eval.py")
 oe = importlib.util.module_from_spec(spec)

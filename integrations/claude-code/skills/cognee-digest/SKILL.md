@@ -19,8 +19,6 @@ server recorded, plus the lessons the graph holds for that period. Where
 `cognee-standup` answers "what did I do yesterday", the digest answers "what
 happened this week and what did we decide".
 
-In Cloud mode this skill can't authenticate from the shell; automatic recall and capture still work. The command then exits 2 and says why (the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only): pass that on and stop.
-
 ## Instructions
 
 1. Run the recap wrapper (server-only, no LLM call; up to ~30 s for a busy
@@ -88,7 +86,8 @@ In Cloud mode this skill can't authenticate from the shell; automatic recall and
   `session_id`, `date`, `learned_at`, `text`) for a machine-readable digest
   (e.g. to post to Slack).
 - The wrapper exits 1 with one stderr line when the server is unreachable,
-  answers with an HTTP status (401/403: the server rejected the key) or refuses the identity; point at
+  answers with an HTTP status (401/403: check the Cognee API key option / the plugin
+  identity) or refuses the identity; point at
   `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`.
 - Several Claude Code sessions in the same directory? Add
   `--session-key <host session id>` to resolve the dataset from the right

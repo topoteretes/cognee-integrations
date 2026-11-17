@@ -178,8 +178,8 @@ def recall(
     code_query=None,
     dataset_ids="",
     *,
-    timeout=None,
     node_name=None,
+    timeout=None,
 ):
     """Breaker-wrapped recall. Returns a list, an error-envelope dict, or UNREACHABLE.
 
@@ -197,8 +197,6 @@ def recall(
         # which would just hammer the same down server).
         return _error(503, "cognee temporarily unavailable (circuit open, retry in ~%ds)" % retry)
 
-    # A category filter is passed on only when one was asked for.
-    extra = {"node_name": node_name} if node_name else {}
     result = do_recall(
         service_url,
         api_key,
@@ -212,8 +210,8 @@ def recall(
         # code query as a context profile.
         code_query=code_query,
         dataset_ids=dataset_ids,
+        node_name=node_name,
         timeout=timeout or _RECALL_TIMEOUT,
-        **extra,
     )
     if result == UNREACHABLE:
         record_failure("unreachable", service_url=service_url, reason="unreachable")

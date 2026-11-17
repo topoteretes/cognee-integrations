@@ -27,8 +27,7 @@ def harness(suite, hook_module, isolated_modules, monkeypatch):
     monkeypatch.setattr(watcher, "POLL_SECONDS", 0.01)
     monkeypatch.setattr(watcher, "_log", lambda event, **detail: events.append((event, detail)))
     monkeypatch.setattr(watcher, "_owns_pidfile", lambda: True)
-    # The update check is gone from the Claude Code plugin (SDK-1411).
-    monkeypatch.setattr(watcher, "_run_update_check", lambda: None, raising=False)
+    monkeypatch.setattr(watcher, "_run_update_check", lambda: None)
     monkeypatch.setattr(watcher, "_check_llm_key", lambda config: None)
     monkeypatch.setattr(pc, "hook_log", lambda *a, **k: None)
 

@@ -33,6 +33,9 @@ from pathlib import Path
 from .isolation import scrub_env_dict
 from .suites import Suite
 
+#: The key the mock server accepts (``utils.fixtures.DEFAULT_TEST_API_KEY``).
+_DEFAULT_TEST_API_KEY = "test-api-key"
+
 RUNNER = "hook_runner.py"
 
 #: The plugin-root placeholder each host substitutes into hook commands.
@@ -52,6 +55,7 @@ QUIET_ENV = {
     "COGNEE_IDLE_DISABLED": "1",
     "COGNEE_UPDATE_CHECK": "off",
     "COGNEE_LAZY_BOOTSTRAP": "0",
+    "COGNEE_LLM_OBSERVER": "false",
 }
 
 
@@ -182,6 +186,10 @@ def host_env(
         )
     else:
         env.update(CLAUDE_PLUGIN_ROOT=str(plugin_root), CLAUDE_PLUGIN_DATA=str(data))
+    if suite.api_key_env != "COGNEE_API_KEY":
+        # claude-code's keys are plugin options: the host hands the hooks the
+        # key the user entered there, whatever ~/.cognee/.env says.
+        env[suite.api_key_env] = _DEFAULT_TEST_API_KEY
     if extra:
         env.update(extra)
     return env
@@ -339,21 +347,6 @@ def write_env_file(home: Path, url: str, api_key: str, *, bom: bool = False) -> 
     data = f'COGNEE_BASE_URL="{url}"\nCOGNEE_API_KEY={api_key}\n'.encode("utf-8")
     (home / ".cognee").mkdir(parents=True, exist_ok=True)
     (home / ".cognee" / ".env").write_bytes(b"\xef\xbb\xbf" + data if bom else data)
-
-
-def plugin_options(suite: Suite, url: str, api_key: str) -> dict[str, str]:
-    """What Claude Code exports to hooks for a plugin configured for Cloud.
-
-    The Claude Code plugin reads its key (and URL) from its plugin options, not
-    from ``~/.cognee/.env``; the other hosts have no options. Pass the result as
-    ``env_extra``.
-    """
-    if not suite.keys_from_plugin_options:
-        return {}
-    return {
-        "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": url,
-        "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY": api_key,
-    }
 
 
 class HostSession:

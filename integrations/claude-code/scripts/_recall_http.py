@@ -37,8 +37,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from _net import is_loopback_url, open_url
-
 UNREACHABLE = "UNREACHABLE"
 
 # Transport-exception verdicts (classify_transport_exception). Only DOWN is
@@ -92,10 +90,6 @@ def _build_https_opener():
         ctx = ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         ctx = ssl.create_default_context()
-        if sys.platform == "win32":
-            # The default context already reads the Windows certificate store;
-            # there is no file bundle to look for.
-            return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
         _cert_loaded = False
         for path in filter(
             None,
@@ -121,13 +115,6 @@ def _build_https_opener():
 
 
 _HTTPS_OPENER = _build_https_opener()
-
-
-def _default_open(req, timeout):
-    """This machine is reached directly, never through a proxy (see ``_net``)."""
-    if is_loopback_url(req.full_url):
-        return open_url(req, timeout=timeout)
-    return _HTTPS_OPENER.open(req, timeout=timeout)
 
 
 def coerce_top_k(value, default=5):
@@ -244,11 +231,13 @@ def do_recall(
     code_query=None,
     dataset_ids="",
     *,
+    node_name=None,
     opener=None,
     timeout=120.0,
-    node_name=None,
 ):
     """Query the server. Return results (list), an error envelope (dict), or ``UNREACHABLE``.
+
+    ``node_name`` keeps only the named categories (node sets) of a graph search.
 
     ``dataset_ids`` (a list, or a comma-separated string from argv) addresses
     the search by UUID and takes precedence over ``dataset`` — under shared
@@ -269,6 +258,9 @@ def do_recall(
         body["code_query"] = parsed_code_query
     if session_id:
         body["session_id"] = session_id
+    node_names = [str(n).strip() for n in (node_name or []) if str(n).strip()]
+    if node_names and "graph" in body["scope"]:
+        body["node_name"] = node_names
     # Scope the search to the caller's plugin dataset (resolved by the shell from
     # COGNEE_PLUGIN_DATASET → default). All plugin writes target
     # that single dataset, so searching elsewhere only adds noise from unrelated
@@ -298,11 +290,6 @@ def do_recall(
         body.update(fields)
     if context_profile:
         body["context_profile"] = context_profile
-    # A category filter (node sets), for a graph search only.
-    node_names = [str(n).strip() for n in (node_name or []) if str(n).strip()]
-    if node_names and "graph" in body["scope"]:
-        body["node_name"] = node_names
-        body["node_name_filter_operator"] = "OR"
     headers = {"Content-Type": "application/json"}
     # Always attach the key when present: cognee >=1.2.2 enforces auth on its
     # API routes even on localhost (the local key is auto-minted at bootstrap),
@@ -313,7 +300,7 @@ def do_recall(
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
     )
-    _open = opener if opener is not None else _default_open
+    _open = opener if opener is not None else _HTTPS_OPENER.open
     try:
         with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
@@ -330,7 +317,7 @@ def do_recall(
             )
             return []
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — the server rejected the key" % e.code
+            msg = "unauthorized (HTTP %s) — check the Cognee API key option" % e.code
         else:
             msg = "server returned HTTP %s for /api/v1/recall" % e.code
             # Name what was searched and pass the server's own reason on: the

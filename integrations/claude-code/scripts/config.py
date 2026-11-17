@@ -1,12 +1,10 @@
 """Shared configuration for the Cognee Claude Code plugin.
 
 Loads settings from (in priority order):
-  1. The plugin options in Claude Code (credentials, Cloud URL, LLM and
-     embedding settings), mapped onto the environment by _env_file
-  2. Environment variables (runtime overrides of tuning settings)
-  3. Env file (~/.cognee/.env — the plugin's non-secret COGNEE_* tuning
-     settings only, injected into os.environ with setdefault)
-  4. Defaults
+  1. Environment variables (runtime overrides)
+  2. Env file (~/.cognee/.env — one-time setup, injected into os.environ
+     with setdefault, so it sits just below real shell exports)
+  3. Defaults
 
 There is deliberately no config file. An earlier ``~/.cognee-plugin/config.json``
 layer was read by SessionStart but not by the per-turn hooks, so a stale
@@ -14,18 +12,18 @@ layer was read by SessionStart but not by the per-turn hooks, so a stale
 (SDK-466); the env file covers every key it held, from one place every process
 reads. SessionStart deletes a leftover file so it cannot mislead anyone.
 
-Cloud mode is on when the Cloud URL option is set. `export COGNEE_BACKEND=local`
-(or `=cloud`) flips one terminal — COGNEE_CLAUDE_BACKEND does the same for this
-plugin only, beating the shared name. A forced mode is pinned: forced local
-scrubs the cloud connection vars from the process environment (see
-_env_file), and forced cloud keeps is_cloud_mode() true even when connection
-vars are missing, so the plugin attempts the cloud connection and the status
-line reports what is wrong instead of silently falling back to local.
+The env file may hold both modes' variables at once; cloud wins when both are
+configured. `export COGNEE_BACKEND=local` (or `=cloud`) flips one terminal —
+COGNEE_CLAUDE_BACKEND does the same for this plugin only, beating the shared
+name. A forced mode is pinned: forced local scrubs the cloud connection vars
+from the process environment (see _env_file), and forced cloud keeps
+is_cloud_mode() true even when connection vars are missing, so the plugin
+attempts the cloud connection and the status line reports what is wrong
+instead of silently falling back to local.
 
 Two modes, both over HTTP — the hooks never import cognee in-process:
   - Local: the plugin boots a Cognee server on localhost and talks to it
-  - Cloud: connect to a remote Cognee server via the Cloud URL and API key
-    options (the key is read from its option, never from another variable)
+  - Cloud: connect to a remote Cognee server via COGNEE_BASE_URL + the Cognee API key option
 """
 
 from __future__ import annotations
@@ -38,7 +36,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from _env_file import cloud_key, load_env_file
+from _env_file import (
+    cloud_key_option,
+    llm_key_option,
+    load_env_file,
+    login_email_option,
+    login_password_option,
+)
 from _logfiles import append_line as _append_log_line
 from event_names import event_fields
 
@@ -56,16 +60,13 @@ _DEFAULTS = {
     "session_prefix": "claude",  # agent name; session id is "{agent}_{host_session_id}"
     "top_k": 3,
     "backend": "auto",
-    # The local server's default user, which the plugin always logs in as to
-    # look up its owner key. Not configurable: a server this plugin starts is
-    # given exactly these (session-start), and any other server is reached
-    # with the URL and API-key options.
     "user_email": "default_user@example.com",
     "user_password": "default_password",
     # Cloud / remote
     "base_url": "",
     "api_key": "",
     # Local mode
+    "llm_api_key": "",
     "llm_model": "",
     # Memory steering: assert Cognee as the preferred memory over Claude Code's
     # built-in auto memory (MEMORY.md). Opt out with COGNEE_PREFER_MEMORY=false.
@@ -161,17 +162,49 @@ def sanitize_dataset_name(name: str, fallback: str = "agent_sessions") -> str:
     return cleaned
 
 
+def _env_settings() -> dict:
+    """Every setting in ``_ENV_MAP``, read by its own name, in the map's order.
+
+    Spelled out one by one so that the plugin's files show which variables it
+    reads; a test keeps this list and ``_ENV_MAP`` equal.
+    """
+    return {
+        "COGNEE_BACKEND": os.environ.get("COGNEE_BACKEND", ""),
+        "COGNEE_CLAUDE_BACKEND": os.environ.get("COGNEE_CLAUDE_BACKEND", ""),
+        "COGNEE_AGENT_NAME": os.environ.get("COGNEE_AGENT_NAME", ""),
+        "COGNEE_PLUGIN_DATASET": os.environ.get("COGNEE_PLUGIN_DATASET", ""),
+        "COGNEE_SESSION_STRATEGY": os.environ.get("COGNEE_SESSION_STRATEGY", ""),
+        "COGNEE_SESSION_PREFIX": os.environ.get("COGNEE_SESSION_PREFIX", ""),
+        "COGNEE_BASE_URL": os.environ.get("COGNEE_BASE_URL", ""),
+        "COGNEE_MANAGED_ENDPOINT": os.environ.get("COGNEE_MANAGED_ENDPOINT", ""),
+        "LLM_MODEL": os.environ.get("LLM_MODEL", ""),
+        "COGNEE_PREFER_MEMORY": os.environ.get("COGNEE_PREFER_MEMORY", ""),
+        "COGNEE_PLUGIN_IDENTITY": os.environ.get("COGNEE_PLUGIN_IDENTITY", ""),
+        "COGNEE_SHARED_AGENT_MEMORY": os.environ.get("COGNEE_SHARED_AGENT_MEMORY", ""),
+        "COGNEE_COGNIFY_POLL_INTERVAL": os.environ.get("COGNEE_COGNIFY_POLL_INTERVAL", ""),
+        "COGNEE_REMEMBER_WAIT_SECONDS": os.environ.get("COGNEE_REMEMBER_WAIT_SECONDS", ""),
+        "COGNEE_STATUS_REQUEST_TIMEOUT": os.environ.get("COGNEE_STATUS_REQUEST_TIMEOUT", ""),
+        "COGNEE_SESSION_ID": os.environ.get("COGNEE_SESSION_ID", ""),
+    }
+
+
 def load_config() -> dict:
-    """Load merged config: defaults → env vars (the env file is already in os.environ)."""
+    """Load merged config: defaults, then the settings (the env file is already loaded)."""
     config = dict(_DEFAULTS)
 
-    for env_key, config_key in _ENV_MAP.items():
-        val = os.environ.get(env_key, "")
+    for env_key, val in _env_settings().items():
         if val:
-            config[config_key] = val
-    # The Cloud key comes from its plugin option alone, and only for a server
-    # it is the key for (never this machine's own server).
-    config["api_key"] = cloud_key()
+            config[_ENV_MAP[env_key]] = val
+
+    # The keys come from the plugin options only (see _env_file).
+    config["api_key"] = cloud_key_option()
+    config["llm_api_key"] = llm_key_option()
+    # So does the login for a server without an API key; the built-in default
+    # user of the plugin's own local server otherwise.
+    if login_email_option():
+        config["user_email"] = login_email_option()
+    if login_password_option():
+        config["user_password"] = login_password_option()
 
     raw_dataset = str(config.get("dataset") or "")
     if raw_dataset.strip().lower() == "auto":
@@ -227,7 +260,7 @@ def get_session_id(config: dict, cwd: Optional[str] = None) -> str:
     kept stable across the launch's separate hook processes via the host-keyed
     map (see ``resolve_cognee_session_id``). It is the single scoping key for all
     saves/recalls. The host (Claude) session id is read from the in-process
-    ``COGNEE_SESSION_KEY`` purely as the local correlation key.
+    ``COGNEE_SESSION_REF`` purely as the local correlation key.
 
     Hooks call this after setting the host session key from their payload, so the
     resolver finds the launch's id in the map. An explicit ``COGNEE_SESSION_ID``

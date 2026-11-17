@@ -27,7 +27,7 @@ Forgetting is a four-step process against the **running Cognee server**: sync th
 
 Deleting a document removes its raw data, its derived graph knowledge, and — best-effort — the session memory *contaminated* by it: Q&A turns whose answers actually cited the deleted graph elements, plus the feedback and distilled guidance that descend from those turns. This is **targeted, not whole-session**: a turn that merely discussed the topic without citing the deleted elements survives, and agent **trace** entries are not matched at all. So deleting the documents is what makes forgetting durable — say that plainly when confirming, and don't promise the session cache is now free of the topic.
 
-All server access goes through the `cognee-forget.sh` helper. It resolves the server URL from the plugin's options and the key from the plugin's own local server (local mode). In Cloud mode the key reaches the plugin's hooks only, so the helper exits 2 with an explanation. It **always** sends `X-Api-Key` — in cloud and local mode alike, since the server enforces auth even on localhost. Do not bypass it with raw `curl`: the key is never printed or exported to your shell, so raw requests 401.
+All server access goes through the `cognee-forget.sh` helper. It resolves the base URL and API key the same way the other skills do (shell env → `~/.cognee/.env` → the auto-minted local key in `api_key.json`) and **always** sends `X-Api-Key` — in cloud and local mode alike, since the server enforces auth even on localhost. Do not bypass it with raw `curl`: in local mode the key is never exported to your shell, so raw requests 401.
 
 Every helper API command prints the JSON response followed by a final `HTTP <status>` line — always check it. The underlying endpoints are documented in the server's Swagger UI at `$COGNEE_BASE_URL/docs` (local: `http://localhost:8011/docs`) — consult it if a response shape doesn't match your server version.
 
@@ -85,28 +85,26 @@ Tell the user exactly what was deleted (and what was checked but kept, if the ma
 
 ## Error handling
 
-- **Helper exits 2 ("no API key resolved")**: Cloud mode: the Cognee Cloud key is a plugin option that Claude Code passes to the plugin's hooks only, so this helper cannot authenticate from a shell — tell the user to delete the data from the Cognee Cloud dashboard instead. Local mode: the key comes from the local server, which may be down — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
-- **HTTP 401**: a key was sent but rejected — it doesn't match this server.
+- **Helper exits 2 ("no API key resolved")**: the plugin has no key for this server. Cloud mode: the Cognee API key is a plugin option (run `/plugin`, select Cognee Memory, then Configure options), and a script reaches it through the relay a session's hooks keep up, so send a prompt in a session first. Local mode: the key is minted at session start — start a new session or run `cognee-doctor.sh`. Never fall back to unauthenticated requests.
+- **HTTP 401**: a key was sent but rejected — it doesn't match this server. Check the Cognee API key option against the server URL.
 - **HTTP 404 on a data id**: it was already deleted (possibly by an earlier step of this same run) — not an error, move on.
 - An `{"error": ...}` response body means the server was reachable but the request failed — surface it; do **not** conclude the data was deleted.
 
 ## Broader deletions — explicit user request only
 
-The helper has one command for each broader scope. `forget-memory` and `forget-dataset` each take the id of the dataset **the user named**: run `cognee-forget.sh datasets`, find the row whose `name` is that dataset, and use its `id`. This is the step-2 dataset only when the user asked about the current one. Each takes exactly one id, and anything after it is refused. Every command prints the response followed by an `HTTP <status>` line, like the other commands:
-
-```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-memory <dataset_id>
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-dataset <dataset_id>
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-everything --confirm-delete-all
-```
+The helper can also delete more than a single document. Each of these is irreversible:
 
 | Command | Effect |
 |---------|--------|
-| `forget <dataset_id> <data_id>` | Forget one document (the default for this skill) |
-| `forget-memory <dataset_id>` | Clear the dataset's memory (graph + vector) but keep raw data |
-| `forget-dataset <dataset_id>` | Delete the **entire dataset** |
-| `forget-everything --confirm-delete-all` | Delete **all** of the user's data, in every dataset they own |
+| `cognee-forget.sh forget <dataset_id> <data_id>` | Forget one document (the default for this skill) |
+| `cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory` | Clear the dataset's memory (graph + vector) but keep raw data |
+| `cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset` | Delete the **entire dataset** |
+| `cognee-forget.sh forget-everything --confirm-delete-all` | Delete **all** user data |
 
-`forget-everything` names no dataset, so it runs only with the literal `--confirm-delete-all` argument and nothing else.
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-forget.sh" forget-dataset <dataset_id> --confirm-delete-dataset
+```
 
-Never run any of these three unless the user explicitly and unambiguously asked for that scope. Before running one, tell the user exactly what will be deleted and that it is irreversible, and get a yes: for `forget-memory` and `forget-dataset` show the dataset's name and id; for `forget-everything` say that every dataset they own is deleted. The key is never printed or exported to the shell, so do not try to call the endpoint by hand.
+Send no request of your own: the helper holds the key and never prints it.
+
+Never use the dataset-wide or `everything` forms unless the user explicitly and unambiguously asked for that scope, and confirm first either way.

@@ -10,6 +10,201 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.7]
+
+### Changed
+
+- **Keys are plugin options.** The Cognee API key, the LLM API key and the
+  embedding API key are options of the plugin (`/plugin`, Cognee Memory,
+  Configure options), kept in Claude Code's secure store. The plugin reads a key
+  nowhere else. `COGNEE_API_KEY`, `COGNEE_PRINCIPAL_API_KEY`, `LLM_API_KEY` and
+  `EMBEDDING_API_KEY` in the shell or in `~/.cognee/.env` are ignored, and
+  session start says so until the option is set. Everything that is not a key
+  (provider, model, dataset, tuning) still comes from `~/.cognee/.env`.
+- **The login is a pair of options.** A server without an API key is logged in
+  to with the login email and login password options. `COGNEE_USER_EMAIL`,
+  `COGNEE_USER_PASSWORD` and a `DEFAULT_USER_*` export are no longer read.
+- **No key in a variable or on disk.** Plugin processes no longer hand each other
+  the key in an environment variable, and the option is never written to
+  `api_key.json`. Only the key minted on the plugin's own local server is
+  cached, as before. The LLM and embedding keys exist in the environment of the
+  local server the plugin starts, and nowhere else.
+
+### Added
+
+- **Server URL option.** The Cognee server URL is set in the options, next to the
+  Cognee API key, so Cloud is configured in one place. The option wins: a
+  `COGNEE_BASE_URL` in the shell or in `~/.cognee/.env` is used only when it is
+  empty, and the Cognee API key option is sent only to the URL that results. (An
+  export used to beat the option, which sent the key to a leftover server.)
+- **Relay for the skills' scripts.** Claude Code hands options to hooks only, so
+  a script a skill runs has no key. A hook starts a relay (`scripts/_relay.py`)
+  that runs the script as its own child and returns the output. It accepts only
+  the plugin's own scripts, on a Unix socket only the user can reach, or on a
+  loopback port with a one-time code where Unix sockets do not exist.
+
+- **Settings from `~/.cognee/.env`, each by its own name.** The file is no
+  longer copied into the plugin's environment as a whole. Each setting the
+  scripts read is handled by its own name, from a generated list
+  (`scripts/_env_names.py`). Anything else in the file (database, vector store
+  and other cognee settings) is handed to the local server and the installer
+  when the plugin starts them, and never enters the plugin's own environment.
+  A proxy or certificate setting for the hooks' own requests must now be
+  exported in the shell.
+- **The shell scripts hold no key.** `cognee-forget.sh` and
+  `cognee-index-repo.sh` no longer keep the key in a shell variable or pass it
+  on a command line: `scripts/_authed_request.py` sends each request.
+- **The key goes to the configured server only.** A script the relay runs sends
+  the Cognee API key option only to the server the relay resolved from the
+  options. A shell that points the script at another address gets no key and is
+  told why, and a shell's `COGNEE_ENV_FILE` is no longer passed to it.
+- **The broad forgets take exactly their arguments and a typed confirmation.**
+  `cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset` and
+  `forget-memory <dataset_id> --confirm-clear-memory`; every other command refuses
+  a missing or extra argument, so a mistyped single-document delete can never
+  remove a dataset.
+- **The redaction deny-list is a data file** (`scripts/capture_deny_paths.txt`).
+  If it cannot be read, every path is refused.
+- **Local models are a choice.** With no LLM set up for the local server (no LLM key
+  option, no observer, no provider that needs no key, no key in the server's own
+  `.env`), the plugin no longer starts it: Cognee would fall back on its own to
+  GLiNER and fastembed, downloading torch on the first memory build and changing the
+  embedder of existing datasets. Session start says how to choose, the status row
+  shows `no_llm_chosen`, and captures are kept until a server runs. The new **local
+  models** option turns that fallback on deliberately. A server the plugin starts
+  without that option gets `GLINER_AUTO_INSTALL=false`.
+- **Anthropic and Mistral get their SDK.** `LLM_PROVIDER=anthropic` or `mistral`
+  installs Cognee with the matching extra, and a venv without the SDK is reinstalled;
+  before, every memory build failed with `ModuleNotFoundError`.
+
+### Upgrade note
+
+- Enter your keys once in the plugin's options. Until then Cognee Cloud is not
+  connected. If your LLM key was in the shell or `~/.cognee/.env`, local memory
+  pauses until you enter it in the options: the local server is not started, and
+  captures are kept until it is. The other choices use a different embedder, so they
+  need a new dataset: the local models option (no LLM key), or the Claude observer
+  with `COGNEE_LLM_OBSERVER=true`.
+
+## [1.8.6]
+
+Changes for the plugin directory's validator, on top of the restored 1.8.5 (SDK-1411).
+The hooks module changes as described below, and `cognee-forget.sh env` is gone.
+
+### Changed
+
+- **The hooks module only draws.** `hooks/register.ts` starts no program, opens
+  no connection and writes no file. It reads the row's data, the dataset list
+  and the activity marker from files the hooks keep, and holds two values in its
+  own store.
+- **A dataset pick applies with the next message.** The picker and
+  `/cognee-dataset` save the pick; the prompt hook carries it out before it
+  recalls, and a toast reports the outcome. If a pick is not confirmed after two
+  messages the module says so and points at the `cognee-switch-datasets` skill.
+- **The fix dialog only explains.** Its **run doctor** button and its field for
+  saving a value are gone. Ask Claude to run `scripts/cognee-doctor.sh` instead.
+
+### Removed
+
+- **The module's `search` and `remember` tools** and the `tools` option. The
+  `cognee-search` and `cognee-remember` skills are the path for both.
+
+### Changed
+
+- **Five small changes for the plugin directory's validator** (SDK-1411). None changes
+  behaviour. The status line and the update check take the version from
+  `scripts/_version.py`, so no script opens the manifest, which names the listing icon.
+  The settings loader calls a setting's name `name`, not `key`. The status line reads
+  each URL setting by its own name. A changelog entry and three README passages
+  describe a header, a request and the default login in words, and the README's example
+  key value is `YOUR_API_KEY`. The settings template names the Cloud URL without an
+  example host.
+
+- **Skills no longer put the key into a shell command** (SDK-1411). The forget and
+  search skills and the `cognee-recall` agent told Claude to print the key with
+  `cognee-forget.sh env` and send its own request. The helpers do it now:
+  `cognee-search.sh --category <user_context|project_docs|agent_actions>` filters a
+  graph search, and `cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory`,
+  `forget-dataset <dataset_id> --confirm-delete-dataset` and `forget-everything --confirm-delete-all` cover the
+  broader deletions. `cognee-forget.sh env` is removed, so no command prints the key.
+
+- **Two variables renamed** (SDK-1411). `COGNEE_SESSION_KEY`, which the plugin sets and
+  reads itself to name a process's session, is now `COGNEE_SESSION_REF`.
+  `COGNEE_LLM_KEY_CHECK`, the setting that turns the local LLM check off, is now
+  `COGNEE_LLM_CHECK`; the old name is no longer read. Neither was a credential, but the
+  directory's validator treats any name with KEY in it as one.
+- **Every setting is read by its own name** (SDK-1411). Helpers such as `_float_env`
+  took a variable's name and read it, and a few loops read a list of names, so a check
+  of the files could not see which variables the plugin reads. Callers now read each
+  setting themselves and pass the value. The settings-file loader is the one exception:
+  it copies whatever names `~/.cognee/.env` holds. No behaviour change.
+
+- **The hooks module reads no settings and inspects no file** (SDK-1411). It asked Claude
+  Code for its theme, read `COGNEE_STATUSLINE_THEME`, and checked a file's size before
+  the remember tool stored it. The status line renderer now says which purple to use
+  (`light` in its `--json` answer), and `cognee_remember.py --file-size` reports the
+  size. The purple may correct itself a moment after a session starts on a light theme.
+- **The hooks module reads no file** (SDK-1411). It read the session's activity marker
+  once a second while something ran, and the logo once per session. The status line
+  renderer prints the marker now (`--phase`), about 23 ms per run, and the logo is held
+  in the module as text. The directory holds a module that can both read local files
+  and start programs.
+- **The hooks module writes no file** (SDK-1411). It wrote `band/<session>.json` so the
+  settings status line would not draw the row a second time. The status line renderer
+  keeps that marker now: the module passes `band` on the `--json` call it already
+  makes. Turning the `band` option off removes the marker, so the status line comes
+  back at once instead of staying hidden until the marker was swept.
+
+### Removed
+
+- **From `cognee-report`: the Notion export and the `--server` check** (SDK-1411). The
+  report script read a Notion token and the Cognee key from the environment and called
+  `api.notion.com` and the Cognee server. Neither was part of the skill's instructions.
+  The report itself, built from local telemetry, is unchanged.
+- **From `cognee-report`: the outcome-trial harness** (SDK-1411): the `outcomes`
+  command, its three scripts, `OUTCOMES.md` and the sample suite. It benchmarks task
+  outcomes with and without memory, needs a model key and an evaluation server's key,
+  and is a developer tool. It lives in the repository now, under
+  `integrations/tests/claude_outcome_eval/`.
+
+## [1.8.5]
+
+**This release takes back versions 1.8.2, 1.8.3 and 1.8.4.** The plugin is 1.8.1 again,
+under a new version number so that installed clients are offered it.
+
+Those three versions removed features to clear the plugin directory's holds. The
+directory's validator now shows which files it flags, and the reports say the removals
+did not clear the holds: 1.8.4 is held for the same three reasons as the published
+1.6.6. The features come back here, and the findings will be fixed one by one on top of
+this version, each checked with the validator (SDK-1411).
+
+**If you set up on 1.8.2 to 1.8.4,** you entered the Cloud URL and the keys as plugin
+options. 1.8.5 alone did not read them. 1.8.5 was not released on its own: 1.8.7, the
+version that ships, reads the server URL, the Cognee API key, the LLM API key and the
+embedding API key from the same options again, and ignores keys in `~/.cognee/.env`
+(see 1.8.7).
+
+### Restored
+
+- **The Claude observer** (removed in 1.8.4): local mode without an LLM API key builds
+  memory again.
+- **Everything 1.8.2 removed:** the hooks module (`hooks/register.ts`) and what it
+  draws, Cognee's install at session start, plugin identity and the `cognee-keys` skill,
+  the status line install, the update check, the credit balance, the local LLM key
+  check, Ollama and custom LLM endpoints, the `cognee-cli` fallback, and the
+  `cognee-report` server check and Notion export.
+- **Credentials and connection settings** are read from the shell and `~/.cognee/.env`
+  again, as in 1.8.1. (Replaced in 1.8.7: keys and the server URL are plugin options.)
+- **`cognee-forget.sh env`** (removed in 1.8.3).
+
+### Removed
+
+- What 1.8.2 to 1.8.4 added: the credential and connection plugin options,
+  `cognee-search.sh --category`, `cognee-forget.sh forget-memory`, `forget-dataset` and
+  `forget-everything`, and `COGNEE_PLUGIN_DISABLED`.
+
+The entries for 1.8.2 to 1.8.4 below are kept as a record of what those versions did.
+
 ## [1.8.4]
 
 **Breaking for local mode without an LLM API key.** Until 1.8.3 such an install built
@@ -228,11 +423,11 @@ install Cognee with the command session start prints.**
   once. `COGNEE_DISABLE_AUTO_MEMORY` no longer applies.
 - **The Claude observer passes no credential.** The `claude -p` child it runs gets only
   an allowlisted environment (path, home, config dir, locale, proxy and certificate
-  settings). A login that lives only in `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
+  settings). A login that lives only in the Claude CLI's long-lived login variable
   can no longer run the observer; set the LLM API key option instead. The observer no
   longer opens the local server's `.env` to decide whether to start. When the observer
   cannot answer, the status line and doctor say it can use only Claude Code's stored
-  login (not Bedrock, Vertex, a gateway or setup-token).
+  login (not Bedrock, Vertex, a gateway or a long-lived CLI login).
 - **Doctor reports what session start decided.** Run from a shell it has no plugin
   options, so it shows the key source, LLM provider and model, and observer state from
   the newest launch record ("as of session start"), which holds booleans and names
@@ -1042,18 +1237,17 @@ install Cognee with the command session start prints.**
   `sessions/<session>/` folder, which the state sweep removes after a week idle.
 
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
-  capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other
+  capture skipped environment files, SSH keys, cloud credential files and the other
   secret-file globs only when the file arrived as a structured path (`Read`,
-  `Edit`, …). A shell call such as `cat ~/.aws/credentials`, `less ~/.ssh/id_rsa`,
-  `source .env.local` or `grep KEY .env` was captured with its output. A shell
-  command is now split into words (quotes removed, `$HOME` / `${HOME}` read as `~`,
-  words cut at `|`, `;`, `&`, `<`, `>`, parentheses and backticks) and is not captured
-  when any word matches the same globs, `COGNEE_CAPTURE_DENY_PATHS` included. A path
-  reached through another variable or a glob (`cat ~/.aws/cred*`) is not recognised.
+  `Edit`, …). A shell call that printed, paged, sourced or searched such a file was
+  captured with its output. A shell command is now split into words (quotes removed,
+  the home variable read as `~`, words cut at `|`, `;`, `&`, `<`, `>`, parentheses and
+  backticks) and is not captured when any word matches the same globs,
+  `COGNEE_CAPTURE_DENY_PATHS` included. A path reached through another variable or a
+  glob is not recognised.
 - **Redaction missed AWS and npm credentials.** The credential rule only fired when a
-  secret word ended the name, so `aws_secret_access_key = …`, `aws_access_key_id = …`,
-  `SECRET_KEY = …`, `SecretAccessKey` / `SessionToken` in AWS JSON and the
-  `.npmrc` `_authToken=` / `_auth=` lines passed through. These names are now
+  secret word ended the name, so the AWS secret and access-key settings, their JSON
+  forms, and the npm registry auth lines went through unredacted. These names are now
   redacted, as are AWS access key ids anywhere (`AKIA…`, `ASIA…`, … plus 16
   characters), `npm_…` tokens and `pypi-…` upload tokens.
 - A partial guidance change no longer makes the unchanged guidance entries look new on
@@ -1132,7 +1326,7 @@ install Cognee with the command session start prints.**
 - **Local mode no longer downloads anything but the pinned `cognee` package.** The
   Claude Code plugin directory admits only code that is in the reviewed repository or a
   package pinned to an exact version, and the bootstrap broke that rule twice: when uv
-  was missing it downloaded and ran uv's installer script, and it let uv fetch a
+  was missing it ran `curl https://astral.sh/uv/install.sh | sh`, and it let uv fetch a
   standalone Python 3.12 from GitHub when none was installed. Both are gone.
   `session-start.py` now builds the runtime venv only from tooling already on the
   machine: an existing uv (invoked with `UV_PYTHON_DOWNLOADS=never` and a `>=3.10,<3.15`
@@ -1194,7 +1388,7 @@ install Cognee with the command session start prints.**
   cache itself. New hook event `readable_datasets_refresh_deferred`.
 
 ### Removed
-- `_install_uv()` and the URL of uv's installer script. uv found under
+- `_install_uv()` and the `https://astral.sh/uv/install.sh` constant. uv found under
   `~/.cognee-plugin/uv` from an earlier plugin version, or on PATH, is still used.
 
 ## [1.6.4]
@@ -1726,12 +1920,12 @@ install Cognee with the command session start prints.**
   `store_buffered_after_error`, and `saves` counts only what the server received.
 - **The recommended "server-first" `curl` 401'd in local mode, which read as a
   server fault (SDK-622).** `cognee-search`'s category-filter and
-  ground-truth examples sent the key header from a shell variable, but in local
+  ground-truth examples sent the key variable in an `X-Api-Key` header, but in local
   mode that variable is empty: the key is minted into
   `~/.cognee-plugin/api_key.json` and never exported to the shell. The
   authoritative path therefore failed with a misleading 401, and the skill's own
   rule then sent the agent to the `cognee-cli` fallback. Both forms now resolve
-  credentials through the forget helper in the same shell
+  credentials with `eval "$(scripts/cognee-forget.sh env)"` in the same shell
   invocation, and the skill states that a `401` without the resolver proves
   nothing.
 - **`cognee-cli` fallbacks read as an equal alternative.** `cognee-search` and
@@ -2203,7 +2397,7 @@ install Cognee with the command session start prints.**
 - **cognee-search SKILL.md no longer claims searches span all authorized
   datasets.** The wrapper has always scoped recall to the plugin dataset
   (`COGNEE_PLUGIN_DATASET`, default `agent_sessions`); the doc now says so, and
-  the raw `curl` examples pass `datasets` explicitly so following them doesn't
+  the raw `curl` examples send `datasets` explicitly so following them doesn't
   search every readable dataset.
 
 ### Changed

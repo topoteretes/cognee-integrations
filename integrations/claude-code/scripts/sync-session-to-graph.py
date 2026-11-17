@@ -49,8 +49,6 @@ _FINAL_SYNC_ONCE_TTL_SECONDS = 3600
 _DETACHED_RETRIES_DEFAULT = 3
 _DETACHED_RETRY_DELAY_DEFAULT = 10.0
 _SESSION_END_START_DELAY_DEFAULT = 2.0
-#: What ``_sync`` returns when no server credentials resolved (not strict).
-_NO_AUTH = "no_auth"
 
 
 def _stop_idle_watcher() -> None:
@@ -76,8 +74,11 @@ def _stop_idle_watcher() -> None:
 def _spawn_detached_sync() -> bool:
     """Run the expensive sync outside a short hook window."""
     try:
-        env = os.environ.copy()
-        env.setdefault("COGNEE_SYNC_START_DELAY", str(_SESSION_END_START_DELAY_DEFAULT))
+        from _proc import child_env
+
+        env = child_env()
+        if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
+            env["COGNEE_SYNC_START_DELAY"] = str(_SESSION_END_START_DELAY_DEFAULT)
         env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
@@ -106,10 +107,10 @@ def _final_sync_identity() -> tuple[str, str]:
     """
     from _plugin_common import get_session_key, read_stored_seq
 
-    session_key = str(os.environ.get("COGNEE_SESSION_KEY", "") or "").strip()
+    session_key = str(os.environ.get("COGNEE_SESSION_REF", "") or "").strip()
     session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
     if session_key:
-        token, source = session_key, "COGNEE_SESSION_KEY"
+        token, source = session_key, "COGNEE_SESSION_REF"
     elif session_id:
         token, source = session_id, "COGNEE_SYNC_SESSION_ID"
     else:
@@ -215,7 +216,8 @@ def _load_resolved() -> tuple:
     env_dataset = str(os.environ.get("COGNEE_SYNC_DATASET", "") or "").strip()
     env_agent_session_name = str(os.environ.get("COGNEE_AGENT_SESSION_NAME", "") or "").strip()
     env_service_url = str(os.environ.get("COGNEE_BASE_URL", "") or "").strip()
-    resolved_service_url, env_api_key = resolved_http_endpoint_auth()
+    resolved_service_url, resolved_api_key = resolved_http_endpoint_auth()
+    env_api_key = resolved_api_key
     env_service_url = env_service_url or resolved_service_url
 
     if not session_key:
@@ -345,9 +347,7 @@ async def _sync(
             print("cognee-sync: skipped, no server credentials resolved", file=sys.stderr)
             if strict:
                 raise RuntimeError("no server credentials resolved")
-            # A manual /cognee-sync reports it as a failure (main exits 1), so
-            # the caller does not take "skipped" for a sync.
-            return _NO_AUTH
+            return
 
         incomplete: list[str] = []
         # The final (strict) sync must always run; a manual /cognee-sync too.
@@ -450,18 +450,6 @@ def _coding_flush(payload_raw: str) -> None:
         hook_log("coding_session_end_flush_failed", {"error": str(exc)[:200]})
 
 
-def _require_shell_auth() -> None:
-    """Exit 2 when the server is remote and no key resolved in this process."""
-    try:
-        from _env_file import cloud_key
-        from _plugin_common import _local_api_url, require_shell_auth
-    except ImportError:
-        return
-    # A remote server's key is the option alone (no lookup, no request).
-    url = _local_api_url()
-    require_shell_auth(url, cloud_key(url), "cognee-sync")
-
-
 def main():
     if is_observer_child():
         return
@@ -492,14 +480,6 @@ def main():
 
     if is_session_end and not detached_final and payload_raw.strip():
         _coding_flush(payload_raw)
-
-    manual = not detached_final and not is_session_end
-    if manual:
-        # A manual /cognee-sync runs from a shell, before any request: against a
-        # remote server with no key here (a Cloud key reaches hooks only) it
-        # exits 2 with the reason. The session-end sync runs in a hook and is
-        # unaffected.
-        _require_shell_auth()
 
     from _cloud_worker import enabled as cloud_enabled
     from _cloud_worker import request_improve
@@ -570,7 +550,7 @@ def main():
     last_error: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
-            outcome = asyncio.run(
+            asyncio.run(
                 _sync(
                     stop_watcher=False,
                     unregister_on_finish=unregister_on_finish,
@@ -582,9 +562,7 @@ def main():
                     include_touched=detached_final,
                 )
             )
-            if manual and outcome == _NO_AUTH:
-                return 1
-            return 0
+            return
         except Exception as exc:
             last_error = exc
             # Non-fatal: session sync failure should not crash Codex.
@@ -607,4 +585,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
+    main()

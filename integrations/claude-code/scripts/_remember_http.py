@@ -32,8 +32,6 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from _net import open_url
-
 UNREACHABLE = "UNREACHABLE"
 
 
@@ -104,9 +102,9 @@ def _timeout_result(timeout):
     return _error(0, "remember submitted; timed out after %ss waiting for confirmation" % timeout)
 
 
-def _float_env(name, default):
+def _float_env(raw, default):
     try:
-        raw = os.environ.get(name, "").strip()
+        raw = str(raw or "").strip()
         return float(raw) if raw else default
     except (TypeError, ValueError):
         return default
@@ -118,7 +116,7 @@ def _explicit_wait_seconds():
     Default 8s: a background submit returns immediately, so without a short wait an
     immediate recall sees the not-yet-cognified graph. 0 disables (fire-and-forget).
     """
-    return _float_env("COGNEE_REMEMBER_WAIT_SECONDS", 8.0)
+    return _float_env(os.environ.get("COGNEE_REMEMBER_WAIT_SECONDS", ""), 8.0)
 
 
 def _remember_timeout():
@@ -127,7 +125,7 @@ def _remember_timeout():
     Tunable independently of recall/register via ``COGNEE_REMEMBER_TIMEOUT``;
     defaults to 120s, the value ``do_remember`` has always used.
     """
-    value = _float_env("COGNEE_REMEMBER_TIMEOUT", 120.0)
+    value = _float_env(os.environ.get("COGNEE_REMEMBER_TIMEOUT", ""), 120.0)
     # 0, negatives, inf and nan would make the socket fail at once or raise.
     return value if math.isfinite(value) and value > 0 else 120.0
 
@@ -138,7 +136,7 @@ def _poll_status(
     dataset_id,
     deadline_seconds,
     *,
-    opener=open_url,
+    opener=urllib.request.urlopen,
     interval_seconds=3.0,
     request_timeout=10.0,
 ):
@@ -200,7 +198,7 @@ def do_remember(
     *,
     file_path=None,
     dataset_id="",
-    opener=open_url,
+    opener=urllib.request.urlopen,
     timeout=120.0,
 ):
     """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
@@ -272,7 +270,7 @@ def do_remember(
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — the server rejected the key" % e.code
+            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
         else:
             msg = "server returned HTTP %s for /api/v1/remember" % e.code
         sys.stderr.write("[cognee-remember] %s — NOT falling back to local CLI\n" % msg)
@@ -328,8 +326,8 @@ def do_remember(
             result["dataset_id"],
             wait_seconds,
             opener=opener,
-            interval_seconds=_float_env("COGNEE_COGNIFY_POLL_INTERVAL", 3.0),
-            request_timeout=_float_env("COGNEE_STATUS_REQUEST_TIMEOUT", 10.0),
+            interval_seconds=_float_env(os.environ.get("COGNEE_COGNIFY_POLL_INTERVAL", ""), 3.0),
+            request_timeout=_float_env(os.environ.get("COGNEE_STATUS_REQUEST_TIMEOUT", ""), 10.0),
         )
         result["wait_outcome"] = outcome
         result["queryable"] = outcome == "completed"
@@ -364,8 +362,32 @@ def main(argv):
 
 
 def report(result) -> None:
-    """Print a remember's result."""
+    """Print a remember's result, and note a server answer on the status line."""
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
+    if result != UNREACHABLE:
+        # Refresh the status-line credits marker, attributing the spend delta
+        # to this remember (cloud-only; the fetch itself no-ops on a local
+        # server). Lazy, guarded import: this module is standalone by design,
+        # and the opt-out env stops _plugin_common's venv re-exec — an execv
+        # here would re-run main() and double-submit the remember.
+        try:
+            os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _plugin_common import (
+                clear_payment_required,
+                record_payment_required,
+                refresh_credits,
+            )
+
+            # A 402 is the server refusing to pay for this remember; note it
+            # for the status line. A remember that got through clears the note.
+            if isinstance(result, dict) and result.get("status") == 402:
+                record_payment_required("remember")
+            elif isinstance(result, dict) and not result.get("error"):
+                clear_payment_required()
+            refresh_credits("remember")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -29,10 +29,9 @@ from typing import Optional
 import _proc
 from _dataset_access import dataset_id as parse_dataset_id
 from _dataset_access import recall_fields, write_fields
-from _env_file import load_env_file
+from _env_file import cloud_key_option, forced_backend, load_env_file
 from _logfiles import append_line as _append_log_line
 from _logfiles import rotate_if_oversized as _rotate_log_if_oversized
-from _net import is_loopback_url, open_url
 from _recall_http import DOWN, SLOW, UNKNOWN, classify_transport_exception
 from event_names import event_fields
 
@@ -64,11 +63,17 @@ _IMPROVE_STATE_DIR = _PLUGIN_DIR / "improve-state"
 _BRIDGE_DIR = _PLUGIN_DIR / "bridge"
 _PENDING_DIR = _PLUGIN_DIR / "pending"
 _SUBPROCESS_LOG = _PLUGIN_DIR / "subprocess.log"
-# Single-principal model: every request runs as the user's own key (the Cloud
-# key from the plugin options, or the local server's owner key). No key is
-# stored on disk, and plugin identity (a minted per-machine agent key) is off.
+# Single-principal model: one API key (user-provided COGNEE_API_KEY or one minted
+# from the default user) is cached here. Replaces the old per-agent agent_keys.json.
+_API_KEY_CACHE = _SHARED_PLUGIN_ROOT / "api_key.json"
+# Plugin identity (server-side agent sub-user). Servers that expose
+# POST /api/v1/integrations/plugins/{key}/provision mint a dedicated agent
+# sub-user + API key per plugin, so cognee can attribute traffic to this
+# plugin instead of the shared principal. The key is per-plugin state (the
+# Codex plugin has its own identity), hence _PLUGIN_DIR, not the shared root.
 PLUGIN_KEY = "claude-code"
 CONNECTION_TYPE = "claude_code"
+_AGENT_KEY_CACHE = _PLUGIN_DIR / "agent_key.json"
 # Shared agent memory: the role every provisioned plugin agent of a user joins
 # so all of them read/write the user's datasets (see ensure_shared_memory).
 # The marker records the tenant/role wiring, the canonical dataset ids this
@@ -76,7 +81,13 @@ CONNECTION_TYPE = "claude_code"
 # session start / watcher refresh only issues the calls that are still missing.
 AGENT_ROLE_NAME = "cognee-agent"
 _SHARED_MEMORY_MARKER = _PLUGIN_DIR / "shared_memory.json"
+#: Written when the server refused this machine a key because the plugin's
+#: agent is full (409); SessionStart warns from it until the machine gets its
+#: own key again.
+_KEY_LIMIT_MARKER = _PLUGIN_DIR / "key_limit.json"
 #: How the plugin is named in user-facing messages.
+#: How a user invokes the key management command (``plugin-keys.py``) here.
+KEYS_COMMAND_HINT = "/cognee-memory:cognee-keys"
 PLUGIN_LABEL = "Claude Code"
 # Host-session-id -> generated Cognee session-id map. The host (Claude/Codex)
 # session id is used ONLY as a local correlation key so every hook process of a
@@ -138,8 +149,8 @@ def apply_cognee_env() -> None:
     """Pin cognee's data dirs + caching into the environment.
 
     Uses setdefault so an explicit user/env override always wins. Called on
-    import so any process that spawns the cognee server (via os.environ.copy())
-    inherits a stable, upgrade-safe data location. CACHING and AUTO_FEEDBACK are
+    import so any process that starts the cognee server hands on a stable,
+    upgrade-safe data location. CACHING and AUTO_FEEDBACK are
     already cognee's defaults but are set explicitly so a future default change
     can't silently disable session-context distillation.
 
@@ -202,7 +213,7 @@ def _sanitize_session_key(value: str) -> str:
 
 def get_session_key() -> str:
     candidates = [
-        os.environ.get("COGNEE_SESSION_KEY"),
+        os.environ.get("COGNEE_SESSION_REF"),
     ]
     for value in candidates:
         text = _sanitize_session_key(str(value or "").strip())
@@ -214,7 +225,7 @@ def get_session_key() -> str:
 def set_session_key(session_key: str) -> str:
     normalized = _sanitize_session_key(session_key)
     if normalized:
-        os.environ["COGNEE_SESSION_KEY"] = normalized
+        os.environ["COGNEE_SESSION_REF"] = normalized
     return normalized
 
 
@@ -509,7 +520,9 @@ def set_launch_dataset_ids(
     from _file_lock import file_lock
 
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             hook_log(
                 "launch_dataset_ids_skipped",
@@ -576,9 +589,9 @@ def shell_runtime_overrides(service_url: str = "", host_key: str = "") -> dict:
     ``host_key`` handed in (``--session-key``) when several launches share a
     directory. Returns that ``host_key``, the record's ``session_id`` /
     ``dataset`` (both empty when unrecorded), the dataset's canonical
-    ``dataset_id`` and comma-joined ``dataset_ids``, and ``api_key`` — the
-    provisioned plugin-agent key when one is cached, so the skills act as the
-    same identity as the hooks (see ``_api_key_with_source``). Kept to one call
+    ``dataset_id`` and comma-joined ``dataset_ids``, and ``api_key`` — the key
+    the hooks send (``shell_api_key``), so the skills act as the same identity
+    as the hooks. Kept to one call
     on purpose: the skills embed Python in a ``$( <<'PY' )`` block that macOS's
     bash 3.2 mis-parses once it grows past a few lines.
     """
@@ -593,7 +606,7 @@ def shell_runtime_overrides(service_url: str = "", host_key: str = "") -> dict:
         "dataset": str(rec.get("dataset") or "").strip(),
         "dataset_id": write_id,
         "dataset_ids": ",".join(read_ids),
-        "api_key": active_agent_key(service_url),
+        "api_key": shell_api_key(service_url),
         # "1" when graph recall names no dataset (auto, routed server-side).
         "recall_auto": "1" if auto_recall_active(host_key) else "",
     }
@@ -688,7 +701,9 @@ def switch_launch_record(
     # transactional guarantee, so a concurrent switch landing in between would
     # make a successful write look unpersisted (and vice versa).
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             raise RuntimeError("Another dataset switch is in progress for this launch")
         return _switch_launch_record_locked(
@@ -840,7 +855,9 @@ def set_recall_pinned(host_key: str, pinned: bool) -> dict:
 
     # The switch lock: a concurrent switch rewrites the same record.
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             raise RuntimeError("Another dataset switch is in progress for this launch")
         rec = _read_map_record(host_key)
@@ -883,7 +900,7 @@ def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
     The switch command runs under the host's shell tool, which has no hook stdin.
     Resolution, in order — returns ``(host_key, source)``, ``("", reason)`` when
     nothing matched:
-      1. ``COGNEE_SESSION_KEY`` — already inside a hook.
+      1. ``COGNEE_SESSION_REF`` — already inside a hook.
       2. The host's own session-id export (Claude Code: ``CLAUDE_CODE_SESSION_ID``).
       3. The host's pid export or our process ancestry, matched against the
          ``host_pid`` each SessionStart stores in its record.
@@ -893,8 +910,12 @@ def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
     if key:
         return key, "env_session_key"
 
-    for var in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
-        val = _sanitize_session_key(str(os.environ.get(var, "") or "").strip())
+    for var, raw in (
+        ("CLAUDE_CODE_SESSION_ID", os.environ.get("CLAUDE_CODE_SESSION_ID", "")),
+        ("CODEX_SESSION_ID", os.environ.get("CODEX_SESSION_ID", "")),
+        ("CODEX_THREAD_ID", os.environ.get("CODEX_THREAD_ID", "")),
+    ):
+        val = _sanitize_session_key(str(raw or "").strip())
         if val and _session_map_path(val).exists():
             return val, var
 
@@ -938,9 +959,9 @@ def _live_launch_records() -> list[dict]:
 def _candidate_host_pids() -> set[int]:
     """Pids that could be this process's host: the host's pid export + ancestry."""
     pids: set[int] = set()
-    for var in ("CLAUDE_PID", "CODEX_PID"):
+    for raw in (os.environ.get("CLAUDE_PID", ""), os.environ.get("CODEX_PID", "")):
         try:
-            v = int(str(os.environ.get(var, "") or "0").strip() or 0)
+            v = int(str(raw or "0").strip() or 0)
         except ValueError:
             v = 0
         if v > 1:
@@ -1497,23 +1518,10 @@ def _buffer_lock():
                 hook_log("buffer_lock_release_failed", {"error": str(exc)[:200]})
 
 
-def _platform_host_for(service_url: str) -> str:
-    """``api.<env>`` for a ``tenant-<id>.<env>`` data-plane host, else "".
-
-    The cloud names its hosts by role under one environment suffix: the memory
-    data plane is ``tenant-<id>.<env>`` and the platform (account) is
-    ``api.<env>``. Only used to tell a Cognee Cloud tenant from other servers.
-    """
-    host = (urllib.parse.urlparse(str(service_url or "").strip()).hostname or "").lower()
-    label, _, rest = host.partition(".")
-    if not rest or not label.startswith("tenant-") or len(label) <= len("tenant-"):
-        return ""
-    return f"api.{rest}"
-
-
 def service_url_is_local(url: str = "") -> bool:
     """True when the resolved service URL points at this machine (loopback)."""
-    return is_loopback_url(url or _local_api_url())
+    host = (urllib.parse.urlparse(url or _local_api_url()).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
 def hook_log(event: str, detail: Optional[dict] = None) -> None:
@@ -1620,7 +1628,7 @@ def _reexec_into_venv() -> None:
     runner = os.environ.get("COGNEE_HOOK_RUNNER", "")
     prefix = [runner] if runner and os.path.isfile(runner) else []
     try:
-        # execv inherits os.environ (incl. the loop guard just set above).
+        # The new interpreter inherits the loop guard just set above.
         os.execv(str(vpy), [str(vpy), *prefix, *sys.argv])
     except OSError as exc:
         # Better to run degraded under the host interpreter than to die.
@@ -1658,16 +1666,14 @@ OBSERVER_CHILD_ENV = "COGNEE_OBSERVER_CHILD"
 
 
 def is_observer_child() -> bool:
-    """True inside a ``claude -p`` process an observer shim spawned.
+    """True inside a ``claude -p`` process the observer shim spawned.
 
-    The Claude observer was removed in 1.8.4, but a shim an older version
-    started can outlive the upgrade for as long as the server booted on it
-    runs, and its ``claude`` children would load this version's hooks. If such
-    a child ran them, each would talk to the same server whose cognify is
-    waiting on the child: a loop. Every hook checks this first and exits
-    silently.
+    The shim runs Claude Code headless to serve the local server's LLM calls
+    (``--safe-mode`` already disables hooks there). If that child ever ran our
+    hooks anyway, each would talk to the same server whose cognify is waiting on
+    the child — a loop. Every hook checks this first and exits silently.
     """
-    return bool(os.environ.get(OBSERVER_CHILD_ENV, "").strip())
+    return bool(os.environ.get("COGNEE_OBSERVER_CHILD", "").strip())
 
 
 @contextmanager
@@ -1973,7 +1979,7 @@ def outage_header(state: str, saves: dict, backlog: dict | None, joiner: str) ->
 
 
 def _pending_keys(session_id: str, turn_id: str = "") -> tuple[str, str]:
-    # Scope by the host-provided session key (COGNEE_SESSION_KEY, unique per
+    # Scope by the host-provided session key (COGNEE_SESSION_REF, unique per
     # Claude/Codex session) rather than the cwd-derived cognee session_id, so
     # two concurrent agents in the same project don't collide on one pending
     # slot and scramble each other's prompts. Falls back to session_id.
@@ -2378,6 +2384,24 @@ def phase_end(
         _write_json_file(path, state)
     except Exception as exc:
         hook_log("phase_end_failed", {"phase": phase, "error": str(exc)[:200]})
+    _refresh_mod_status(session_key)
+
+
+def _refresh_mod_status(session_key: Optional[str]) -> None:
+    """Rewrite the status row's data for the hooks module after a phase ends.
+
+    The module draws from ``status/<session>.json`` and starts no program, so
+    the hooks keep that file current: a phase ending is when the row changes
+    (a recall landed, a save finished, session start settled the connection).
+    """
+    try:
+        key = _phase_key(session_key)
+        if key and key != "_machine":
+            import _mod_bridge
+
+            _mod_bridge.refresh_status(key)
+    except Exception:
+        pass
 
 
 def phase_snapshot(session_key: Optional[str] = None) -> dict:
@@ -2407,182 +2431,120 @@ def _normalize_service_url(value: str) -> str:
     return str(value or "").strip().rstrip("/")
 
 
-# No key is stored on disk by this plugin (directory policy: a credential
-# reaches the plugin only through Claude Code's plugin options). The user's
-# Cloud key is the principal, taken from CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY in
-# every process (see _env_file), and is sent only to a remote server. Against
-# the plugin's own local server there is no user key: the owner key is looked
-# up from that server by logging in as its default user. A found key is kept
-# for the life of the process; a failed lookup is retried, but no sooner than
-# _LOCAL_OWNER_RETRY_SECONDS later, so a long-lived process that started before
-# the server recovers once it is up. The key is never handed to a child process
-# through the environment: at ~40 ms a lookup, children log in themselves.
-# Plugin identity (a minted per-machine agent key) is off, since keeping that
-# key would mean storing it.
-_LOCAL_OWNER_KEYS: dict = {}
-_LOCAL_OWNER_FAILED_AT: dict = {}
-# Why the last lookup for a URL failed (the exception), so a request refused
-# for want of a key reports the same transport verdict: a lookup that timed
-# out means a slow server, a refused one a server that is down.
-_LOCAL_OWNER_LAST_ERROR: dict = {}
-_LOCAL_OWNER_RETRY_SECONDS = 5.0
-_LOCAL_OWNER_LOOKUP_TIMEOUT = 5.0
-# Hooks Claude Code waits on before the turn goes on (UserPromptSubmit recall,
-# PreToolUse Read): a slow lookup there means no recall this turn, not a stall.
-_LOCAL_OWNER_FAST_TIMEOUT = 1.5
-_BLOCKING_HOOK_SCRIPTS = ("session-context-lookup.py", "file-context.py")
+# The keys this process settled on. SessionStart picks between the user's key
+# and the plugin's agent key and records the choice here for the rest of its
+# own run; every other process works the same choice out with
+# ``_api_key_with_source``. Nothing here is written to the environment.
+_process_keys: dict = {}
 
 
-def _in_blocking_hook() -> bool:
-    return any(os.path.basename(str(arg)) in _BLOCKING_HOOK_SCRIPTS for arg in sys.argv[:3])
+def set_process_api_key(key: str) -> None:
+    """Record the key this process sends from now on."""
+    _process_keys["api_key"] = str(key or "").strip()
 
 
-def _owner_lookup_timeout() -> float:
-    return _LOCAL_OWNER_FAST_TIMEOUT if _in_blocking_hook() else _LOCAL_OWNER_LOOKUP_TIMEOUT
+def process_api_key() -> str:
+    return str(_process_keys.get("api_key") or "")
 
 
-def is_masked_key(key: str) -> bool:
-    """A key the server lists masked (``HASH_API_KEY=true``): unusable as a key."""
-    key = str(key or "").strip()
-    return bool(key) and set(key) == {"*"}
+def set_process_principal_key(key: str) -> None:
+    """Record the user's own key for this process's control-plane calls."""
+    _process_keys["principal"] = str(key or "").strip()
 
 
-# How cognee stores a key created while ``HASH_API_KEY=true``
-# (``pbkdf2_sha256$<iterations>$<hex>``). A server now running without hashing
-# lists that stored value back: it is a hash, never a key any server accepts.
-_STORED_KEY_HASH_PREFIX = "pbkdf2_sha256$"
+def user_cloud_key(service_url: str = "") -> str:
+    """The Cognee API key option when it is the key for ``service_url``.
 
+    The option is the user's key for the server they configured. The server
+    this plugin starts on this machine has a key of its own (minted at session
+    start and cached), so the option is never sent to it.
 
-def is_hashed_key(key: str) -> bool:
-    """A listed value that is a stored hash of a key, not a key."""
-    return str(key or "").strip().startswith(_STORED_KEY_HASH_PREFIX)
-
-
-def first_usable_key(keys) -> str:
-    """The first listed API key that is a real key (not masked, not a hash), or "".
-
-    Every process picks the same one, so a key SessionStart mints once is the
-    key the other hooks find: a stale hashed row listed before it is skipped,
-    not sent.
+    A script the relay runs is told which server the relay resolved from the
+    options (``COGNEE_RELAY_KEY_URL``); the caller's shell can point the script
+    elsewhere, but the option goes to that server only.
     """
-    for entry in keys if isinstance(keys, list) else []:
-        if isinstance(entry, dict):
-            key = str(entry.get("key") or "").strip()
-            if key and not is_masked_key(key) and not is_hashed_key(key):
-                return key
-    return ""
-
-
-def server_hides_keys(keys) -> bool:
-    """The server lists keys but masks every one (it runs ``HASH_API_KEY=true``).
-
-    Nothing is stored on disk, so a key minted there could never reach the
-    other hook processes: the plugin cannot use such a server.
-    """
-    listed = [
-        str(entry.get("key") or "").strip()
-        for entry in (keys if isinstance(keys, list) else [])
-        if isinstance(entry, dict)
-    ]
-    listed = [key for key in listed if key]
-    return bool(listed) and all(is_masked_key(key) for key in listed)
-
-
-def _local_owner_key(service_url: str) -> str:
-    """The local server's owner API key, looked up by logging in. Never raises.
-
-    Lists the default user's existing keys and returns the first usable one;
-    minting a key stays with SessionStart. A masked key (the server hashes its
-    keys) counts as none. Logs ``local_owner_key_lookup_ms``.
-    """
-    url = _normalize_service_url(service_url)
-    if _LOCAL_OWNER_KEYS.get(url):
-        return _LOCAL_OWNER_KEYS[url]
-    failed_at = _LOCAL_OWNER_FAILED_AT.get(url)
-    if failed_at is not None and time.monotonic() - failed_at < _LOCAL_OWNER_RETRY_SECONDS:
+    key = cloud_key_option()
+    if not key:
         return ""
-    timeout = _owner_lookup_timeout()
-    started = time.monotonic()
-    key = ""
-    error = ""
-    try:
-        from config import load_config
-
-        config = load_config()
-        form = urllib.parse.urlencode(
-            {
-                "username": str(config.get("user_email") or ""),
-                "password": str(config.get("user_password") or ""),
-            }
-        ).encode()
-        request = urllib.request.Request(
-            f"{url}/api/v1/auth/login",
-            data=form,
-            method="POST",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        with open_url(request, timeout=timeout) as response:
-            jwt = str((json.loads(response.read() or b"{}") or {}).get("access_token") or "")
-        if jwt:
-            remaining = max(0.1, timeout - (time.monotonic() - started))
-            request = urllib.request.Request(
-                f"{url}/api/v1/auth/api-keys",
-                method="GET",
-                headers={"Cookie": f"auth_token={jwt}"},
-            )
-            with open_url(request, timeout=remaining) as response:
-                key = first_usable_key(json.loads(response.read() or b"[]"))
-    except Exception as exc:
-        error = type(exc).__name__
-        _LOCAL_OWNER_LAST_ERROR[url] = exc
-        key = ""
-    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-    detail = {"local_owner_key_lookup_ms": elapsed_ms, "found": bool(key), "timeout": timeout}
-    if error:
-        detail["error"] = error
-    hook_log("local_owner_key_lookup" if not error else "local_owner_key_lookup_failed", detail)
-    if key:
-        _LOCAL_OWNER_KEYS[url] = key
-        _LOCAL_OWNER_FAILED_AT.pop(url, None)
-        _LOCAL_OWNER_LAST_ERROR.pop(url, None)
-    else:
-        _LOCAL_OWNER_FAILED_AT[url] = time.monotonic()
+    url = _normalize_service_url(service_url or _local_api_url())
+    if url == _DEFAULT_LOCAL_SERVICE_URL and forced_backend() != "cloud":
+        return ""
+    if os.environ.get("COGNEE_RELAYED", "") == "1":
+        bound = _normalize_service_url(os.environ.get("COGNEE_RELAY_KEY_URL", ""))
+        if not bound or url != bound:
+            return ""
     return key
 
 
-def load_cached_api_key(service_url: str = "") -> str:
-    """The principal key not taken from the options: the local owner key, or "".
-
-    Nothing is read from disk. A remote server has no fallback: its key is
-    the plugin option (see ``_api_key_with_source``).
-    """
-    url = _normalize_service_url(service_url or _local_api_url())
-    if not url or not takes_owner_key(url):
+def key_refused_for(service_url: str) -> str:
+    """In a relayed script, the server the option is bound to when it differs
+    from ``service_url`` (so the caller can say why no key was sent), else ""."""
+    if os.environ.get("COGNEE_RELAYED", "") != "1":
         return ""
-    return _local_owner_key(url)
+    bound = _normalize_service_url(os.environ.get("COGNEE_RELAY_KEY_URL", ""))
+    if bound and _normalize_service_url(service_url) != bound:
+        return bound
+    return ""
+
+
+def load_cached_api_key(service_url: str = "") -> str:
+    """Return the single cached principal key (matching service_url if recorded)."""
+    data = _load_json_file(_API_KEY_CACHE)
+    if not isinstance(data, dict):
+        return ""
+    key = str(data.get("api_key") or "").strip()
+    if not key:
+        return ""
+    cached_url = _normalize_service_url(str(data.get("base_url") or ""))
+    wanted = _normalize_service_url(service_url)
+    if wanted and cached_url and cached_url != wanted:
+        return ""
+    return key
 
 
 def save_cached_api_key(service_url: str, key: str) -> None:
-    """Keys are never written to disk; remember a fresh local key in-process."""
-    url = _normalize_service_url(service_url)
-    if url and str(key or "").strip() and takes_owner_key(url):
-        _LOCAL_OWNER_KEYS[url] = str(key).strip()
-        _LOCAL_OWNER_FAILED_AT.pop(url, None)
+    """Persist the key the plugin minted on its own local server.
 
-
-def forget_cached_api_key(service_url: str) -> None:
-    """Drop an in-process owner key the server rejected."""
-    _LOCAL_OWNER_KEYS.pop(_normalize_service_url(service_url), None)
+    The Cognee API key option is never written here: it lives in Claude Code's
+    secure store only.
+    """
+    if not str(key or "").strip() or str(key).strip() == cloud_key_option():
+        return
+    _write_json_file(
+        _API_KEY_CACHE,
+        {
+            "base_url": _normalize_service_url(service_url),
+            "api_key": str(key).strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
 
 
 def load_cached_agent_key(service_url: str = "") -> str:
-    """Plugin identity is off in this plugin: there is never an agent key."""
-    return ""
+    """Return the provisioned plugin-agent key (matching service_url if recorded).
+
+    Empty string when the plugin has no provisioned identity — callers fall
+    back to the principal-key chain.
+    """
+    data = _load_json_file(_AGENT_KEY_CACHE)
+    if not isinstance(data, dict):
+        return ""
+    key = str(data.get("api_key") or "").strip()
+    if not key:
+        return ""
+    cached_url = _normalize_service_url(str(data.get("base_url") or ""))
+    wanted = _normalize_service_url(service_url)
+    if wanted and cached_url and cached_url != wanted:
+        return ""
+    return key
 
 
 def load_cached_agent_id(service_url: str = "") -> str:
-    """Plugin identity is off: there is never an agent id."""
-    return ""
+    """The provisioned agent sub-user's id (recorded with its key), or ""."""
+    if not load_cached_agent_key(service_url):
+        return ""
+    data = _load_json_file(_AGENT_KEY_CACHE)
+    return str(data.get("agent_id") or "").strip() if isinstance(data, dict) else ""
 
 
 def save_cached_agent_key(
@@ -2593,8 +2555,29 @@ def save_cached_agent_key(
     principal_key: str = "",
     key_id: str = "",
 ) -> None:
-    """Plugin identity is off: an agent key is never stored."""
-    return None
+    if not str(key or "").strip():
+        return
+    _write_credential(
+        {
+            "base_url": _normalize_service_url(service_url),
+            "api_key": str(key).strip(),
+            "agent_id": str(agent_id or ""),
+            # The server-side id of this machine's key (additive servers): what a
+            # revert revokes, so no other machine's key is touched.
+            "key_id": str(key_id or ""),
+            "plugin_key": PLUGIN_KEY,
+            "principal_fingerprint": _principal_fingerprint(principal_key),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
+
+
+def clear_cached_agent_key() -> None:
+    """Drop the provisioned identity (revoked key / dashboard disconnect)."""
+    try:
+        _AGENT_KEY_CACHE.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 # ── Shared agent memory ────────────────────────────────────────────────────
@@ -2624,8 +2607,8 @@ def save_cached_agent_key(
 def shared_memory_enabled(config: dict | None = None) -> bool:
     """Shared agent memory is on unless the user opted out.
 
-    ``COGNEE_SHARED_AGENT_MEMORY`` (env) wins over ``shared_agent_memory`` in
-    the config file; both default to on.
+    The ``COGNEE_SHARED_AGENT_MEMORY`` variable wins over ``shared_agent_memory``
+    in the config file; both default to on.
     """
     raw = str(os.environ.get("COGNEE_SHARED_AGENT_MEMORY", "") or "").strip()
     if not raw and isinstance(config, dict) and config.get("shared_agent_memory") is not None:
@@ -2636,16 +2619,7 @@ def shared_memory_enabled(config: dict | None = None) -> bool:
 
 
 def load_shared_memory_marker(service_url: str = "") -> dict:
-    """The shared-memory marker for ``service_url`` ({} when none / other URL).
-
-    Always {} while plugin identity is disabled (always, in this plugin): with
-    no agent there is no shared wiring, and a marker an earlier version left
-    behind names that version's tenant, role and dataset UUIDs. Reading it
-    would address writes to a canonical UUID the server may no longer have
-    (403 after the store changed) instead of the user's own dataset by name.
-    """
-    if plugin_identity_mode() == "disabled":
-        return {}
+    """The shared-memory marker for ``service_url`` ({} when none / other URL)."""
     data = _load_json_file(_SHARED_MEMORY_MARKER)
     if not isinstance(data, dict):
         return {}
@@ -2668,16 +2642,15 @@ def _save_shared_memory_marker(marker: dict) -> None:
 def principal_key_for_control_plane(service_url: str = "") -> str:
     """The PARENT user's key, for tenant/role/grant calls.
 
-    Never the provisioned agent key: ``_api_key_with_source`` stamps that one
-    into the env, so an env key equal to the cached agent key is the agent's,
-    not the user's. Falls through to the cached principal key (SessionStart
-    caches an env-provided principal when it provisions, so detached workers
-    can still act as the parent).
+    Never the provisioned agent key. The user's key is the Cognee API key
+    option (a hook and everything it starts has it); on the plugin's own local
+    server it is the key minted there and cached.
     """
     service_url = _normalize_service_url(service_url or _local_api_url())
     agent_key = load_cached_agent_key(service_url)
     for candidate in (
-        _api_key_with_source(service_url)[0],
+        _process_keys.get("principal", ""),
+        user_cloud_key(service_url),
         load_cached_api_key(service_url),
     ):
         candidate = str(candidate or "").strip()
@@ -2699,6 +2672,20 @@ def active_agent_key(service_url: str = "") -> str:
     except RuntimeError:
         return ""
     return key if source == "plugin_agent_key" else ""
+
+
+def shell_api_key(service_url: str = "") -> str:
+    """The key a script run outside a hook sends: the one the hooks send.
+
+    The plugin-agent key when it is in force, else the user's own: the Cognee
+    API key option (present when the script runs through the relay a hook
+    started, see ``_relay.py``) or the key cached for the plugin's own local
+    server. "" when there is none, never an exception.
+    """
+    try:
+        return _api_key_with_source(service_url)[0]
+    except RuntimeError:
+        return ""
 
 
 def _control_plane_request(
@@ -3250,9 +3237,6 @@ def resolve_shared_dataset(dataset: str, *, allow_setup: bool = False) -> dict:
     }
     if not shared_memory_enabled():
         return {**outcome, "reason": "opt_out"}
-    if plugin_identity_mode() == "disabled":
-        # No agent to share with (and no key lookups spent finding that out).
-        return {**outcome, "reason": "no_agent_identity"}
     principal_key = principal_key_for_control_plane(service_url)
     agent_key = active_agent_key(service_url)
     agent_id = load_cached_agent_id(service_url)
@@ -3298,13 +3282,15 @@ def refresh_shared_memory(host_key: str = "") -> bool:
 
 
 def plugin_identity_mode(config: dict | None = None) -> str:
-    """Always ``disabled`` in the Claude Code plugin.
-
-    A plugin identity needs its minted key kept between sessions, and this
-    plugin stores no key (directory policy). ``COGNEE_PLUGIN_IDENTITY`` is
-    ignored; everything runs as the user's own key.
-    """
-    return "disabled"
+    value = (config or {}).get("plugin_identity", os.environ.get("COGNEE_PLUGIN_IDENTITY", "auto"))
+    if value is None or str(value).strip().lower() == "auto":
+        return "auto"
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return "enabled"
+    if normalized in ("0", "false", "no", "off"):
+        return "disabled"
+    raise ValueError("COGNEE_PLUGIN_IDENTITY must be auto, true, or false")
 
 
 def managed_endpoint_enabled(config: dict | None = None) -> bool:
@@ -3320,67 +3306,114 @@ def managed_endpoint_enabled(config: dict | None = None) -> bool:
     return val.strip().lower() in ("1", "true", "yes", "on")
 
 
-def cloud_key_applies(service_url: str) -> bool:
-    """Whether the Cloud key option is the key for ``service_url``.
-
-    True for a remote server, and for the configured Cloud URL option while the
-    terminal is pinned to cloud (``COGNEE_BACKEND=cloud``: a self-hosted server
-    on a loopback address used as Cloud). Any other server on this machine
-    gets its own owner key, never the Cloud key; the pin with no URL option
-    sends the key nowhere. The rule itself lives in ``_env_file``.
-    """
-    from _env_file import cloud_key_applies as _applies
-
-    return _applies(service_url)
+def _principal_fingerprint(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest() if key else ""
 
 
-def takes_owner_key(service_url: str) -> bool:
-    """Whether ``service_url`` is the plugin's own local server, authenticated
-    with the owner key looked up from it: a server on this machine, unless the
-    terminal is pinned to cloud (then nothing is looked up or logged into)."""
-    from _env_file import forced_backend
+@contextmanager
+def plugin_identity_lock(timeout: float = 25.0):
+    """Fail closed; an OS lock is released even if a bootstrap process dies."""
+    path = _AGENT_KEY_CACHE.with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        # Windows permits locking beyond EOF. Writing here would fail when
+        # another process holds the byte lock, before our retry loop runs.
+        deadline = time.monotonic() + timeout
+        while not locked:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                if os.name == "nt":
+                    import msvcrt
 
-    return service_url_is_local(service_url) and forced_backend() != "cloud"
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out waiting for plugin identity bootstrap") from None
+                time.sleep(0.05)
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def block_cached_agent_key(expected_key: str) -> None:
+    with plugin_identity_lock():
+        data = _load_json_file(_AGENT_KEY_CACHE)
+        # A concurrent explicit reconnect may already have replaced this key.
+        if data.get("api_key") == expected_key:
+            data["blocked"] = True
+            _write_credential(data)
+
+
+def _write_credential(data: dict) -> None:
+    _AGENT_KEY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _AGENT_KEY_CACHE.with_name(f"agent_key.{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, _AGENT_KEY_CACHE)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _api_key_with_source(service_url: str = "") -> tuple[str, str]:
-    """The key every request runs as: the user's own (no plugin identity).
-
-    A remote server gets the Cloud key option. A local one gets its own owner
-    key: the Cloud key is never sent to this machine's server (it would be
-    refused, and it is not that server's key), unless the terminal is pinned to
-    cloud (see ``cloud_key_applies``).
-    """
+    """Select the key to send: the bound agent key, else the user's own."""
+    if _process_keys.get("api_key"):
+        return str(_process_keys["api_key"]), "session_start"
     service_url = _normalize_service_url(service_url or _local_api_url())
-    if not cloud_key_applies(service_url):
-        # The local server's own key, or none at all while pinned to cloud.
-        local = load_cached_api_key(service_url)
-        return (local, "local_owner_key") if local else ("", "missing")
-    from _env_file import option
-
-    # The option itself, read here: the key is never copied into another
-    # environment variable, so a process Claude Code gave no options has none.
-    key = option("cognee_api_key")
-    return (key, "env_api_key") if key else ("", "missing")
-
-
-def require_shell_auth(service_url: str, api_key: str, tool: str) -> None:
-    """Stop a Bash-run command that has no key for a remote server. Exits 2.
-
-    Claude Code passes the Cloud key option to the plugin's hooks only, so a
-    command run from a shell (a skill) has none in Cloud mode; failing here,
-    before any request, beats a 401 that sends the user to an option they
-    already set. A local server needs no key from the shell (owner key).
-    """
-    if str(api_key or "").strip() or takes_owner_key(str(service_url or "")):
-        return
-    print(
-        f"{tool}: no API key. The Cognee Cloud key is a plugin option that Claude Code "
-        "passes to the plugin's hooks only, so this command can't use it from a shell; "
-        "automatic recall and capture still work.",
-        file=sys.stderr,
+    agent_key = load_cached_agent_key(service_url)
+    option_key = user_cloud_key(service_url)
+    if option_key and option_key == agent_key:
+        # The agent's own key is not the user's, wherever it turns up.
+        option_key = ""
+    principal = (
+        str(_process_keys.get("principal") or "") or option_key or load_cached_api_key(service_url)
     )
-    sys.exit(2)
+    mode = plugin_identity_mode()
+    if agent_key and mode != "disabled":
+        record = _load_json_file(_AGENT_KEY_CACHE)
+        problem = ""
+        if record.get("blocked"):
+            problem = "Plugin identity was rejected; reconnect explicitly (no automatic rotation)"
+        elif not principal or record.get("principal_fingerprint") != _principal_fingerprint(
+            principal
+        ):
+            problem = "Plugin identity belongs to another or unverified principal; run SessionStart"
+        if not problem:
+            return agent_key, "plugin_agent_key"
+        # A rejected or foreign identity is never used. Explicit identity
+        # (``true``) makes that an error; ``auto`` — identity only in service
+        # of shared memory — keeps the plugin working as the principal. With
+        # no principal to fall back to, ``auto`` must not run keyless either:
+        # that would fail every request quietly instead of naming the cause.
+        if mode == "enabled" or not principal:
+            raise RuntimeError(
+                problem if principal else problem + " — and the Cognee API key option is not set"
+            )
+    if mode == "enabled":
+        raise RuntimeError("Plugin identity is enabled but not connected; run SessionStart")
+    if principal:
+        return principal, "plugin_option" if principal == option_key else "cache_single_key"
+    return "", "missing"
 
 
 def _api_key() -> str:
@@ -3390,9 +3423,9 @@ def _api_key() -> str:
 def resolved_http_endpoint_auth() -> tuple[str, str]:
     """Return (service_url, api_key) for runtime HTTP calls.
 
-    Service URL always falls back to localhost. API key is the single principal
-    key: the Cloud key option for a remote server, the local server's own
-    owner key otherwise. It is returned, never put in the environment.
+    Service URL always falls back to localhost. The key is the one
+    ``_api_key_with_source`` selects; it is returned, never put in the
+    environment.
     """
     service_url = _normalize_service_url(_local_api_url())
     api_key = _api_key().strip()
@@ -3422,7 +3455,9 @@ def probe_health(service_url: str = "", timeout: float = 1.0) -> str:
     if not base:
         return UNKNOWN
     try:
-        with open_url(f"{base}/health", timeout=timeout, context=_https_context()) as resp:
+        with urllib.request.urlopen(
+            f"{base}/health", timeout=timeout, context=_https_context()
+        ) as resp:
             return "ready" if resp.status == 200 else UNKNOWN
     except Exception as exc:
         verdict = classify_transport_exception(exc)
@@ -3487,15 +3522,16 @@ def write_server_pidfile(
     port: int,
     pid: int,
     version: str = "",
+    llm_observer: Optional[bool] = None,
     coding_memory: Optional[bool] = None,
 ) -> None:
     """Record the uvicorn server spawned on ``port`` (presence evidence).
 
-    ``coding_memory`` records whether the server was spawned with coding
-    distillation (DISTILLATION_MODE=coding, SDK-1336): a server keeps the
-    config it booted with, so a later session joining it must learn which one
-    that was, not assume its own. (A record written by 1.8.3 or older may also
-    carry ``llm_observer``: the server was started on the Claude observer.)
+    ``llm_observer`` records whether the server was spawned with the Claude
+    observer's environment: a server keeps the LLM config it booted with, so a
+    later session joining it must learn which one that was, not assume its own.
+    ``coding_memory`` does the same for coding distillation
+    (DISTILLATION_MODE=coding, SDK-1336).
     """
     record = {
         "pid": int(pid),
@@ -3503,6 +3539,8 @@ def write_server_pidfile(
         "version": version,
         "created_at": datetime.now(timezone.utc).timestamp(),
     }
+    if llm_observer is not None:
+        record["llm_observer"] = bool(llm_observer)
     if coding_memory is not None:
         record["coding_memory"] = bool(coding_memory)
     try:
@@ -3739,7 +3777,7 @@ def server_presence(
 
     Only PRESENCE_ABSENT licenses installing or booting. ``confirm_absent``
     adds one delayed, longer-budget re-probe before concluding absence — for
-    boot points about to install; pass False where a rigorous check follows
+    boot points about to install; give it False where a rigorous check follows
     later anyway (e.g. mode selection, whose boot path re-verifies).
 
     Local evidence (TCP, pidfile) only applies to loopback hosts: for remote
@@ -3804,7 +3842,14 @@ def server_presence(
 # "unreachable" is reserved for POSITIVE absence (connection refused / DNS /
 # unroutable). "not_responding" remains readable for compatibility with older
 # state files. Timeout streaks no longer write it or prevent another recall.
-CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error", "not_responding")
+CONNECTION_STATES = (
+    "ready",
+    "auth_failed",
+    "unreachable",
+    "server_error",
+    "not_responding",
+    "no_llm_chosen",
+)
 
 
 # Per-session copies of the status markers. The shared files above are
@@ -4044,142 +4089,6 @@ def _url_identity(url: str) -> str:
     return f"{parts.scheme.lower()}://{host}:{port}{parts.path.rstrip('/')}"
 
 
-#: Non-secret facts SessionStart records on the launch record, for doctor and
-#: the status line, which run without the plugin options (booleans and names
-#: only, never a key).
-LAUNCH_FACT_FIELDS = (
-    "cloud_key_option_set",
-    "llm_key_option_set",
-    "embedding_key_option_set",
-    "llm_provider",
-    "llm_model",
-    "key_source",
-)
-
-
-def record_launch_facts(host_key: str, facts: dict) -> None:
-    """Merge ``facts`` (see LAUNCH_FACT_FIELDS) into this launch's record. Never raises.
-
-    Anything that is not a boolean or a short string is dropped, so a key can
-    never be written by mistake.
-    """
-    try:
-        host_key = _sanitize_session_key(host_key) or get_session_key()
-        rec = _read_map_record(host_key)
-        if not rec:
-            return
-        clean: dict = {}
-        for name in LAUNCH_FACT_FIELDS:
-            if name not in facts:
-                continue
-            value = facts[name]
-            if isinstance(value, bool):
-                clean[name] = value
-            elif isinstance(value, str):
-                clean[name] = value[:80]
-        clean["recorded_at"] = datetime.now(timezone.utc).timestamp()
-        rec["launch_facts"] = clean
-        _write_map_record(host_key, rec)
-    except Exception as exc:
-        hook_log("launch_facts_write_failed", {"error": str(exc)[:200]})
-
-
-def latest_launch_facts(cwd: str = "") -> dict:
-    """The newest recorded launch facts for ``cwd``, else the newest overall, or {}."""
-    best_here: dict = {}
-    best_any: dict = {}
-    want = os.path.normcase(os.path.abspath(cwd)) if cwd else ""
-    try:
-        paths = list(_SESSIONS_MAP_DIR.glob("*.json"))
-    except Exception:
-        paths = []
-    for path in paths:
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        facts = rec.get("launch_facts") if isinstance(rec, dict) else None
-        if not isinstance(facts, dict):
-            continue
-        stamp = float(facts.get("recorded_at") or 0)
-        if stamp > float(best_any.get("recorded_at") or 0):
-            best_any = facts
-        rec_cwd = str(rec.get("cwd") or "")
-        if want and rec_cwd and os.path.normcase(os.path.abspath(rec_cwd)) == want:
-            if stamp > float(best_here.get("recorded_at") or 0):
-                best_here = facts
-    return dict(best_here or best_any)
-
-
-#: The LLM providers cognee runs without an API key (its own
-#: ``_NO_API_KEY_LLM_PROVIDERS``). Every other provider needs the key option.
-LLM_PROVIDERS_WITHOUT_A_KEY = frozenset({"bedrock", "llama_cpp"})
-
-
-def llm_configured(key_set: bool, provider: str = "") -> bool:
-    """Whether the plugin options give the local server a usable LLM.
-
-    The LLM API key option, or a provider that needs none. A provider option
-    alone is not enough: the server would start and then fail at its first LLM
-    call.
-    """
-    return bool(key_set) or str(provider or "").strip().lower() in LLM_PROVIDERS_WITHOUT_A_KEY
-
-
-def _observer_launch_evidence(rec: dict, path: Path) -> tuple[float, bool] | None:
-    """``(when, ran on the observer)`` for one local launch record, else None.
-
-    Two shapes say it. 1.8.2 and 1.8.3 wrote ``launch_facts.observer`` with the
-    launch's ``key_source``. 1.6.0 to 1.8.1 had no ``launch_facts``: they wrote
-    only a top-level ``llm_observer`` beside the launch's ``base_url``, stamped
-    by the record's ``created_at``. A Cloud launch says nothing about the local
-    server and gives None, as does a record with neither shape.
-    """
-    facts = rec.get("launch_facts")
-    if isinstance(facts, dict):
-        if facts.get("key_source") != "local_owner_key":
-            return None
-        observer = facts.get("observer")
-        active = isinstance(observer, dict) and observer.get("active") is True
-        return float(facts.get("recorded_at") or 0), active
-    legacy = rec.get("llm_observer")
-    if not isinstance(legacy, dict):
-        return None
-    base_url = str(rec.get("base_url") or "")
-    if base_url and not service_url_is_local(base_url):
-        return None
-    try:
-        stamp = datetime.fromisoformat(str(rec.get("created_at") or "")).timestamp()
-    except ValueError:
-        stamp = path.stat().st_mtime
-    return stamp, legacy.get("active") is True
-
-
-def last_local_launch_used_observer() -> bool:
-    """Whether the newest local launch on record ran on the Claude observer.
-
-    Only a launch of 1.8.3 or older records that (see
-    ``_observer_launch_evidence`` for the two shapes); the observer was removed
-    in 1.8.4. Read once, on the first start after the upgrade, to keep the
-    embedder of the datasets such an install built. A record that cannot be
-    read is skipped, so one bad file does not hide the others.
-    """
-    newest: tuple[float, bool] = (0.0, False)
-    try:
-        paths = list(_SESSIONS_MAP_DIR.glob("*.json"))
-    except Exception:
-        paths = []
-    for path in paths:
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-            evidence = _observer_launch_evidence(rec, path) if isinstance(rec, dict) else None
-        except Exception:
-            continue
-        if evidence and evidence[0] > newest[0]:
-            newest = evidence
-    return newest[1]
-
-
 def set_launch_base_url(host_key: str, base_url: str) -> None:
     """Record the server this launch registered on. Called by every SessionStart.
 
@@ -4194,7 +4103,9 @@ def set_launch_base_url(host_key: str, base_url: str) -> None:
     from _file_lock import file_lock
 
     lock_path = _session_map_path(host_key).with_suffix(".switch.lock")
-    with file_lock(lock_path, timeout=_float_env("COGNEE_SWITCH_LOCK_TIMEOUT", 5.0)) as held:
+    with file_lock(
+        lock_path, timeout=_float_env(os.environ.get("COGNEE_SWITCH_LOCK_TIMEOUT", ""), 5.0)
+    ) as held:
         if not held:
             return
         rec = _read_map_record(host_key)
@@ -4331,7 +4242,7 @@ def authed_liveness(service_url: str = "", api_key: str = "", timeout: float = 1
     req = urllib.request.Request(f"{base}/api/v1/datasets", method="GET")
     req.add_header("X-Api-Key", key)
     try:
-        with open_url(req, timeout=timeout, context=_https_context()) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
             status = resp.status
             if 200 <= status < 300:
                 return "ready"
@@ -4380,7 +4291,8 @@ def write_llm_state(state: str, detail: str = "", reason: str = "") -> None:
     Readers show a verdict only when it is theirs, or unattributable.
 
     ``reason`` is an optional status-line label overriding the default
-    ``incorrect_llm_api_key`` for a failed state.
+    ``incorrect_llm_api_key`` for a failed state — e.g. ``claude_not_logged_in``
+    when the LLM is the Claude observer and no key is involved at all.
     """
     if state not in LLM_STATES:
         state = "ok"
@@ -4640,7 +4552,7 @@ def urlopen_following_307(req, *, timeout: float, context=None):
 
     for _ in range(_MAX_REDIRECT_REPLAYS):
         try:
-            return open_url(req, timeout=timeout, context=context)
+            return urllib.request.urlopen(req, timeout=timeout, context=context)
         except urllib.error.HTTPError as exc:
             if exc.code not in _REDIRECT_REPLAY_CODES:
                 raise
@@ -4662,7 +4574,7 @@ def urlopen_following_307(req, *, timeout: float, context=None):
                 target, data=req.data, headers=dict(req.headers), method=req.get_method()
             )
             req = replay
-    return open_url(req, timeout=timeout, context=context)
+    return urllib.request.urlopen(req, timeout=timeout, context=context)
 
 
 _FALSE = {"0", "false", "no", "off"}
@@ -4703,16 +4615,6 @@ def recall_node_sets(project_tags: list[str]) -> list[str]:
     return list(dict.fromkeys(tags + extra))
 
 
-class LocalKeyUnavailable(urllib.error.URLError):
-    """No owner key for the plugin's local server yet (the lookup timed out,
-    the bootstrap has not minted it, or the server hides its keys).
-
-    The request is not sent: without a key the server can only answer 401,
-    which would read as a rejected key. Callers see it as a transport failure
-    with no verdict, like a timeout, never as an auth failure.
-    """
-
-
 def _json_http_request(
     path: str,
     payload: dict | None = None,
@@ -4727,31 +4629,8 @@ def _json_http_request(
     # billing routes). api_key overrides the resolved key for calls that must
     # authenticate as a specific identity (e.g. plugin provisioning runs as
     # the principal, never as the provisioned agent).
-    if base_url is None:
-        from _env_file import cloud_pinned_without_url
-
-        if cloud_pinned_without_url():
-            # Pinned to cloud with no Cloud URL option: the local address is
-            # not that server. Fail as an unreachable server would, without
-            # sending the request (and what it carries) anywhere.
-            raise urllib.error.URLError(
-                "COGNEE_BACKEND=cloud is set but the Cognee Cloud URL option is empty"
-            )
     base_url = (base_url or _local_api_url()).rstrip("/")
-    resolved_key = api_key is None
     api_key = api_key if api_key is not None else _api_key()
-    if resolved_key and not api_key and takes_owner_key(base_url):
-        # Carry the lookup's own failure as the reason: a timeout or a refused
-        # connection classifies as it would have for the request itself.
-        cause = _LOCAL_OWNER_LAST_ERROR.get(_normalize_service_url(base_url))
-        if isinstance(cause, urllib.error.URLError) and not isinstance(
-            cause, urllib.error.HTTPError
-        ):
-            cause = cause.reason
-        hook_log("local_key_unavailable", {"path": path, "cause": type(cause).__name__})
-        raise LocalKeyUnavailable(
-            cause if isinstance(cause, OSError) else "no local owner key yet; request not sent"
-        )
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-Api-Key"] = api_key
@@ -4773,23 +4652,27 @@ def _json_http_request(
         return json.loads(body)
 
 
-def _float_env(name: str, default: float) -> float:
-    """Read a float from the environment, falling back to default on absence/parse error."""
+def _float_env(raw: str, default: float) -> float:
+    """Parse a float setting, falling back to default when it is unset or not a number.
+
+    Takes the value, not the variable's name: each caller reads its own
+    setting by name, so every environment read in the plugin is spelled out.
+    """
     try:
-        raw = os.environ.get(name, "").strip()
+        raw = str(raw or "").strip()
         return float(raw) if raw else default
     except (TypeError, ValueError):
         return default
 
 
-def positive_float_env(name: str, default: float) -> float:
-    """A timeout from the environment: only a finite value > 0 is honoured.
+def positive_float_env(raw: str, default: float) -> float:
+    """A timeout setting's value: only a finite value > 0 is honoured.
 
     ``_float_env`` passes 0, negatives, inf and nan through, which a socket
     timeout turns into an immediate failure or an error; those fall back to
     ``default`` here.
     """
-    value = _float_env(name, default)
+    value = _float_env(raw, default)
     return value if math.isfinite(value) and value > 0 else default
 
 
@@ -4945,6 +4828,27 @@ def write_outcome_ambiguous(exc: Exception) -> bool:
     return True
 
 
+def revoke_minted_agent_key(*, principal_key: str, key_id: str, timeout: float = 20.0) -> bool:
+    """Revoke the key this machine just minted and nobody will hold. Best-effort.
+
+    Only that key goes (``DELETE /plugins/{plugin_key}/keys/{key_id}``): other
+    machines hold keys for the same agent, and disconnecting the plugin would
+    log every one of them out. Without an id there is nothing safe to revoke;
+    the unused key is pruned server-side once the agent fills up.
+    """
+    if not str(principal_key or "").strip() or not str(key_id or "").strip():
+        return False
+    status, _ = _control_plane_request(
+        f"/api/v1/integrations/plugins/{PLUGIN_KEY}/keys/{urllib.parse.quote(key_id, safe='')}",
+        api_key=principal_key,
+        method="DELETE",
+        timeout=timeout,
+    )
+    if status != 200:
+        hook_log("plugin_key_revoke_failed", {"status": status, "key_id": key_id})
+    return status == 200
+
+
 #: OpenAPI marker the server sets on the provision operation (cognee#6113):
 #: provisioning only ever adds a key and never revokes another, so any machine
 #: may provision. Servers without it rotate every key on provision; the plugin
@@ -4990,9 +4894,120 @@ def additive_plugin_keys_supported(
     return supported
 
 
+def record_key_limit(service_url: str) -> None:
+    """Remember that the server refused this machine a key: the agent is full."""
+    _write_json_file(
+        _KEY_LIMIT_MARKER,
+        {
+            "base_url": _normalize_service_url(service_url),
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
+
+
+def clear_key_limit() -> None:
+    try:
+        _KEY_LIMIT_MARKER.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def key_limit_message() -> str:
-    """Plugin identity is off, so there is no agent key limit to report."""
-    return ""
+    """The user-facing warning while this machine runs on the personal key
+    because the plugin's agent is full; "" when it is not."""
+    marker = _load_json_file(_KEY_LIMIT_MARKER)
+    if not marker:
+        return ""
+    base_url = str(marker.get("base_url") or "") or "the Cognee server"
+    return (
+        f"Cognee: this machine is using your personal API key, not its own "
+        f"{PLUGIN_LABEL} key. {base_url} refused a new key because your "
+        f"{PLUGIN_LABEL} agent already holds the maximum number (one per machine, "
+        "all in use). Memory still works, but what this machine stores is attributed "
+        f"to you rather than to {PLUGIN_LABEL}. To give it its own key, revoke an old "
+        f"machine's key: {KEYS_COMMAND_HINT} lists them (most recently used first) and "
+        "revokes the one you choose. Then start a new session."
+    )
+
+
+def provision_plugin_agent_via_http(
+    *,
+    principal_key: str,
+    service_url: str = "",
+    timeout: float = 20.0,
+) -> tuple[str, dict]:
+    """Add a key for this plugin's agent, as the user principal.
+
+    Only against a server that advertises ``ADDITIVE_KEYS_MARKER``: there every
+    provision adds one key and revokes none, so each machine holds its own key
+    and provisioning is always safe. On any other server provisioning revokes
+    every other machine's key, so it is not attempted (``unsupported``).
+
+    Verdicts: ``provisioned`` (body: ``api_key``, ``agent_id``, ``key_id``,
+    ``created``), ``limit`` (the agent is full of keys in use — 409),
+    ``unsupported`` (no plugin routes, or a server that rotates keys) and
+    ``failed``. Anything but ``provisioned`` must fail closed in the caller.
+    """
+    if not str(principal_key or "").strip():
+        return "failed", {}
+    base_url = service_url or _local_api_url()
+    if not additive_plugin_keys_supported(
+        principal_key=principal_key, service_url=base_url, timeout=timeout
+    ):
+        hook_log("plugin_provision_skipped", {"reason": "no_additive_keys"})
+        return "unsupported", {}
+    try:
+        result = _json_http_request(
+            f"/api/v1/integrations/plugins/{PLUGIN_KEY}/provision",
+            {},
+            method="POST",
+            timeout=timeout,
+            api_key=principal_key,
+            base_url=base_url,
+        )
+        reason = "not_an_object"
+        if isinstance(result, dict):
+            body = {
+                "api_key": str(result.get("api_key") or result.get("apiKey") or "").strip(),
+                "agent_id": str(result.get("agent_id") or result.get("agentId") or ""),
+                "key_id": str(result.get("key_id") or result.get("keyId") or ""),
+                # False when an existing agent got one more key.
+                "created": bool(result.get("created")),
+            }
+            if not body["api_key"]:
+                reason = "incomplete"
+            elif not body["agent_id"]:
+                # Shared memory wires the agent by id; without one the launch
+                # would provision, then report ``no_agent_identity``.
+                reason = "missing_agent_id"
+            elif body["api_key"] == str(principal_key or "").strip():
+                # The caller's own key handed back as the "agent" key: no
+                # isolation at all, and the principal resolvers skip whatever
+                # the agent cache holds, so the launch would end up keyless.
+                reason = "agent_key_equals_principal"
+            else:
+                return "provisioned", body
+        hook_log(
+            "plugin_provision_bad_response",
+            {
+                "reason": reason,
+                "keys": sorted(result) if isinstance(result, dict) else str(type(result)),
+            },
+        )
+        return "failed", {}
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 405):
+            return "unsupported", {}
+        if exc.code == 409:
+            # The agent holds the maximum number of keys and too few are stale
+            # to prune; an old machine's key must be revoked.
+            hook_log("plugin_provision_skipped", {"reason": "key_limit"})
+            return "limit", {}
+        hook_log("plugin_provision_failed", {"status": exc.code, "error": str(exc)[:200]})
+        return "failed", {}
+    except Exception as exc:
+        hook_log("plugin_provision_failed", {"error": str(exc)[:200]})
+        return "failed", {}
 
 
 def register_agent_via_http(
@@ -5005,7 +5020,7 @@ def register_agent_via_http(
 ) -> tuple[bool, dict]:
     if timeout is None:
         # Tunable independently of recall/remember; 15s is the historical value.
-        timeout = positive_float_env("COGNEE_REGISTER_TIMEOUT", 15.0)
+        timeout = positive_float_env(os.environ.get("COGNEE_REGISTER_TIMEOUT", ""), 15.0)
     payload = {
         "agent_session_name": agent_session_name,
         # Self-declared connection type (the server keeps a free-form registry;
@@ -5239,9 +5254,11 @@ REACHABLE_TIMEOUT_DEFAULT_SECONDS = 2.0
 
 def _backend_reachable(base_url: str, timeout: float | None = None) -> bool:
     if timeout is None:
-        timeout = positive_float_env("COGNEE_REACHABLE_TIMEOUT", REACHABLE_TIMEOUT_DEFAULT_SECONDS)
+        timeout = positive_float_env(
+            os.environ.get("COGNEE_REACHABLE_TIMEOUT", ""), REACHABLE_TIMEOUT_DEFAULT_SECONDS
+        )
     try:
-        with open_url(
+        with urllib.request.urlopen(
             f"{base_url.rstrip('/')}/health", timeout=timeout, context=_https_context()
         ) as resp:
             return 200 <= resp.status < 500
@@ -5527,6 +5544,8 @@ def drain_warmup_entries(
                 drained += 1
             except urllib.error.HTTPError as exc:
                 http_failure = True
+                if exc.code == 402:
+                    record_payment_required("save")
                 hook_log(
                     "warmup_drain_error",
                     {"error": str(exc)[:200], "drained": drained, "status": exc.code},
@@ -5624,7 +5643,10 @@ def improve_session_via_http(dataset: str, session_id: str, *, timeout: float = 
     submit_timeout = (
         timeout
         if timeout is not None
-        else _float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS)
+        else _float_env(
+            os.environ.get("COGNEE_IMPROVE_SUBMIT_TIMEOUT", ""),
+            IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS,
+        )
     )
     improve_payload = {
         **write_fields(dataset),
@@ -5711,7 +5733,9 @@ def ensure_dataset_via_http(dataset: str) -> None:
                     method="POST",
                 )
                 try:
-                    with open_url(req, timeout=15.0, context=_https_context()) as resp:
+                    with urllib.request.urlopen(
+                        req, timeout=15.0, context=_https_context()
+                    ) as resp:
                         resp.read()
                     hook_log("dataset_ensured", {"dataset": dataset, "via": "redirect"})
                     return
@@ -5754,7 +5778,7 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
     else:
         # Detached context: nothing user-visible waits on this, so the drain
         # gets a far larger budget than the per-prompt hook's default.
-        final_budget = _float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
+        final_budget = _float_env(os.environ.get("COGNEE_DRAIN_BUDGET_FINAL", ""), 120.0)
         _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
         if remaining:
             # One bounded retry after a short pause: the tail usually failed on a
@@ -5778,6 +5802,10 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
             reason = "failed"
     ok = bool(result.get("ok"))
     error = str(result.get("error") or "")
+    if result.get("status") == 402:
+        record_payment_required("improve")
+    elif ok:
+        clear_payment_required()
     hook_log(
         "improve_fired",
         {
@@ -5794,6 +5822,11 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
 
         update_stats(get_session_key(), improves_landed=1)
         record_improve_success(session_id, dataset, trigger)
+        # Status-line credits: attribute the spend recorded since the previous
+        # reading to this improve. Approximate on purpose — the submit is
+        # run_in_background, so part of this run's cognify cost lands in later
+        # unlabeled refreshes. refresh_credits never raises and no-ops locally.
+        refresh_credits("improve")
     else:
         record_improve_failure(
             session_id, dataset, trigger, (error or "failed") if reason == "failed" else reason
@@ -5813,6 +5846,28 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
 
 # Split out to keep this file under the plugin directory's 256 KiB per-file
 # limit; re-exported so every importer keeps using _plugin_common.<name>.
+from _credits import (  # noqa: E402,F401
+    _CREDITS_ENTRY_MAX_AGE_SECONDS,
+    _CREDITS_LOCK,
+    _CREDITS_LOCK_STALE_SECONDS,
+    _CREDITS_MARKER,
+    _CREDITS_URL_KEY_PREFIX,
+    _PLATFORM_API_URL_DEFAULT,
+    _credits_entry_for_url,
+    _credits_entry_last_seen,
+    _locate_credits_entry,
+    _placeholder_credits_key,
+    _platform_api_url,
+    _platform_host_for,
+    _release_credits_lock,
+    _select_tenant_budget,
+    _try_acquire_credits_lock,
+    _write_credits_marker,
+    clear_payment_required,
+    read_credits_marker,
+    record_payment_required,
+    refresh_credits,
+)
 from _state_sweep import (  # noqa: E402,F401
     _SWEEP_LAUNCH_RECORD_DEAD_GRACE_SECONDS,
     _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS,
@@ -5830,11 +5885,20 @@ from _update_check import (  # noqa: E402,F401
     _INSTALLED_PLUGINS_FILE,
     _KNOWN_MARKETPLACES,
     _UPDATE_CHECK_FILE,
+    _UPDATE_CHECK_INTERVAL_DEFAULT,
     _UPDATE_DEFAULT_PLUGIN_ID,
+    _UPDATE_DEFAULT_REF,
+    _UPDATE_DEFAULT_REPO,
     _UPDATE_PLUGIN_ENTRY,
+    _fetch_published_version,
     _installed_plugin_version,
     _parse_semver,
     _recorded_install_version,
     _semver_gt,
+    _update_check_enabled,
+    _update_source,
     installed_plugin_id,
+    mark_update_notified,
+    maybe_check_for_update,
+    read_update_status,
 )

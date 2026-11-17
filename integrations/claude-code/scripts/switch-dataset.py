@@ -32,7 +32,7 @@ pinned, ``reason``: ``dataset_picked``, ``configured_pin`` or
 non-JSON output prints.
 
 Runs under the host's shell tool (no hook payload), so it finds its own launch
-record via ``resolve_host_key_outside_hook``; pass ``--session-key <host id>``
+record via ``resolve_host_key_outside_hook``; give ``--session-key <host id>``
 to pin one when several launches share a directory.
 
 Exit codes:
@@ -68,7 +68,6 @@ from _plugin_common import (  # noqa: E402
     recall_mode,
     recall_pin_reason,
     register_agent_via_http,
-    require_shell_auth,
     resolve_host_key_outside_hook,
     resolve_shared_dataset,
     resolved_http_endpoint_auth,
@@ -269,8 +268,10 @@ def _sync_current(host_key: str, session_id: str, dataset: str) -> str:
                 {"session": session_id, "dataset": dataset, "via": "cloud_worker"},
             )
             return ""
-        env = os.environ.copy()
-        env["COGNEE_SESSION_KEY"] = host_key
+        from _proc import child_env
+
+        env = child_env()
+        env["COGNEE_SESSION_REF"] = host_key
         env["COGNEE_SYNC_SESSION_ID"] = session_id
         env["COGNEE_SYNC_DATASET"] = dataset
         proc = subprocess.Popen(
@@ -380,8 +381,10 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
     except Exception:
         log_fh = subprocess.DEVNULL
     try:
-        env = os.environ.copy()
-        env["COGNEE_SESSION_KEY"] = host_key
+        from _proc import child_env
+
+        env = child_env()
+        env["COGNEE_SESSION_REF"] = host_key
         subprocess.Popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -575,17 +578,6 @@ def _auto(host_key: str, rec: dict) -> dict:
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
-def _require_auth() -> None:
-    """Exit 2, before any request, when a remote server has no key here.
-
-    This runs from a shell (the cognee-switch-datasets skill), where Claude
-    Code passes no Cloud key option; listing or switching could only 401.
-    ``auto`` and ``pin`` only edit the launch record, so they skip the check.
-    """
-    service_url, api_key = resolved_http_endpoint_auth()
-    require_shell_auth(service_url, api_key, "cognee-switch-datasets")
-
-
 def _print_listing(result: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result))
@@ -629,7 +621,6 @@ def main(argv: list[str] | None = None) -> int:
         if positional and positional[0].strip().lower() == "pin":
             _print_switch(_pin(host_key, rec), as_json)
             return EXIT_OK
-        _require_auth()
         if do_list or not positional:
             _print_listing(_list(host_key, rec), as_json)
             return EXIT_OK
@@ -653,4 +644,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     sys.exit(main())

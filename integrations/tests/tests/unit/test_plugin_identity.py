@@ -27,16 +27,6 @@ import urllib.error
 
 import pytest
 
-
-@pytest.fixture(autouse=True)
-def _needs_plugin_identity(request):
-    # The Claude Code plugin has no plugin identity and stores no key (SDK-1411).
-    if "suite" in request.fixturenames:
-        suite = request.getfixturevalue("suite")
-        if not suite.has_plugin_identity:
-            pytest.skip(f"{suite.name}: no plugin identity")
-
-
 #: Self-declared connection type per suite (KNOWN_AGENT_CONNECTION_TYPES).
 CONNECTION_TYPE = {
     "claude-code": "claude_code",
@@ -61,7 +51,7 @@ def pc(suite, isolated_modules, mock_server, monkeypatch):
     """
     module = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     return module
 
 
@@ -398,7 +388,7 @@ def test_principal_registers_a_dataset_that_does_not_exist_yet(
     created before the first registration, not after it."""
     mock_server.identity.register_checks_datasets = True
     mock_server.identity.seed_api_key(PRINCIPAL_KEY)
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     module, run = bootstrap
     _user_id, api_key, _name, ok = run({"api_key": PRINCIPAL_KEY, "plugin_identity": False})
     assert ok and api_key == PRINCIPAL_KEY
@@ -496,7 +486,7 @@ def test_readiness_accepts_a_dataset_writable_only_through_the_role(
     config = isolated_modules(suite, "config")
     agent_key, dataset_id, marker = _shared_memory_fixture(mock_server.identity, suite.name)
     pc._save_shared_memory_marker({"base_url": mock_server.url, **marker})
-    monkeypatch.setenv("COGNEE_API_KEY", agent_key)
+    monkeypatch.setenv(suite.api_key_env, agent_key)
 
     asyncio.run(config.ensure_dataset_ready_via_api(mock_server.url, agent_key, dataset_id))
     direct = mock_server.identity.principal_datasets(marker["agent_id"], "write")
@@ -529,7 +519,7 @@ def test_api_key_resolution_prefers_the_plugin_identity(suite, pc, mock_server):
 
 def test_api_key_resolution_falls_back_to_env_without_identity(suite, pc, mock_server):
     key, source = pc._api_key_with_source(mock_server.url)
-    assert (key, source) == (PRINCIPAL_KEY, "env_api_key")
+    assert (key, source) == (PRINCIPAL_KEY, suite.api_key_source)
 
 
 # ── session-start bootstrap policy ──────────────────────────────────────────
@@ -544,7 +534,7 @@ def bootstrap(suite, hook_module, mock_server, monkeypatch):
     """
     module = hook_module(suite, "session-start.py")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.delenv("COGNEE_API_KEY", raising=False)
+    monkeypatch.delenv(suite.api_key_env, raising=False)
 
     def run(config: dict):
         config.setdefault("base_url", mock_server.url)
@@ -575,7 +565,7 @@ def test_existing_install_stays_on_the_principal_with_separated_memory(
     """A pre-existing env key marks a non-fresh install. With shared agent
     memory opted out there is nothing to keep the principal's datasets
     reachable from an agent, so no silent migration happens."""
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     monkeypatch.setenv("COGNEE_SHARED_AGENT_MEMORY", "false")
     module, run = bootstrap
     _user_id, api_key, _name, ok = run({"api_key": PRINCIPAL_KEY})
@@ -588,7 +578,7 @@ def test_existing_install_migrates_under_shared_memory(suite, bootstrap, mock_se
     """Shared memory (the default) makes migration safe — the shared role keeps
     every principal-owned dataset reachable — so an existing install moves onto
     its plugin identity."""
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     module, run = bootstrap
     _user_id, api_key, _name, ok = run({"api_key": PRINCIPAL_KEY})
     assert ok
@@ -602,7 +592,7 @@ def test_existing_install_reverts_when_shared_memory_is_unavailable(
     """The migration promise is 'nothing gets stranded'. When the server cannot
     wire shared memory (here: no permissions API), an existing install drops the
     freshly provisioned agent key and stays on the principal."""
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     mock_server.identity.permissions_api = False
     module, run = bootstrap
     _user_id, api_key, _name, ok = run({"api_key": PRINCIPAL_KEY})
@@ -617,7 +607,7 @@ def test_existing_install_reverts_when_shared_memory_is_unavailable(
 
 
 def test_existing_install_provisions_on_opt_in(suite, bootstrap, mock_server, monkeypatch):
-    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
+    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
     module, run = bootstrap
     _user_id, api_key, _name, ok = run({"api_key": PRINCIPAL_KEY, "plugin_identity": "true"})
     assert ok

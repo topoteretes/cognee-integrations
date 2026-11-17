@@ -31,6 +31,7 @@ from _plugin_common import (
     load_resolved,
     notify,
     quiet_hook_output,
+    refresh_credits,
     remember_pending_prompt,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
@@ -38,7 +39,7 @@ from _plugin_common import (
     set_session_key,
     touch_activity,
 )
-from _proc import pid_alive
+from _proc import child_env, pid_alive
 from config import coding_memory_enabled, get_dataset, get_session_id, load_config
 
 MAX_TEXT = 4000
@@ -48,16 +49,17 @@ _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _WATCHER_SCRIPT = Path(__file__).with_name("idle-watcher.py")
 
 
-def _load_session() -> tuple[str, str, str]:
+def _load_session() -> tuple[str, str, str, str]:
     resolved = load_resolved(identity=False) if cloud_enabled() else load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
+    tenant_id = resolved.get("tenant_id", "")
     if not session_id or not dataset:
         config = load_config()
         session_id = session_id or get_session_id(config)
         dataset = dataset or get_dataset(config)
-    return session_id, dataset, user_id
+    return session_id, dataset, user_id, tenant_id
 
 
 def _watcher_alive() -> bool:
@@ -97,7 +99,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
         "session_id": session_id,
         "dataset": dataset,
         "user_id": user_id,
-        "session_key": os.environ.get("COGNEE_SESSION_KEY", ""),
+        "session_key": os.environ.get("COGNEE_SESSION_REF", ""),
         "config": {
             "base_url": config.get("base_url", ""),
             "llm_model": config.get("llm_model", ""),
@@ -115,7 +117,7 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
         log_fh = subprocess.DEVNULL
 
     try:
-        env = os.environ.copy()
+        env = child_env()
         subprocess.Popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -147,7 +149,7 @@ async def _store(prompt: str, payload: dict):
         return
     prompt = sanitize(prompt)
     payload = sanitize(payload)
-    session_id, dataset, user_id = _load_session()
+    session_id, dataset, user_id, tenant_id = _load_session()
     if not session_id:
         hook_log("no_session_id", {"event": "prompt"})
         return
@@ -202,6 +204,14 @@ async def _store(prompt: str, payload: dict):
             drain_warmup_entries(dataset, session_id)
         except Exception as exc:
             hook_log("warmup_drain_failed", {"error": str(exc)[:200]})
+        # Status-line credits: unlabeled refresh at turn START. This reading
+        # is the baseline the Stop-time refresh (credits-refresh.py) diffs
+        # against to attribute the finished turn's cost — labeling it here
+        # would misattribute the PREVIOUS turn's tail as this turn's recall.
+        # tenant_id (from this turn's connections/me lookup) binds the marker
+        # entry to our tenant, so the tenantless Stop-hook refresh can find it
+        # by base_url. Never raises; no-ops on a local server.
+        refresh_credits(tenant_id=tenant_id)
 
 
 def main():

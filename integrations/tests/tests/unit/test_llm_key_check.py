@@ -28,7 +28,6 @@ import json
 import sys
 import time
 import types
-from pathlib import Path
 
 import pytest
 
@@ -77,10 +76,6 @@ def run_check(suite, hook_module, isolated_modules, monkeypatch):
     session's fresh write must not stop us from validating our own key.
     """
     watcher = hook_module(suite, "idle-watcher.py")
-    if "import litellm" not in Path(watcher.__file__).read_text(encoding="utf-8"):
-        # Claude Code checks only its observer and never a provider key
-        # (SDK-1411); see test_observer.py and test_claude_no_foreign_calls.py.
-        pytest.skip(f"{suite.name}: the idle watcher has no LLM key check")
     pc = isolated_modules(suite, "_plugin_common")
 
     def _run(
@@ -263,7 +258,7 @@ def test_recent_check_by_another_session_does_not_throttle_us(run_check):
 
 
 def test_opt_out_env_skips_the_check(run_check):
-    writes, _ = run_check(env={"COGNEE_LLM_KEY_CHECK": "false"})
+    writes, _ = run_check(env={"COGNEE_LLM_KEY_CHECK": "false", "COGNEE_LLM_CHECK": "false"})
     assert writes == [], writes
 
 

@@ -40,6 +40,7 @@ def pc(suite, _supported, isolated_modules, monkeypatch):
 def session_start(suite, _supported, hook_module, monkeypatch):
     module = hook_module(suite, "session-start.py")
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
+    monkeypatch.setenv("COGNEE_LLM_OBSERVER", "false")
     monkeypatch.setattr(module, "_LAZY_BOOTSTRAP", True)
     monkeypatch.setattr(module, "_spawn_bootstrap", lambda *a, **k: None)
     monkeypatch.setattr(module, "_spawn_idle_watcher", lambda *a, **k: None)

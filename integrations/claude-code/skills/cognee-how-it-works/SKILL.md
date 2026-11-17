@@ -28,24 +28,15 @@ Explain the paths relevant to the question:
   logged, stored, sent as a query or uploaded. This covers explicit remember
   (`/cognee-remember`, `/cognee-handoff`) too, and no setting turns it off. Claude
   still sees the span in the live turn; a `--file` upload is sent unchanged.
-- Cloud calls go to the Cognee Cloud URL using the Cognee Cloud API key, both plugin
-  options that Claude Code asks for when the plugin is enabled (the key is kept in
-  Claude Code's secure storage and never written to disk by the plugin). Local mode
-  uses a local server.
-- Local mode needs the LLM API key plugin option to build memory into the graph: the
-  local server sends captured text to that LLM provider (and to the embedding
-  provider) to build it. Without the key, existing memory is still recalled and
-  sessions are still captured, but nothing new is built; session start says so, and
-  the LLM row of `cognee-doctor.sh` shows what the server has.
+- Cloud calls go to the configured server URL using the Cognee API key option (keys are plugin options, never read from the shell or `~/.cognee/.env`); local mode uses a local
+  server. Cloud credit status comes from the Cognee platform API.
 - Recall injects selected memory into Claude's context. The injection budget drops
   whole entries and the session ledger avoids repeating cloud memory until context
   is cleared or compacted.
 - Local logs and markers live in `~/.cognee-plugin/claude-code/`. Server memory stays
   until explicitly deleted. `cognee-report` measures observed outcomes.
-- The plugin never writes Claude Code's settings. In Cloud mode it says once that
-  Claude auto-memory is on alongside Cognee and how to turn it off
-  (`autoMemoryEnabled: false` in `~/.claude/settings.json`); it
-  installs no packages and adds no status line.
+- Cloud setup manages native auto-memory only when there is no explicit user choice;
+  `COGNEE_DISABLE_AUTO_MEMORY=false` restores the plugin-owned setting.
 
 Distinguish an accepted capture, a landed graph improve, and recalled context.
 Consult the installed README for background retries/cache behavior before claiming

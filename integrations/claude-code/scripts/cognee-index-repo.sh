@@ -41,59 +41,17 @@ set -euo pipefail
 
 PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
-# Exits 2, with the reason on stderr, when the server is remote and no key
-# resolves here: a Cognee Cloud key is a plugin option Claude Code passes to
-# the plugin's hooks only, so nothing is submitted from a shell.
-runtime_status=0
-runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}"
-import json
-import pathlib
-import sys
 
-plugin_dir = pathlib.Path(sys.argv[1])
-import os
-# One-time config from ~/.cognee/.env (shell exports still win).
-sys.path.insert(0, sys.argv[2])
-try:
-    from _env_file import load_env_file
-    load_env_file()
-except Exception:
-    pass
-service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
-
-# Only the guard runs here: a remote server is authorized by the Cloud key
-# option alone (no lookup, no request), which reaches hooks only, and a local
-# server needs nothing from the shell. The opt-out keeps _plugin_common from
-# re-execing this heredoc into the plugin venv (stdin is the script): nothing
-# here needs it.
-os.environ["COGNEE_PLUGIN_IN_VENV"] = "1"
-try:
-    import _plugin_common
-    from _env_file import cloud_key
-except Exception:
-    _plugin_common = None
-guard = getattr(_plugin_common, "require_shell_auth", None)
-if guard is not None:
-    guard(service_url, cloud_key(service_url), "cognee-index-repo")
-
-# Only the address leaves this block: the request is authorized again, in
-# its own process, by _code_graph.py.
-print(json.dumps({"service_url": service_url}))
-PY
-)" || runtime_status=$?
-if [ "$runtime_status" -eq 2 ]; then
-    exit 2
+# A shell has no key (the keys are plugin options, handed to hooks only). When a
+# hook's relay is up it runs this script; exit code 111 means there is none.
+if [ "${COGNEE_RELAYED:-}" != "1" ]; then
+    relay_code=0
+    python3 "${SELF_DIR}/_relay.py" run "$(basename "${BASH_SOURCE[0]:-$0}")" "$@" || relay_code=$?
+    if [ "$relay_code" -ne 111 ]; then exit "$relay_code"; fi
 fi
-
-SERVICE_URL="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
-import json, sys
-try:
-    print((json.loads(sys.argv[1] or "{}").get("service_url") or "").strip())
-except Exception:
-    pass
-PY
-)"
-
+# The server address, resolved the way the hooks resolve it. The key never
+# enters this script: _code_graph.py resolves it for itself.
+SERVICE_URL="$(python3 "${SELF_DIR}/_authed_request.py" url 2>/dev/null || true)"
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
 
 REPO="${1:-}"
@@ -127,8 +85,7 @@ if [ -z "$REPO" ]; then
     exit 1
 fi
 
-# The empty second argument: _code_graph.py authorizes the request itself.
-RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "" index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
+RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" - index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"

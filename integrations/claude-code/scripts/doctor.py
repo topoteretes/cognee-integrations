@@ -23,17 +23,10 @@ import time
 import urllib.error
 import urllib.request
 
-from _net import open_url
-
 # Ensure the scripts directory is on sys.path so sibling modules resolve.
 _SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-
-# The settings layer, first: it applies the plugin options (or, from a shell,
-# the saved URL option) and the env file's tuning names before anything below
-# reads the environment.
-import config  # noqa: E402,F401
 
 
 def _resolve_local_cognee_version() -> str:
@@ -97,7 +90,7 @@ def _mode_annotation() -> str:
         return ""
     note = f" — forced by {var}={forced}"
     if forced == "cloud" and not str(load_config().get("base_url") or "").strip():
-        note += " (the Cloud URL option is empty — nothing to connect to)"
+        note += " (missing COGNEE_BASE_URL — nothing to connect to)"
     return note
 
 
@@ -120,67 +113,58 @@ def _resolve_server_url() -> tuple:
 
 
 _KEY_SOURCE_LABELS = {
-    "env_api_key": "Plugin option",
+    "plugin_agent_key": "Plugin identity",
     "plugin_option": "Plugin option",
-    "local_owner_key": "Local server",
-    "missing": "Not set",
+    "session_start": "Session start",
+    "cache_single_key": "Config",
+    "missing": "Default",
 }
-#: Shown for a setting only the plugin options hold when no session has
-#: recorded it yet: doctor runs from a shell, which Claude Code gives no options.
-NOT_VISIBLE = (
-    "set in the plugin options (not visible from a shell); start a session to see the current state"
-)
-
-
-def _has_options() -> bool:
-    """True when this process got the plugin options (run from a hook)."""
-    from _env_file import OPTION_PREFIX, is_hook_process
-
-    return is_hook_process() or any(name.startswith(OPTION_PREFIX) for name in os.environ)
-
-
-def _launch_facts() -> dict:
-    """What the newest session start recorded for this project (or any), or {}."""
-    from _plugin_common import latest_launch_facts
-
-    cwd = os.environ.get("CLAUDE_CWD", "") or os.getcwd()
-    try:
-        return latest_launch_facts(cwd)
-    except Exception:
-        return {}
-
-
-def _as_of(facts: dict) -> str:
-    stamp = float(facts.get("recorded_at") or 0)
-    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else "unknown time"
-    return f"(as of session start, {when})"
 
 
 def _resolve_api_key_source() -> str:
-    """Return a human-friendly label for where the API key came from.
+    """Return a human-friendly label for where the API key came from."""
+    from _plugin_common import _api_key_with_source
 
-    Run from a shell, doctor has no plugin options, so it reports what the
-    newest session start decided rather than recomputing it without them.
-    """
-    if _has_options():
-        from _plugin_common import _api_key_with_source
-
-        _key, source = _api_key_with_source()
-        return _KEY_SOURCE_LABELS.get(source, source)
-    facts = _launch_facts()
-    source = str(facts.get("key_source") or "")
-    if not source:
-        return NOT_VISIBLE
-    return f"{_KEY_SOURCE_LABELS.get(source, source)} {_as_of(facts)}"
+    _key, source = _api_key_with_source()
+    return _KEY_SOURCE_LABELS.get(source, source)
 
 
 def _resolve_memory_sharing() -> str:
     """How this plugin's memory relates to the user's other agents.
 
-    The Claude Code plugin runs as the user's own key (no plugin identity), so
-    it sees every dataset the user can; there is no shared agent role.
+    ``shared (role: cognee-agent)`` when the agent is wired into the shared
+    role; otherwise ``separated`` with the reason: the user opted out, the
+    plugin runs as the principal (no agent identity — the principal sees
+    everything anyway), or the wiring was skipped (older server, not the
+    tenant owner, tenant-less install that already owns data).
     """
-    return "principal (no plugin identity)"
+    from _plugin_common import (
+        AGENT_ROLE_NAME,
+        active_agent_key,
+        key_limit_message,
+        load_shared_memory_marker,
+        shared_memory_enabled,
+    )
+
+    if not shared_memory_enabled():
+        return "separated (opt-out)"
+    marker = load_shared_memory_marker()
+    if not active_agent_key() and key_limit_message():
+        return "principal (plugin key limit reached: free a slot with the cognee-keys skill)"
+    if not active_agent_key():
+        # An install that could not be wired (or whose identity is blocked or
+        # bound to another principal) runs as the principal; say why, so "no
+        # agent identity" is not mistaken for a broken install.
+        reason = str(marker.get("reason") or "").replace("_", " ")
+        return (
+            f"principal (shared memory unavailable: {reason})"
+            if reason
+            else ("principal (no agent identity)")
+        )
+    if marker.get("mode") == "shared":
+        return f"shared (role: {AGENT_ROLE_NAME})"
+    reason = str(marker.get("reason") or "not wired yet").replace("_", " ")
+    return f"separated ({reason})"
 
 
 def _check_health(server_url: str, timeout: float = 5.0) -> dict:
@@ -196,7 +180,9 @@ def _check_health(server_url: str, timeout: float = 5.0) -> dict:
 
     try:
         t0 = time.monotonic()
-        with open_url(f"{base}/health", timeout=timeout, context=_https_context()) as resp:
+        with urllib.request.urlopen(
+            f"{base}/health", timeout=timeout, context=_https_context()
+        ) as resp:
             latency = (time.monotonic() - t0) * 1000  # ms
             body_text = resp.read().decode("utf-8", errors="replace")
             try:
@@ -302,114 +288,78 @@ def _resolve_embedding() -> tuple[str, str]:
     (the values that govern local mode). "Default" means unset — cognee falls
     back to its built-in default.
     """
-    model = (os.environ.get("EMBEDDING_MODEL") or "").strip()
-    dims = (os.environ.get("EMBEDDING_DIMENSIONS") or "").strip()
-    if not model and not (os.environ.get("EMBEDDING_PROVIDER") or "").strip():
-        pinned = _pinned_embedder()
-        if pinned:
-            return pinned
-    return model or "Default", dims or "Default"
-
-
-def _pinned_embedder() -> tuple[str, str] | None:
-    """The embedder session start keeps for an install that ran on the Claude
-    observer (removed in 1.8.4), or None. A shell has no options, so doctor
-    reads the pin file session start wrote."""
-    try:
-        from _plugin_common import _PLUGIN_DIR
-
-        pin = json.loads((_PLUGIN_DIR / "embedder.json").read_text(encoding="utf-8"))
-        model = str(pin.get("EMBEDDING_MODEL") or "").strip()
-        dims = str(pin.get("EMBEDDING_DIMENSIONS") or "").strip()
-    except Exception:
-        return None
-    if not model:
-        return None
-    note = "(fastembed, kept for datasets built on the Claude observer)"
-    return f"{model} {note}", dims or "Default"
+    model = (os.environ.get("EMBEDDING_MODEL") or "").strip() or "Default"
+    dims = (os.environ.get("EMBEDDING_DIMENSIONS") or "").strip() or "Default"
+    return model, dims
 
 
 def _resolve_llm() -> str:
-    """Where the local server's LLM calls go: the provider the options configure.
+    """Where the local server's LLM calls go: a configured provider key, or the
+    Claude observer (Claude Code's own subscription via ``claude -p``).
 
-    Local mode only — a remote server owns its own LLM. The LLM settings are
-    plugin options, which a shell does not have, so without them this reports
-    what session start recorded. Read-only.
+    Local mode only — a remote server owns its own LLM. Read-only: decides as
+    session-start would (``resolve_observer``) and asks the shim's ``/health``;
+    it never starts the shim or touches the environment.
     """
+    from _observer import observer_alive, resolve_observer
+    from config import load_config
+
+    cfg = load_config()
     mode = _resolve_mode()
     if mode == "Cloud":
         return "Remote server (not applicable)"
-    owner = _server_owner()
-    if owner:
-        return f"Server not started by the plugin ({owner}) — its own LLM settings apply"
-    return _computed_llm() if _has_options() else _recorded_llm()
-
-
-_NO_LLM = "None — no LLM API key option set; the server cannot build new memory into the graph"
-
-
-def _server_owner() -> str:
-    """Why the local server is not the plugin's (``llm_key_owner``), or "".
-
-    A managed endpoint, or a server on the port this plugin did not start,
-    reads its LLM from its own environment: the options say nothing about it.
-    """
     try:
-        from _plugin_common import llm_key_owner
-        from config import load_config
+        decision = resolve_observer(cfg)
+    except Exception as exc:
+        return f"Unknown ({str(exc)[:80]})"
+    if decision.get("active"):
+        from _observer import SPEND_WARNING, embedding_warning
 
-        return llm_key_owner(load_config())
-    except Exception:
-        return ""
-
-
-def _no_llm(provider: str) -> str:
-    """The row for a local server the options give no usable LLM."""
-    if provider:
+        shim = "shim running" if observer_alive(decision.get("port")) else "shim not running"
         return (
-            f"None — LLM provider option is {provider} but no LLM API key option set; "
-            "the server cannot build new memory into the graph"
+            f"Claude Code observer (`claude -p`, model {decision.get('model')}, "
+            f"{decision.get('endpoint')}, {shim}). {SPEND_WARNING} {embedding_warning()}"
+            + (f" Warning: {decision['model_warning']}" if decision.get("model_warning") else "")
         )
-    return _NO_LLM
+    if decision.get("error"):
+        return f"None — {decision['error']}"
+    reason = str(decision.get("reason") or "")
+    from _observer import server_llm_choice
 
-
-def _recorded_llm() -> str:
-    facts = _launch_facts()
-    if not facts:
-        return NOT_VISIBLE
-    as_of = _as_of(facts)
-    from _plugin_common import llm_configured
-
-    recorded_provider = str(facts.get("llm_provider") or "").strip()
-    if llm_configured(bool(facts.get("llm_key_option_set")), recorded_provider):
-        provider = recorded_provider or "openai (default)"
-        model = str(facts.get("llm_model") or "") or "Default"
-        return f"Configured provider ({provider}, model {model}) {as_of}"
-    observer = facts.get("observer") if isinstance(facts.get("observer"), dict) else {}
-    if observer.get("active"):
-        # Recorded by 1.8.3 or older: no session of this version has started yet.
-        return f"Claude observer {as_of}, which this version removed — set the LLM API key option"
-    return f"{_no_llm(recorded_provider)} {as_of}"
-
-
-def _computed_llm() -> str:
-    """What this process's plugin options configure."""
-    from _env_file import option
-    from _plugin_common import llm_configured
-
-    provider = (os.environ.get("LLM_PROVIDER") or "").strip()
-    if llm_configured(bool(option("llm_api_key")), provider):
+    choice = server_llm_choice()
+    if reason == "llm_key_configured" or (reason == "llm_provider_configured" and choice):
+        provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
-        return f"Configured provider ({provider or 'openai (default)'}, model {model})"
-    return _no_llm(provider)
+        return f"Configured provider ({provider}, model {model})"
+    if reason == "server_dotenv_configured":
+        return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
+    if choice == "provider":
+        provider = (os.environ.get("LLM_PROVIDER") or "").strip()
+        return f"Configured provider ({provider}, no key needed)"
+    if choice == "local_models":
+        return (
+            "Local models (the local models option): GLiNER and fastembed, no LLM key; "
+            "the first memory build downloads torch and GLiNER"
+        )
+    paused = (
+        "None — local memory is paused: the local server is not started until you choose "
+        "an LLM in the plugin's options (an LLM API key, or the local models option) or "
+        "set COGNEE_LLM_OBSERVER=true"
+    )
+    if reason == "llm_key_ignored":
+        return paused + ". The LLM_API_KEY in your shell or ~/.cognee/.env is no longer read"
+    if reason == "claude_cli_missing":
+        return paused + ". No `claude` executable was found for the observer"
+    if reason == "disabled":
+        return paused + ". The observer is off (COGNEE_LLM_OBSERVER=false)"
+    return paused
 
 
 def _resolve_env_file() -> str:
-    """Tuning file (~/.cognee/.env): presence, the names it sets, what is ignored.
+    """One-time config file (~/.cognee/.env): presence, key names, overrides.
 
-    Values are never shown — only which settings the file defines, which of
-    them are shadowed by a real shell export, and which it holds that the
-    plugin no longer reads (credentials, the Cloud URL, LLM settings).
+    Values are never shown — only which keys the file defines, and which of
+    them are shadowed by a real shell export (exports win over the file).
     """
     from _env_file import env_file_status
 
@@ -418,16 +368,10 @@ def _resolve_env_file() -> str:
     if not status.get("exists"):
         return f"Not found ({path})"
     keys = status.get("keys") or []
-    desc = f"{path} ({len(keys)} setting{'s' if len(keys) != 1 else ''}: {', '.join(keys)})"
+    desc = f"{path} ({len(keys)} key{'s' if len(keys) != 1 else ''}: {', '.join(keys)})"
     overridden = status.get("overridden") or []
     if overridden:
         desc += f" — overridden by shell env: {', '.join(overridden)}"
-    refused = status.get("refused") or []
-    if refused:
-        desc += f" — {', '.join(refused)} ignored (set in the plugin options)"
-    ignored = status.get("ignored") or []
-    if ignored:
-        desc += f" — {', '.join(ignored)} ignored (not a plugin setting)"
     return desc
 
 
@@ -540,4 +484,8 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     main()

@@ -1,4 +1,4 @@
-"""A detached watcher never receives a key in argv. Claude Code: nor in a key variable."""
+"""A detached watcher receives credentials through its environment, never argv."""
 
 import json
 from unittest.mock import Mock
@@ -22,12 +22,7 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
     popen = Mock()
     monkeypatch.setattr(start.subprocess, "Popen", popen)
 
-    if suite.keys_from_plugin_options:
-        # Claude Code: the watcher takes no key at all.
-        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck_option")
-        start._spawn_exit_watcher("session-123", "test-dataset")
-    else:
-        start._spawn_exit_watcher("session-123", "test-dataset", api_key=explicit_key)
+    start._spawn_exit_watcher("session-123", "test-dataset", api_key=explicit_key)
 
     popen.assert_called_once()
     argv = popen.call_args.args[0]
@@ -36,19 +31,18 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
     assert "watcher-test-key" not in " ".join(argv)
     assert "inherited-test-key" not in " ".join(argv)
     env = popen.call_args.kwargs["env"]
-    if suite.keys_from_plugin_options:
-        # Claude Code: no key is handed over. The watcher inherits the plugin
-        # options and reads the Cloud key from there, or looks the local owner
-        # key up itself; a resolved key is never written to a key variable.
-        assert env["CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY"] == "ck_option"
-        assert "watcher-test-key" not in env.values()
-    else:
+    if suite.api_key_env == "COGNEE_API_KEY":
         assert env["COGNEE_API_KEY"] == (explicit_key or "inherited-test-key")
+    else:
+        # claude-code hands the watcher no key: it works its own out from the
+        # plugin option, so the key it was given travels nowhere.
+        assert "watcher-test-key" not in env.values()
 
 
 def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, monkeypatch):
     watcher = hook_module(suite, "exit-watcher.py")
-    monkeypatch.setenv("COGNEE_API_KEY", "environment-test-key")
+    monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
+    monkeypatch.setenv(suite.api_key_env, "environment-test-key")
     monkeypatch.setattr(
         watcher.sys,
         "argv",
@@ -61,9 +55,4 @@ def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, m
     watcher.main()
 
     sync.assert_called_once()
-    if suite.keys_from_plugin_options:
-        # Claude Code: no key is handed over. The sync process resolves its
-        # own, from the plugin options or the local server.
-        assert "api_key" not in sync.call_args.kwargs
-    else:
-        assert sync.call_args.kwargs["api_key"] == "environment-test-key"
+    assert sync.call_args.kwargs["api_key"] == "environment-test-key"

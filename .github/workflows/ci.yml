@@ -151,9 +151,6 @@ jobs:
         with:
           enable-cache: true
 
-      # Unit tests first on purpose (the other job runs tests/ in path order,
-      # e2e first): the second order catches a variable a unit test leaves in
-      # os.environ that a later hook subprocess would inherit.
       - name: Run the shared hook suite on Python 3.9
         working-directory: integrations/tests
         run: >-

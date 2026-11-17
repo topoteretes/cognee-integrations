@@ -1,16 +1,10 @@
 """Local mode, with every hook launched the way the host launches it.
 
-Local mode is what a user gets with no Cloud URL configured: the plugin targets
-``http://localhost:8011`` and logs in as the default user for its own API key.
-When nothing answers there, Codex installs cognee into ``~/.cognee-plugin/venv``
-and boots a server; the Claude Code plugin installs nothing (SDK-1411) and
-boots only from a venv the user built, printing the install command otherwise.
-Once that venv exists, every hook re-execs into it on import
-(``_plugin_common._reexec_into_venv``).
-
-Registration differs by host: with a plugin identity (Codex) the session is
-registered with ``dataset_ids``; without one (Claude Code, where every request
-runs as the user's own key) it goes by dataset name.
+Local mode is what a user gets with no ``COGNEE_BASE_URL``: the plugin targets
+``http://localhost:8011``, logs in as the default user to mint its own API key,
+and installs cognee into ``~/.cognee-plugin/venv`` and boots a server there only
+when nothing answers. Once that venv exists, every hook re-execs into it on
+import (``_plugin_common._reexec_into_venv``).
 
 The cheap tier stands in for the expensive parts:
 
@@ -43,10 +37,8 @@ from utils.mock_cognee import MockCogneeServer
 MEMORY = "The project codename is BLUEFIN."
 _LOCAL_PORT = 8011
 
-# Local mode needs only an LLM key. Codex reads it from ~/.cognee/.env; the
-# Claude Code plugin takes it from its plugin option and ignores the file.
-_LLM_KEY = "sk-test-not-a-real-key"
-_LOCAL_ENV_FILE = f'LLM_API_KEY="{_LLM_KEY}"\n'
+# The README's local-mode snippet puts only this in ~/.cognee/.env.
+_LOCAL_ENV_FILE = 'LLM_API_KEY="sk-test-not-a-real-key"\n'
 
 
 @pytest.fixture
@@ -73,35 +65,22 @@ def local_server():
         server.stop()
 
 
-def _local_home(suite, tmp_path: Path, profile: str) -> tuple[Path, Path]:
+def _local_home(tmp_path: Path, profile: str) -> tuple[Path, Path]:
     home = make_home(tmp_path, profile)
-    if not suite.keys_from_plugin_options:
-        (home / ".cognee" / ".env").write_text(_LOCAL_ENV_FILE, encoding="utf-8")
+    (home / ".cognee" / ".env").write_text(_LOCAL_ENV_FILE, encoding="utf-8")
     project = home / "project"
     project.mkdir()
     return home, project
-
-
-def _local_options(suite) -> dict[str, str]:
-    """The LLM key as Claude Code hands it to the plugin's hooks, for that host."""
-    if not suite.keys_from_plugin_options:
-        return {}
-    return {"CLAUDE_PLUGIN_OPTION_LLM_API_KEY": _LLM_KEY}
 
 
 def _context(output: dict) -> str:
     return output["hookSpecificOutput"]["additionalContext"]
 
 
-def _assert_session_worked(host, session: HostSession) -> None:
+def _assert_session_worked(session: HostSession) -> None:
     session.assert_every_hook_succeeded()
     registered = session.calls("/api/v1/agents/register")
-    assert registered, "SessionStart never registered the session"
-    if host.has_plugin_identity:
-        assert registered[-1].get("dataset_ids"), registered[-1]
-    else:
-        # As the user's own key, the session goes by dataset name.
-        assert registered[-1].get("dataset_names") == [host.default_dataset], registered[-1]
+    assert registered and registered[-1].get("dataset_ids"), registered
     lookups = session.outputs("UserPromptSubmit", "session-context-lookup.py")
     assert lookups and all(MEMORY in _context(o) for o in lookups), lookups
     entries = [c["entry"] for c in session.calls("/api/v1/remember/entry")]
@@ -110,13 +89,13 @@ def _assert_session_worked(host, session: HostSession) -> None:
 
 @pytest.mark.parametrize("profile", ["cognee", "Test User"], ids=["plain", "space"])
 def test_a_local_session_uses_the_server_already_running(host, local_server, tmp_path, profile):
-    home, project = _local_home(host, tmp_path, profile)
+    home, project = _local_home(tmp_path, profile)
     local_server.set_recall_results([{"source": "graph", "text": MEMORY}])
 
-    session = HostSession(host, home, project, local_server, env_extra=_local_options(host))
+    session = HostSession(host, home, project, local_server)
     session.full("what is the project codename?", "and what did you just tell me?")
 
-    _assert_session_worked(host, session)
+    _assert_session_worked(session)
     # No key configured: local mode logs in as the default user and mints one.
     local_server.assert_called("POST", "/api/v1/auth/login")
     # A running server is used, never installed over or booted.
@@ -190,14 +169,14 @@ def _reexec_xfail(profile: str):
     ],
 )
 def test_hooks_re_exec_into_the_plugin_venv(host, local_server, tmp_path, profile):
-    home, project = _local_home(host, tmp_path, profile)
+    home, project = _local_home(tmp_path, profile)
     venv = _make_plugin_venv(home)
     local_server.set_recall_results([{"source": "graph", "text": MEMORY}])
 
-    session = HostSession(host, home, project, local_server, env_extra=_local_options(host))
+    session = HostSession(host, home, project, local_server)
     session.full("what is the project codename?", "and what did you just tell me?")
 
-    _assert_session_worked(host, session)
+    _assert_session_worked(session)
     records = sorted((venv / "reexec").glob("*.json"))
     assert records, "no hook re-execed into the plugin venv"
     starts = [json.loads(record.read_text(encoding="utf-8")) for record in records]

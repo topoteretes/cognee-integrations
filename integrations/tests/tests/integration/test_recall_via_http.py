@@ -25,9 +25,6 @@ def pc(suite, isolated_modules, mock_server, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     monkeypatch.setattr(common, "hook_log", lambda *a, **kw: None)
-    if suite.keys_from_plugin_options:
-        # A local server: no request is sent to it without its owner key.
-        mock_server.identity.seed_owner_key("default_user@example.com")
     return common
 
 

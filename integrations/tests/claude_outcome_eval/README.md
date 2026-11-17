@@ -1,4 +1,4 @@
-> Moved out of the Claude Code plugin in 1.8.2 (SDK-1411): this harness reads
+> Moved out of the Claude Code plugin in 1.8.6 (SDK-1411): this harness reads
 > model and Cognee keys from the environment, so it is a developer tool kept in
 > the repository rather than shipped with the plugin.
 

@@ -2,10 +2,9 @@
 
 Unless the user pinned a dataset, a graph search that names none sends none, so
 the server picks the dataset. Shared memory's UUIDs name datasets too, so they
-are dropped with it. Where the wrapper still falls back to the local cognee-cli
-when the server is unreachable, the CLI follows the same rule: no ``-d`` under
-auto recall, the active dataset when pinned. A tree without the fallback
-(Claude Code, SDK-1411) never starts it.
+are dropped with it. When the server is unreachable the wrapper falls back to
+the local cognee-cli, which follows the same rule: no ``-d`` under auto recall,
+the active dataset when pinned.
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ def _launch(suite, home, *, pinned: bool, shared: bool = False) -> dict:
     sessions = home / ".cognee-plugin" / suite.state_subdir / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / f"{key}.json").write_text(json.dumps(record), encoding="utf-8")
-    return {"COGNEE_SESSION_KEY": key}
+    return {"COGNEE_SESSION_KEY": key, "COGNEE_SESSION_REF": key}
 
 
 def _run(suite, home, service_url, extra):
@@ -99,16 +98,6 @@ def test_the_cli_fallback_follows_the_recall_mode(suite, temp_home, fake_cli, pi
     extra = _launch(suite, temp_home, pinned=pinned)
     extra["PATH"] = fake_cli["path"] + os.pathsep + os.environ.get("PATH", "")
     result = _run(suite, temp_home, UNREACHABLE, extra)
-    wrappers = ("cognee-search.sh", "cognee_search.py")
-    if not any(
-        "cognee-cli" in (suite.scripts_dir / name).read_text(encoding="utf-8")
-        for name in wrappers
-        if (suite.scripts_dir / name).is_file()
-    ):
-        assert result.returncode == 1, result.stderr
-        assert "server unreachable — search not run" in result.stderr
-        assert not fake_cli["log"].exists(), "cognee-cli was started"
-        return
     assert "falling back to cognee-cli" in result.stderr, result.stderr
     (argv,) = fake_cli["log"].read_text(encoding="utf-8").splitlines()
     assert argv.startswith("recall what did we decide")
@@ -164,3 +153,48 @@ def test_remember_with_auto_only_in_the_env_file_saves_to_the_default_dataset(
     assert result.returncode == 0, result.stderr
     form = mock_server.assert_called("POST", "/api/v1/remember")["form"]
     assert form.get("datasetName") == "agent_sessions"
+
+
+def _run_with(suite, home, service_url, extra, *args):
+    script = suite.scripts_dir / "cognee-search.sh"
+    env = build_env(suite, home, service_url=service_url, api_key="k", extra=extra)
+    return subprocess.run(
+        [BASH, str(script), "what did we decide", "5", *args],
+        env=env,
+        cwd=str(home),
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+
+
+def test_category_filters_a_graph_search_by_node_set(suite, temp_home, mock_server):
+    """Claude Code (SDK-1411): the category filter is a flag, so no skill sends a request."""
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: the category filter is a hand-written request in the skill")
+    extra = _launch(suite, temp_home, pinned=False)
+    result = _run_with(suite, temp_home, mock_server.url, extra, "--category", "project_docs")
+    assert result.returncode == 0, result.stderr
+    body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
+    assert body["scope"] == ["graph"]
+    assert body["node_name"] == ["project_docs"]
+
+
+def test_category_is_refused_when_unknown_or_with_code(suite, temp_home, mock_server):
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: no --category flag")
+    extra = _launch(suite, temp_home, pinned=False)
+    for args in (("--category", "secrets"), ("--category", "project_docs", "--code")):
+        result = _run_with(suite, temp_home, mock_server.url, extra, *args)
+        assert result.returncode == 1, args
+    assert mock_server.calls == []
+
+
+def test_category_search_has_no_cli_fallback(suite, temp_home):
+    if suite.name != "claude-code":
+        pytest.skip(f"{suite.name}: no --category flag")
+    extra = _launch(suite, temp_home, pinned=False)
+    result = _run_with(suite, temp_home, UNREACHABLE, extra, "--category", "user_context")
+    assert result.returncode == 1
+    assert "server unreachable" in result.stderr

@@ -67,37 +67,28 @@ def log(event: str, **detail) -> None:
 
 
 def target() -> dict:
-    """The server URL and a hash of the key this process would send.
-
-    Read from this process's own environment (the plugin options it was started
-    with). A running worker never sees an option change, so ``ensure_worker``
-    publishes the hook's target and the worker exits when it differs from its
-    own (``_target_changed``); the next hook starts one with the current options.
-    """
+    from _env_file import refresh_env_file
     from _plugin_common import _local_api_url, load_cached_api_key
     from config import load_config
 
+    # The worker outlives any edit of ~/.cognee/.env (a tenant change, a
+    # switch to local): the target is whatever the file says now, so the
+    # sessions pointed there are served instead of starving behind a worker
+    # pinned to the tenant it started with.
+    refresh_env_file()
     url = _local_api_url().rstrip("/")
     key = load_config().get("api_key") or load_cached_api_key(url) or ""
     return {"base_url": url, "principal": hashlib.sha256(key.encode()).hexdigest()}
 
 
 def ensure_worker() -> None:
-    """Re-resolve the installed script every launch; the running worker adopts updates.
-
-    Also publishes this hook's ``target()`` (URL plus key hash, never the key):
-    a running worker whose own target differs exits, and the next call here
-    starts a fresh one with the current options.
-    """
+    """Re-resolve the installed script every launch; the running worker adopts updates."""
     if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() in {"1", "true", "yes"}:
         return
     state = root()
     state.mkdir(parents=True, exist_ok=True)
     script = str(Path(__file__).resolve())
-    atomic_json(
-        state / "cloud-worker-runtime.json",
-        {"script": script, "python": sys.executable, "target": target()},
-    )
+    atomic_json(state / "cloud-worker-runtime.json", {"script": script, "python": sys.executable})
     from _proc import pid_alive
 
     pid = read(state / "cloud-worker-pid.json").get("pid", 0)
@@ -302,11 +293,6 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
     """
     from _capture_policy import allow_tool, capture_enabled, sanitize
 
-    # The privacy controls (COGNEE_CAPTURE, redaction, tool filters) live in
-    # ~/.cognee/.env and can change while this long-lived worker runs: read
-    # them again before deciding what may leave the machine. The refresh loads
-    # only allowlisted non-secret tuning names, never a key or the Cloud URL.
-    _refresh_tuning()
     now = time.time() if now is None else now
     capturing = capture_enabled()
     deadline = time.monotonic() + 20
@@ -385,6 +371,10 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                 _expire(path, "capture_rejected")
                 _mark_capture_unsaved(item, buffered=False)
                 continue
+            if code == 402:
+                from _plugin_common import record_payment_required
+
+                record_payment_required("save")
             _retry(path, item, now, type(exc).__name__ + ": " + str(exc)[:160])
             _mark_capture_unsaved(item, buffered=True)
             if not isinstance(code, int) or code >= 500 or code in SERVER_WIDE_FAILURES:
@@ -403,6 +393,7 @@ def _after_delivery(item: dict, verified: bool) -> None:
         from _plugin_common import (
             bump_save_counter,
             bump_turn_counter,
+            clear_payment_required,
             phase_end,
             set_session_key,
         )
@@ -425,6 +416,7 @@ def _after_delivery(item: dict, verified: bool) -> None:
         for kind in kinds:
             bump_save_counter(item["session_id"], kind)
         count, every_n = bump_turn_counter(item["session_id"])
+        clear_payment_required()
         log(
             "trace_stored" if item["kind"] == "trace" else "stop_stored",
             session=item["session_id"],
@@ -493,7 +485,9 @@ def improve_outcome(result) -> dict:
 def improve_submit_timeout() -> float:
     from _plugin_common import IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS, _float_env
 
-    return _float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS)
+    return _float_env(
+        os.environ.get("COGNEE_IMPROVE_SUBMIT_TIMEOUT", ""), IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS
+    )
 
 
 def _timed_out(exc: BaseException) -> bool:
@@ -842,30 +836,6 @@ def maintain_sessions() -> None:
                         atomic_json(path, current)
 
 
-def _refresh_tuning() -> None:
-    """Pick up edits of ~/.cognee/.env's non-secret tuning settings. Never raises.
-
-    Credentials stay options-only: ``refresh_env_file`` drops every key and the
-    Cloud URL, so this cannot change the connection the worker sends with.
-    """
-    from _env_file import refresh_env_file
-
-    refresh_env_file()
-
-
-def _target_changed(desired: dict) -> bool:
-    """True when the last hook's published target is not this worker's own."""
-    wanted = desired.get("target")
-    return isinstance(wanted, dict) and bool(wanted) and wanted != target()
-
-
-def _release_pidfile(state: Path) -> None:
-    """Remove the pid file if it still names this process."""
-    path = state / "cloud-worker-pid.json"
-    if read(path).get("pid") in (os.getpid(), None):
-        path.unlink(missing_ok=True)
-
-
 def run() -> None:
     from _plugin_common import (
         DEFINITIVE_FAILURE_STATES,
@@ -876,6 +846,7 @@ def run() -> None:
         get_session_detail_via_http,
         mark_server_ready,
         prepare_remember_entry_payload,
+        refresh_credits,
         require_typed_dataset_id_support,
         set_session_key,
         write_connection_state,
@@ -930,22 +901,12 @@ def run() -> None:
             )
 
         while True:
-            # Every pass sees the current tuning (capture switch, filters,
-            # intervals), not the values the worker was started with.
-            _refresh_tuning()
             if not has_pending_work():
                 # Nothing queued and no session active for IDLE_EXIT_SECONDS.
                 log("cloud_worker_idle_exit")
-                _release_pidfile(state)
+                (state / "cloud-worker-pid.json").unlink(missing_ok=True)
                 return
             desired = read(state / "cloud-worker-runtime.json")
-            if _target_changed(desired):
-                # The options changed under us (key rotated, URL edited): this
-                # process can never see them, so make way for a fresh worker.
-                # Items stamped with the old target are left to expire.
-                log("cloud_worker_target_changed")
-                _release_pidfile(state)
-                return
             if desired.get("script") and desired["script"] != str(Path(__file__).resolve()):
                 os.execv(desired["python"], [desired["python"], desired["script"]])
             try:
@@ -968,6 +929,7 @@ def run() -> None:
                             mark_server_ready(url)
                         elif health in DEFINITIVE_FAILURE_STATES:
                             write_connection_state(health, url)
+                    refresh_credits()
                     maintain_sessions()
                 drain(send, verify=verify, prepare=prepare)
                 start_improve_pass()

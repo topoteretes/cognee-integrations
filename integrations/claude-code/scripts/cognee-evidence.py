@@ -15,18 +15,10 @@ from _plugin_common import (
     _json_http_request,
     get_session_key,
     recall_via_http,
-    require_shell_auth,
     resolve_active_dataset_ids,
     resolve_host_key_outside_hook,
-    resolved_http_endpoint_auth,
     set_session_key,
 )
-
-
-def _require_shell_auth() -> None:
-    """``index`` and ``details`` call the server: in Cloud mode a shell has no
-    key, so stop before any request (``explain`` reads a local file only)."""
-    require_shell_auth(*resolved_http_endpoint_auth(), "cognee-evidence")
 
 
 def run(args):
@@ -91,8 +83,6 @@ def main():
     )
     explain.add_argument("--session-key")
     args = parser.parse_args()
-    if args.command in ("index", "details"):
-        _require_shell_auth()
     try:
         result = bounded_call(lambda: run(args), 45.0)
         print(json.dumps(result, ensure_ascii=False))
@@ -106,4 +96,8 @@ def main():
 
 
 if __name__ == "__main__":
+    from _relay import hand_over
+
+    # A shell has no key: when a hook's relay is up, it runs this script.
+    hand_over(__file__)
     raise SystemExit(main())

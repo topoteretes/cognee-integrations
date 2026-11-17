@@ -22,9 +22,6 @@ def test_graph_404_is_not_a_recall_error(
     suite, run_hook, mock_server, payloads, temp_home, assert_clean_real_home
 ):
     mock_server.force_response("POST", "/api/v1/recall", 404, {"detail": "DatasetNotFoundError"})
-    if suite.keys_from_plugin_options:
-        # A local server: no request is sent to it without its owner key.
-        mock_server.identity.seed_owner_key("default_user@example.com")
     result = run_hook(
         suite,
         "session-context-lookup.py",
