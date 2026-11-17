@@ -58,7 +58,6 @@ def _spawn(*args: str) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env=os.environ.copy(),
             start_new_session=True,
             close_fds=True,
         )

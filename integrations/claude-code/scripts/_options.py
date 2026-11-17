@@ -255,7 +255,11 @@ def popen(args: list, *, env: dict | None = None, **kwargs) -> subprocess.Popen:
     hundred bytes, far below its buffer, so it is written in full before the
     child starts, and the parent's ends are closed once the child has its copy.
     """
-    env = dict(os.environ if env is None else env)
+    if env is None:
+        from _proc import child_env
+
+        env = child_env()
+    env = dict(env)
     env.pop("COGNEE_OPTIONS_FD", None)
     if not have_options():
         return subprocess.Popen(args, env=env, **kwargs)
