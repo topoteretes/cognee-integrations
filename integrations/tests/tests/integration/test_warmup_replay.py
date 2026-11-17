@@ -14,6 +14,7 @@ unit/test_warmup_drain.py.
 from __future__ import annotations
 
 import pytest
+from utils.options_holder import set_key
 
 ENTRY = "/api/v1/remember/entry"
 
@@ -22,7 +23,7 @@ ENTRY = "/api/v1/remember/entry"
 def pc(suite, isolated_modules, mock_server, tmp_path, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.setenv(suite.api_key_env, "principal-key")
+    set_key(monkeypatch, suite, "principal-key")
     monkeypatch.setattr(common, "_bridge_file", lambda sid="": tmp_path / "bridge.json")
     monkeypatch.setattr(common, "_DRAIN_LOCK", tmp_path / "drain.lock")
     monkeypatch.setattr(common, "_BUFFER_LOCK", tmp_path / "buffer.lock")

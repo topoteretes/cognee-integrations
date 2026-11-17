@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from .hooklog import hook_events
+from .options_holder import apply_options
 from .suites import Suite, state_dir
 
 #: The port a developer's own cognee almost certainly occupies.
@@ -319,11 +320,11 @@ def build_live_env(
         # would spool every capture and none would ever be sent. Teardown reaps
         # the worker (reap_cloud_worker).
         env.pop("COGNEE_IDLE_DISABLED", None)
-    if api_key:
-        env[suite.api_key_env] = api_key
     if extra:
         env.update(extra)
-    return env
+    if api_key and suite.name != "claude-code":
+        env["COGNEE_API_KEY"] = api_key
+    return apply_options(suite, env, {"cognee_api_key": api_key} if api_key else None)
 
 
 def server_health(base_url: str, timeout: float = 3.0) -> int | None:

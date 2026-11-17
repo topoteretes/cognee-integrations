@@ -146,13 +146,20 @@ def _run_switch(session_id: str, *args: str, timeout: float) -> dict:
         session_id,
     ]
     try:
-        ran = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-        )
+        import _options  # hands this process's options to the child
+        from _proc import child_env
+
+        handed_env = child_env()
+        with _options.handing_over() as (handed_fd, handed):
+            ran = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                env={**handed_env, **handed_fd},
+                **handed,
+            )
     except subprocess.TimeoutExpired:
         return {"error": "the dataset script gave no answer within %d s" % int(timeout)}
     except Exception as exc:
@@ -199,13 +206,20 @@ def refresh_listing_in_background(session_id: str) -> None:
         else {"start_new_session": True}
     )
     try:
-        subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "refresh-listing", session_id],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **kwargs,
-        )
+        import _options  # hands this process's options to the child
+        from _proc import child_env
+
+        handed_env = child_env()
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), "refresh-listing", session_id],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **kwargs,
+                env={**handed_env, **handed_fd},
+                **handed,
+            )
     except Exception:
         pass
 

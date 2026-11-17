@@ -26,6 +26,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from .options_holder import apply_options, set_options
 from .suites import Suite
 
 #: Module names the suites expose under their scripts dir. All carry import-time
@@ -38,6 +39,7 @@ ISOLATED_MODULES = (
     "_credits",
     "_cognee_client",
     "_env_file",
+    "_options",
     "_logfiles",
     "_file_lock",
     "_deadlines",
@@ -86,7 +88,9 @@ ISOLATED_MODULES = (
 #:   - CLAUDE_PLUGIN_OPTION_LOCAL_MODELS=true is Claude Code's local models
 #:     option: with no LLM chosen its SessionStart starts no local server, so
 #:     the tests that boot one choose this (the mock server has no LLM). The
-#:     tests of the no-LLM pause remove it.
+#:     tests of the no-LLM pause remove it. The plugin reads its options from
+#:     an options holder, so build_env hands this one to a test holder
+#:     (utils.options_holder) instead of the environment.
 DETERMINISTIC_ENV = {
     "COGNEE_PLUGIN_IN_VENV": "1",
     "COGNEE_IDLE_DISABLED": "1",
@@ -141,11 +145,12 @@ def build_env(
     if service_url is not None:
         env["COGNEE_BASE_URL"] = service_url
         env.setdefault("COGNEE_PLATFORM_API_URL", service_url)
-    if api_key is not None:
-        env[suite.api_key_env] = api_key
     if extra:
         env.update(extra)
-    return env
+    options = {"cognee_api_key": api_key} if api_key is not None else {}
+    if api_key is not None and suite.name != "claude-code":
+        env["COGNEE_API_KEY"] = api_key
+    return apply_options(suite, env, options)
 
 
 def run_hook(
@@ -267,7 +272,10 @@ def _isolate_process_env(home: Path | str, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     for key, value in DETERMINISTIC_ENV.items():
-        monkeypatch.setenv(key, value)
+        if key.startswith("CLAUDE_PLUGIN_OPTION_"):
+            set_options(monkeypatch, **{key[len("CLAUDE_PLUGIN_OPTION_") :].lower(): value})
+        else:
+            monkeypatch.setenv(key, value)
 
 
 def usable_bash() -> str | None:

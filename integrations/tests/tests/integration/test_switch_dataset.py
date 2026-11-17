@@ -14,6 +14,7 @@ test_sync_strict.py), and the idle-watcher restart is a no-op.
 from __future__ import annotations
 
 import pytest
+from utils.options_holder import set_key
 from utils.switch import run_switch, waits_for_sync
 
 HOST = "host-switch-1"
@@ -50,7 +51,7 @@ def env(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     # key must be the PRINCIPAL's: the fake scopes GET /datasets and dataset
     # creation to the calling user, like the server, and the datasets below
     # are seeded for the principal.
-    monkeypatch.setenv(suite.api_key_env, "test-api-key")
+    set_key(monkeypatch, suite, "test-api-key")
     # The launch as SessionStart left it: registered under conn_uuid on dataset "a".
     sid, conn = pc.ensure_launch_record(HOST, "/w", dataset="a")
     ident.agents_register({"agent_session_name": conn, "session_id": sid})

@@ -2,8 +2,9 @@
 
 Every key comes from the plugin's options (the ``userConfig`` section of the
 plugin manifest): the Cognee API key, the LLM key and the embedding
-key. Claude Code keeps them in its secure store and hands them to the plugin's
-hooks, and to the processes those hooks start, as ``CLAUDE_PLUGIN_OPTION_*``.
+key. Claude Code keeps them in its secure store and starts the plugin's options
+holder with them (``_holder.py``, a local MCP server); the hooks, and the
+processes those hooks start, read them from the holder (``_options.py``).
 The same holds for the login of a server that has no API key (an email and a
 password option), and the server URL has an option of its own.
 The plugin reads a key nowhere else: a value for one of the names in
@@ -158,14 +159,40 @@ def _blocked(name: str) -> bool:
     return name in _DENYLIST_EXACT or name.startswith(_DENYLIST_PREFIXES) or name in OPTION_ONLY
 
 
+def _option(name: str) -> str:
+    """An option's value as the options holder hands it over, or ""."""
+    import _options
+
+    return _options.value(name)
+
+
+def wait_for_options(seconds: float) -> bool:
+    """Wait up to ``seconds`` for this session's options holder, which Claude
+    Code starts alongside the first hooks, then apply the server URL option.
+    Session start calls this; True once the options are in."""
+    import _options
+
+    _options.values(wait=seconds)
+    found = _options.have_options()
+    if found:
+        try:
+            _apply_url_option()
+        except Exception:
+            pass
+        # Same order as at load: the option first, then a forced-local switch,
+        # which must still win over the option's server.
+        _apply_backend_switch()
+    return found
+
+
 def login_email_option() -> str:
     """The login email option (a server without an API key), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_EMAIL", "").strip()
+    return _option("cognee_user_email")
 
 
 def login_password_option() -> str:
     """The login password option, or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_PASSWORD", "").strip()
+    return _option("cognee_user_password")
 
 
 def _in_hook() -> bool:
@@ -184,9 +211,17 @@ def _apply_url_option() -> None:
     records the option's value so that a process with no options (the status
     line, a skill's script) resolves the same server; an emptied option removes
     the record.
+
+    Only options that were really read decide the record. A hook that has not
+    reached its holder yet (session start, before the wait) or no longer can
+    (a process that outlived its session) has no options, not an empty URL
+    option: it takes the record, like any process without options, and leaves
+    it alone.
     """
-    if _in_hook():
-        url = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "").strip()
+    import _options
+
+    if _in_hook() and _options.have_options():
+        url = _option("cognee_base_url")
         try:
             recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url", "")
         except Exception:
@@ -200,42 +235,76 @@ def _apply_url_option() -> None:
                     _URL_RECORD.unlink()
             except Exception:
                 pass
+        if not url and _from_record:
+            # Before the options came in this process took the recorded server,
+            # which the option has now cleared: go back to what it would have
+            # resolved without the record.
+            _undo_record_url()
     else:
         try:
             url = str(json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url") or "")
         except Exception:
             url = ""
+        if url and not _from_record:
+            _from_record.append(os.environ.get("COGNEE_BASE_URL"))
     if url:
         # Over any export; the file's own value does not replace it either.
         os.environ["COGNEE_BASE_URL"] = url
 
 
+#: Set when this process took the server from the record: what
+#: ``COGNEE_BASE_URL`` held before (None when unset).
+_from_record: list = []
+
+
+def _undo_record_url() -> None:
+    before = _from_record.pop()
+    if before is not None:
+        os.environ["COGNEE_BASE_URL"] = before
+        return
+    os.environ.pop("COGNEE_BASE_URL", None)
+    _injected.pop("COGNEE_BASE_URL", None)
+    # The file's value was skipped at load while the record's was in place.
+    try:
+        path = env_file_path()
+        if path.is_file():
+            listed = parse_env_file(path).get("COGNEE_BASE_URL", "")
+            if listed:
+                os.environ["COGNEE_BASE_URL"] = listed
+                _injected["COGNEE_BASE_URL"] = listed
+    except Exception:
+        pass
+
+
 def cloud_key_option() -> str:
     """The Cognee API key option as Claude Code handed it to this process, or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "").strip()
+    return _option("cognee_api_key")
 
 
 def llm_key_option() -> str:
     """The LLM key option (local mode), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "").strip()
+    return _option("llm_api_key")
 
 
 def embedding_key_option() -> str:
     """The embedding key option (local mode), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "").strip()
+    return _option("embedding_api_key")
 
 
 def local_models_option() -> bool:
     """Whether the user chose to build memory without an LLM key, on cognee's
     local models (GLiNER and fastembed). Off unless the option says so."""
-    value = os.environ.get("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "").strip().lower()
+    value = _option("local_models").lower()
     return value in ("1", "true", "yes", "on")
 
 
 def has_options() -> bool:
-    """Whether Claude Code handed this process the plugin's options: true in a
-    hook and in what a hook started, false in a script run from a shell."""
-    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip())
+    """Whether this process can have the plugin's options: true in a hook and
+    in what a hook started, false in a script run from a shell."""
+    return bool(
+        os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+        or os.environ.get("COGNEE_OPTIONS_HOLDER", "").strip()
+    )
 
 
 def server_key_env() -> dict:

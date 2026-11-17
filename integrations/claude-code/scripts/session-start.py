@@ -1686,15 +1686,19 @@ def _spawn_idle_watcher(
         env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
-        subprocess.Popen(
-            [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=log_fh,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
+        import _options  # hands this process's options to the child
+
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                env={**env, **handed_fd},
+                start_new_session=True,
+                close_fds=True,
+                **handed,
+            )
         print("cognee-plugin: idle watcher started", file=sys.stderr)
     except Exception as e:
         print(f"cognee-plugin: idle watcher launch failed ({e})", file=sys.stderr)
@@ -1822,15 +1826,19 @@ def _spawn_exit_watcher(
         env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
-        subprocess.Popen(
-            [sys.executable, str(_EXIT_WATCHER_SCRIPT), json.dumps(bootstrap)],
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=log_fh,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
+        import _options  # hands this process's options to the child
+
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(_EXIT_WATCHER_SCRIPT), json.dumps(bootstrap)],
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                env={**env, **handed_fd},
+                start_new_session=True,
+                close_fds=True,
+                **handed,
+            )
         hook_log(
             "exit_watcher_started",
             {
@@ -1940,15 +1948,24 @@ def _spawn_bootstrap(
         env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
-        subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), _BOOTSTRAP_ARG, json.dumps(bootstrap)],
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=log_fh,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
+        import _options  # hands this process's options to the child
+
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    _BOOTSTRAP_ARG,
+                    json.dumps(bootstrap),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                env={**env, **handed_fd},
+                start_new_session=True,
+                close_fds=True,
+                **handed,
+            )
         hook_log("bootstrap_spawned", {"session_id": session_id})
         return True
     except Exception as exc:
@@ -3334,9 +3351,27 @@ def _apply_recall_mode_notice(output: dict, payload: dict | None = None) -> dict
     return result
 
 
+#: How long session start waits for the options holder (``_holder.py``), which
+#: Claude Code starts alongside the first hooks. It is usually up in well under
+#: a second; without it the plugin has no keys.
+_OPTIONS_WAIT_SECONDS = 8.0
+
+
+def _wait_for_options() -> None:
+    from _env_file import wait_for_options
+
+    started = time.monotonic()
+    found = wait_for_options(_OPTIONS_WAIT_SECONDS)
+    waited_ms = int((time.monotonic() - started) * 1000)
+    hook_log(
+        "options_holder_found" if found else "options_holder_missing", {"waited_ms": waited_ms}
+    )
+
+
 def main():
     if is_observer_child():
         return
+    _wait_for_options()
     # First run: leave a commented ~/.cognee/.env template so one-time config
     # has a documented file to land in. Values (if any) were already loaded
     # into os.environ when _plugin_common was imported.

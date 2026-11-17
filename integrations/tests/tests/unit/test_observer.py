@@ -20,6 +20,7 @@ import os
 import stat
 
 import pytest
+from utils.options_holder import set_options
 
 
 @pytest.fixture
@@ -83,7 +84,7 @@ def test_auto_activates_when_no_key_and_claude_present(observer, fake_claude):
 
 
 def test_auto_yields_to_a_configured_key(observer, fake_claude, monkeypatch):
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    set_options(monkeypatch, llm_api_key="sk-real")
     decision = observer.resolve_observer({})
     assert decision["active"] is False
     assert decision["reason"] == "llm_key_configured"
@@ -102,7 +103,7 @@ def test_auto_stays_off_when_a_legacy_key_was_ignored(observer, fake_claude, mon
 
 def test_an_ignored_key_with_the_option_set_is_a_configured_key(observer, fake_claude, monkeypatch):
     monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    set_options(monkeypatch, llm_api_key="sk-real")
     assert observer.resolve_observer({})["reason"] == "llm_key_configured"
 
 
@@ -123,24 +124,24 @@ def test_auto_yields_to_a_configured_provider(observer, fake_claude, monkeypatch
 
 
 def test_no_llm_chosen_is_empty(observer, monkeypatch):
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    set_options(monkeypatch, local_models="")
     assert observer.server_llm_choice() == ""
 
 
 @pytest.mark.parametrize("value", ["", "false", "0", "no"])
 def test_the_local_models_option_off_is_no_choice(observer, monkeypatch, value):
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", value)
+    set_options(monkeypatch, local_models=value)
     assert observer.server_llm_choice() == ""
 
 
 def test_the_local_models_option_is_a_choice(observer, monkeypatch):
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "true")
+    set_options(monkeypatch, local_models="true")
     assert observer.server_llm_choice() == "local_models"
 
 
 def test_a_key_or_the_observer_comes_before_local_models(observer, monkeypatch):
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "true")
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    set_options(monkeypatch, local_models="true")
+    set_options(monkeypatch, llm_api_key="sk-real")
     assert observer.server_llm_choice() == "key"
     monkeypatch.setenv(observer.ACTIVE_ENV_FLAG, "1")
     assert observer.server_llm_choice() == "observer"
@@ -148,19 +149,19 @@ def test_a_key_or_the_observer_comes_before_local_models(observer, monkeypatch):
 
 @pytest.mark.parametrize("provider", ["bedrock", "LLAMA_CPP"])
 def test_a_provider_that_needs_no_key_is_a_choice(observer, monkeypatch, provider):
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    set_options(monkeypatch, local_models="")
     monkeypatch.setenv("LLM_PROVIDER", provider)
     assert observer.server_llm_choice() == "provider"
 
 
 def test_a_provider_that_needs_a_key_is_not_a_choice_on_its_own(observer, monkeypatch):
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    set_options(monkeypatch, local_models="")
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
     assert observer.server_llm_choice() == ""
 
 
 def test_a_key_in_the_servers_dotenv_is_a_choice(observer, temp_home, monkeypatch):
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    set_options(monkeypatch, local_models="")
     monkeypatch.setattr(observer, "server_dotenv_values", lambda: {"LLM_API_KEY": "set"})
     assert observer.server_llm_choice() == "server_dotenv"
 
@@ -350,7 +351,7 @@ def test_missing_cli_is_silent_in_auto_and_loud_when_forced(observer, tmp_path, 
 
 
 def test_forced_true_overrides_a_configured_key(observer, fake_claude, monkeypatch):
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    set_options(monkeypatch, llm_api_key="sk-real")
     monkeypatch.setenv("COGNEE_LLM_OBSERVER", "true")
     assert observer.resolve_observer({})["active"] is True
 
@@ -795,7 +796,7 @@ def test_running_keyed_server_is_not_claimed(session_start, fake_claude, monkeyp
 def test_running_observer_server_is_followed_even_with_a_key(
     session_start, fake_claude, monkeypatch
 ):
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-real")
+    set_options(monkeypatch, llm_api_key="sk-real")
     decision = _decide(session_start, monkeypatch, running=True, stamp=True)
     assert decision["active"] is True and decision["wanted"] is False
     note = session_start._observer_note(decision)

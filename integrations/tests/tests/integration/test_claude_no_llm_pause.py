@@ -18,6 +18,7 @@ import json
 import subprocess
 
 import pytest
+from utils.options_holder import set_options
 
 _NO_CHOICE = {"CLAUDE_PLUGIN_OPTION_LOCAL_MODELS": ""}
 
@@ -76,19 +77,19 @@ def test_an_ignored_llm_key_starts_no_server_and_skips_the_general_notice(
 def test_the_ignored_key_notice_names_every_choice(session_start, monkeypatch):
     # The default local URL: only that one counts as local mode here.
     monkeypatch.delenv("COGNEE_BASE_URL", raising=False)
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    set_options(monkeypatch, local_models="")
     monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
     message = session_start._key_options_message()
     assert "the local server is not started" in message
     assert "local models option" in message
     assert "COGNEE_LLM_OBSERVER=true" in message
     # With local models chosen, nothing is paused.
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "true")
+    set_options(monkeypatch, local_models="true")
     assert "paused" not in session_start._key_options_message()
 
 
 def test_the_boot_point_refuses_before_any_install(session_start, closed_port_url, monkeypatch):
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    set_options(monkeypatch, local_models="")
 
     def _no_install(*args, **kwargs):
         raise AssertionError("nothing may be installed without an LLM choice")
@@ -135,14 +136,14 @@ def _spawn_capturing_env(session_start, closed_port_url, monkeypatch) -> dict:
 def test_only_the_local_models_option_lets_cognee_install_gliner(
     session_start, closed_port_url, monkeypatch
 ):
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "true")
+    set_options(monkeypatch, local_models="true")
     env = _spawn_capturing_env(session_start, closed_port_url, monkeypatch)
     assert env["GLINER_AUTO_INSTALL"] == "true"
 
 
 def test_a_server_with_an_llm_never_installs_gliner(session_start, closed_port_url, monkeypatch):
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk-test")
+    set_options(monkeypatch, local_models="")
+    set_options(monkeypatch, llm_api_key="sk-test")
     monkeypatch.setenv("GLINER_AUTO_INSTALL", "true")
     env = _spawn_capturing_env(session_start, closed_port_url, monkeypatch)
     assert env["GLINER_AUTO_INSTALL"] == "false"

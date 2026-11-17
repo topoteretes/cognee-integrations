@@ -650,7 +650,7 @@ def test_the_deny_list_is_a_data_file_and_losing_it_refuses_every_path(
     """The patterns never captured live in a data file beside the module
     (SDK-1411). The list still holds the secret files it always held, and a
     missing or empty file refuses every path instead of none."""
-    for pattern in (".env", "*.pem", "id_rsa*", ".netrc", "*/.aws/credentials", "credentials.*"):
+    for pattern in (".env", "*.pem", "id_rsa*", ".*rc", "*/.aws/credentials", "credentials.*"):
         assert pattern in policy._DENY_PATHS
     assert policy._DENY_PATHS != ("*",)
     monkeypatch.setattr(policy, "_DENY_PATHS_FILE", "no-such-file.txt")
@@ -659,3 +659,12 @@ def test_the_deny_list_is_a_data_file_and_losing_it_refuses_every_path(
     empty.write_text("# nothing\n\n", encoding="utf-8")
     monkeypatch.setattr(policy, "_DENY_PATHS_FILE", str(empty))
     assert policy._load_deny_paths() == ("*",)
+
+
+def test_dot_rc_files_are_never_captured(policy):
+    """Package-manager and login files (``.npmrc``, ``.netrc``) are one pattern
+    (SDK-1620): it also keeps other dot-rc files, such as shell profiles, out."""
+    for path in ("/home/u/.npmrc", "/home/u/.netrc", "/home/u/.bashrc", "/repo/.eslintrc"):
+        assert policy._sensitive_path(path), path
+    for path in ("/repo/src/main.rc", "/repo/.npmrc.example", "/repo/rc"):
+        assert not policy._sensitive_path(path), path

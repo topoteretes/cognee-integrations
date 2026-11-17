@@ -21,6 +21,7 @@ import asyncio
 import subprocess
 
 import pytest
+from utils.options_holder import set_options
 
 
 @pytest.fixture
@@ -81,8 +82,8 @@ def test_operator_default_user_export_wins(suite, session_start, closed_port_url
     else:
         # claude-code: the login is a pair of plugin options, and the server
         # the plugin starts is given that user.
-        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_USER_EMAIL", "ops@example.com")
-        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_USER_PASSWORD", "ops-secret")
+        set_options(monkeypatch, cognee_user_email="ops@example.com")
+        set_options(monkeypatch, cognee_user_password="ops-secret")
     env = _spawn_capturing_env(session_start, closed_port_url, monkeypatch)
     assert env["DEFAULT_USER_EMAIL"] == "ops@example.com"
     assert env["DEFAULT_USER_PASSWORD"] == "ops-secret"

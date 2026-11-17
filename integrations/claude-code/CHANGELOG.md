@@ -10,6 +10,42 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.8]
+
+### Changed
+
+- **The keys reach the hooks through an options holder.** Claude Code now
+  starts `scripts/_holder.py` with each session, as a local MCP server with no
+  tools, and passes it the plugin's options as arguments. The hooks read the
+  options from it instead of from Claude Code's `CLAUDE_PLUGIN_OPTION_*`
+  variables. This is the form the plugin directory accepts for a plugin's keys
+  (SDK-1620). The holder moves the values off its command line at once, serves
+  them over a socket only you can open, and removes its files when the session
+  ends. Session start waits up to 8 seconds for it.
+- **Work that runs after a session ends keeps its keys.** The final sync after
+  Claude Code exits and the cloud worker's improve passes start once the
+  session's options holder may be gone, so the process that starts them hands
+  over its options on a pipe.
+- **The recorded server survives a hook that has no options yet.** Only options
+  read from a holder change `server-url.json`; session start, before its
+  holder is up, takes the recorded server instead of clearing it. A forced
+  local backend still wins over the server option.
+- **Only the plugin's own processes can read the keys.** On macOS and Linux
+  the options holder answers a hook, the relay, and what those start, and
+  nothing else: a command run through the Bash tool gets nothing. Hooks and the
+  relay now run under `python -I`, and background work that outlives its hook
+  gets the options from it on a pipe.
+- **One relay for every open session.** The relay holds no key and runs each
+  script against the options holder of the session that asked, so two open
+  sessions no longer replace each other's relay mid-run.
+- **`.*rc` replaces `.npmrc` and `.netrc` in the capture deny-list**, in every
+  host. It also keeps other dot-rc files, such as shell profiles, out of memory.
+
+### Upgrade note
+
+- Start a new session after updating: a session that was open before has no
+  options holder, so its hooks have no keys until it is restarted.
+
 ## [1.8.7]
 
 ### Changed

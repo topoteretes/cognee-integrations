@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .isolation import scrub_env_dict
+from .options_holder import apply_options
 from .suites import Suite
 
 #: The key the mock server accepts (``utils.fixtures.DEFAULT_TEST_API_KEY``).
@@ -186,13 +187,11 @@ def host_env(
         )
     else:
         env.update(CLAUDE_PLUGIN_ROOT=str(plugin_root), CLAUDE_PLUGIN_DATA=str(data))
-    if suite.api_key_env != "COGNEE_API_KEY":
-        # claude-code's keys are plugin options: the host hands the hooks the
-        # key the user entered there, whatever ~/.cognee/.env says.
-        env[suite.api_key_env] = _DEFAULT_TEST_API_KEY
     if extra:
         env.update(extra)
-    return env
+    # claude-code's keys are plugin options: the host hands the hooks the key
+    # the user entered there, whatever ~/.cognee/.env says.
+    return apply_options(suite, env, {"cognee_api_key": _DEFAULT_TEST_API_KEY})
 
 
 @dataclass

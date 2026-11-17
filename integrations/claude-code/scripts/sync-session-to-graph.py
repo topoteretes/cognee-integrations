@@ -80,15 +80,19 @@ def _spawn_detached_sync() -> bool:
         if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
             env["COGNEE_SYNC_START_DELAY"] = str(_SESSION_END_START_DELAY_DEFAULT)
         env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
-        subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
-            cwd=os.getcwd(),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        import _options  # hands this process's options to the child
+
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
+                cwd=os.getcwd(),
+                env={**env, **handed_fd},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                **handed,
+            )
         return True
     except Exception as exc:
         hook_log("sync_detach_failed", {"error": str(exc)[:300]})

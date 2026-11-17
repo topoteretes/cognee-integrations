@@ -1,13 +1,14 @@
 """Regression tests for the identity and dataset-access review findings."""
 
 import pytest
+from utils.options_holder import set_key
 from utils.switch import run_switch
 
 
 def test_cached_identity_rejects_new_principal_on_same_server(suite, isolated_modules, monkeypatch):
     pc = isolated_modules(suite, "_plugin_common")
     pc.save_cached_agent_key("https://same.test", "account-a-agent-key", "agent-a")
-    monkeypatch.setenv(suite.api_key_env, "account-b-principal-key")
+    set_key(monkeypatch, suite, "account-b-principal-key")
     # ``auto``: the foreign identity is never used; the plugin runs as the
     # new principal instead.
     assert pc._api_key_with_source("https://same.test") == (
@@ -161,7 +162,7 @@ def test_endpoint_resolution_preserves_explicit_parent(suite, isolated_modules, 
     pc = isolated_modules(suite, "_plugin_common")
     url = "https://explicit-account.test"
     monkeypatch.setenv("COGNEE_BASE_URL", url)
-    monkeypatch.setenv(suite.api_key_env, "explicit-parent")
+    set_key(monkeypatch, suite, "explicit-parent")
     monkeypatch.delenv("COGNEE_PRINCIPAL_API_KEY", raising=False)
     pc.save_cached_agent_key(url, "agent", "agent-id", principal_key="explicit-parent")
     assert pc.resolved_http_endpoint_auth() == (url, "agent")
