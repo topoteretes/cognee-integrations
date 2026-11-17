@@ -113,9 +113,10 @@ def test_the_values_leave_the_command_line(holder):
     assert "s3cr3t" not in shown
 
 
-def test_a_hook_finds_its_sessions_holder_by_claude_codes_pid(holder):
-    home, _, record = holder
-    got = _read_options(home, CLAUDE_PLUGIN_ROOT="/plugin", CLAUDE_PID=str(os.getpid()))
+@_POSIX_ONLY
+def test_a_hook_finds_its_sessions_holder_by_claude_codes_pid(checked_holder):
+    home, scripts, _ = checked_holder
+    got = _hook_reads(home, scripts, CLAUDE_PID=str(os.getpid()))["mine"]
     assert got["cognee_api_key"] == "ck-s3cr3t-value"
     assert got["cognee_base_url"] == "https://tenant.cognee.test"
     assert got["cognee_user_password"] == "pw-s3cr3t"
@@ -124,10 +125,10 @@ def test_a_hook_finds_its_sessions_holder_by_claude_codes_pid(holder):
     assert got["llm_api_key"] == ""
 
 
-def test_a_hook_finds_the_holder_through_its_ancestors_without_claude_pid(holder):
-    home, _, _ = holder
-    got = _read_options(home, CLAUDE_PLUGIN_ROOT="/plugin")
-    assert got["cognee_api_key"] == "ck-s3cr3t-value"
+@_POSIX_ONLY
+def test_a_hook_finds_the_holder_through_its_ancestors_without_claude_pid(checked_holder):
+    home, scripts, _ = checked_holder
+    assert _hook_reads(home, scripts)["mine"]["cognee_api_key"] == "ck-s3cr3t-value"
 
 
 def test_a_shell_finds_no_holder(holder):
@@ -136,25 +137,13 @@ def test_a_shell_finds_no_holder(holder):
     assert _read_options(home, CLAUDE_PID=str(os.getpid())) == {}
 
 
-def test_a_hook_records_the_holder_for_what_it_starts(holder):
-    home, _, record = holder
-    code = (
-        "import json, os, _options; _options.values();"
-        "print(json.dumps(os.environ.get('COGNEE_OPTIONS_HOLDER', '')))"
-    )
-    ran = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=str(_SCRIPTS),
-        env=_env(home, CLAUDE_PLUGIN_ROOT="/plugin", CLAUDE_PID=str(os.getpid())),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert json.loads(ran.stdout.strip()) == str(record)
-    # A child with only that variable (no hook markers) reads the same values.
-    assert _read_options(home, COGNEE_OPTIONS_HOLDER=str(record))["cognee_api_key"] == (
-        "ck-s3cr3t-value"
-    )
+@_POSIX_ONLY
+def test_a_hook_records_the_holder_for_what_it_starts(checked_holder):
+    home, scripts, record = checked_holder
+    got = _hook_reads(home, scripts, "--and-a-child", CLAUDE_PID=str(os.getpid()))
+    assert got["holder"] == str(record)
+    # The child finds the holder through that variable alone.
+    assert got["child"]["cognee_api_key"] == "ck-s3cr3t-value"
 
 
 @_POSIX_ONLY
@@ -394,3 +383,156 @@ def test_no_script_reads_claude_codes_option_variables():
         ):
             found.append(path.name)
     assert found == []
+
+
+# ------------------------------------------------- who the holder answers (#4)
+
+_PROBE = """
+import json, os, subprocess, sys
+import _options
+mine = _options.values()
+child = {}
+if len(sys.argv) > 1 and sys.argv[1] == "--and-a-child":
+    out = subprocess.run(
+        [sys.executable, "-c", "import json, _options; print(json.dumps(_options.values()))"],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        capture_output=True, text=True, timeout=30,
+    ).stdout
+    child = json.loads(out.strip().splitlines()[-1])
+holder = os.environ.get("COGNEE_OPTIONS_HOLDER", "")
+print(json.dumps({"mine": mine, "child": child, "holder": holder}))
+"""
+
+
+@pytest.fixture
+def checked_holder(tmp_path):
+    """A holder started the way Claude Code starts it, from a copy of the
+    plugin's scripts that also holds a probe script, so the holder's caller
+    check runs against real command lines."""
+    import shutil
+
+    scripts = tmp_path / "plugin" / "scripts"
+    shutil.copytree(_SCRIPTS, scripts, ignore=shutil.ignore_patterns("__pycache__"))
+    (scripts / "probe_options.py").write_text(_PROBE, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = subprocess.Popen(
+        [sys.executable, str(scripts / "_holder.py"), *_VALUES],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_env(home),
+        text=True,
+    )
+    record = _record(home, os.getpid())
+    _wait_for(record)
+    yield home, scripts, record
+    proc.stdin.close()
+    proc.wait(timeout=10)
+
+
+def _ask_as(home: Path, scripts: Path, record: Path, argv: list) -> dict:
+    ran = subprocess.run(
+        [sys.executable, *argv],
+        cwd=str(scripts),
+        env=_env(home, COGNEE_OPTIONS_HOLDER=str(record), CLAUDE_PLUGIN_ROOT=str(scripts.parent)),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert ran.returncode == 0, ran.stderr
+    return json.loads(ran.stdout.strip().splitlines()[-1])
+
+
+def _hook_reads(home: Path, scripts: Path, *args: str, **env: str) -> dict:
+    """The probe run as Claude Code runs a hook; it finds the holder itself."""
+    ran = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(scripts / "hook_runner.py"),
+            str(scripts / "probe_options.py"),
+            *args,
+        ],
+        cwd=str(scripts),
+        env=_env(home, CLAUDE_PLUGIN_ROOT=str(scripts.parent), **env),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert ran.returncode == 0, ran.stderr
+    return json.loads(ran.stdout.strip().splitlines()[-1])
+
+
+@_POSIX_ONLY
+def test_the_holder_answers_a_hook_and_what_it_starts(checked_holder):
+    home, scripts, record = checked_holder
+    got = _ask_as(
+        home,
+        scripts,
+        record,
+        ["-I", str(scripts / "hook_runner.py"), str(scripts / "probe_options.py"), "--and-a-child"],
+    )
+    assert got["mine"]["cognee_api_key"] == "ck-s3cr3t-value"
+    assert got["child"]["cognee_api_key"] == "ck-s3cr3t-value"
+
+
+@_POSIX_ONLY
+def test_the_holder_refuses_a_command_run_from_a_shell(checked_holder):
+    """A Bash tool command: python -c, or a plugin script started directly."""
+    home, scripts, record = checked_holder
+    code = "import json, _options; print(json.dumps(_options.values()))"
+    assert _ask_as(home, scripts, record, ["-c", code]) == {}
+    assert _ask_as(home, scripts, record, [str(scripts / "probe_options.py")])["mine"] == {}
+
+
+@_POSIX_ONLY
+def test_the_holder_refuses_a_hook_runner_without_isolation_or_a_foreign_script(
+    checked_holder, tmp_path
+):
+    home, scripts, record = checked_holder
+    runner = str(scripts / "hook_runner.py")
+    # Without -I, PYTHONPATH and the like could load code of the caller's own.
+    assert _ask_as(home, scripts, record, [runner, str(scripts / "probe_options.py")])["mine"] == {}
+    # hook_runner runs any script it is given: only the plugin's own count.
+    foreign = tmp_path / "elsewhere" / "probe_options.py"
+    foreign.parent.mkdir()
+    foreign.write_text(
+        "import sys; sys.path.insert(0, %r)\n" % str(scripts) + _PROBE, encoding="utf-8"
+    )
+    assert _ask_as(home, scripts, record, ["-I", runner, str(foreign)])["mine"] == {}
+
+
+def test_the_entry_points_the_holder_accepts():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_holder_rules", _HOLDER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    s = str(_SCRIPTS)
+    ok = module.entry_point
+    assert ok(["py", "-I", s + "/hook_runner.py", s + "/session-start.py"])
+    assert ok(["py", "-I", s + "/hook_runner.py", s + "/store-to-session.py", "--stop"])
+    assert ok(["py", "-I", s + "/_relay.py", "serve"])
+    assert not ok(["py", s + "/hook_runner.py", s + "/session-start.py"])
+    assert not ok(["py", "-I", s + "/hook_runner.py", "/tmp/evil.py"])
+    assert not ok(["py", "-I", s + "/_relay.py", "run", "doctor.py"])
+    assert not ok(["py", "-I", s + "/doctor.py", "x"])
+    assert not ok(["py", "-c", "print(1)", "x"])
+
+
+def test_every_hook_and_the_relay_start_under_isolation():
+    """The holder answers hooks and the relay only when they run under -I."""
+    hooks = json.loads((_SCRIPTS.parent / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    commands = [
+        hook["command"]
+        for entries in hooks["hooks"].values()
+        for entry in entries
+        for hook in entry["hooks"]
+    ]
+    assert commands
+    for command in commands:
+        assert command.startswith('python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py"')
+        assert '|| python -I "${CLAUDE_PLUGIN_ROOT}/scripts/hook_runner.py"' in command
+    relay = (_SCRIPTS / "_relay.py").read_text(encoding="utf-8")
+    assert '[sys.executable, "-I", str(Path(__file__).resolve()), "serve"]' in relay

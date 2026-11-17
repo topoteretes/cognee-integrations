@@ -47,7 +47,13 @@ _WARM_ARG = "--warm"
 
 def _spawn(*args: str) -> bool:
     try:
-        subprocess.Popen(
+        try:
+            # Claude Code: the detached run gets this hook's options on a pipe,
+            # since it outlives the hook its options holder answers.
+            from _options import popen
+        except ImportError:  # Codex has no options holder
+            popen = subprocess.Popen
+        popen(
             [sys.executable, os.path.abspath(__file__), *args],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

@@ -1628,8 +1628,12 @@ def _reexec_into_venv() -> None:
     runner = os.environ.get("COGNEE_HOOK_RUNNER", "")
     prefix = [runner] if runner and os.path.isfile(runner) else []
     try:
-        # The new interpreter inherits the loop guard just set above.
-        os.execv(str(vpy), [str(vpy), *prefix, *sys.argv])
+        # The new interpreter inherits the loop guard just set above. It keeps
+        # -I, which the options holder asks of a hook, and gets the options
+        # this process already has on a pipe.
+        import _options
+
+        _options.execv(str(vpy), [str(vpy), "-I", *prefix, *sys.argv])
     except OSError as exc:
         # Better to run degraded under the host interpreter than to die.
         hook_log("venv_reexec_failed", {"error": str(exc)[:200]})

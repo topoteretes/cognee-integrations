@@ -146,7 +146,9 @@ def _run_switch(session_id: str, *args: str, timeout: float) -> dict:
         session_id,
     ]
     try:
-        ran = subprocess.run(
+        import _options  # hands this process's options to the child
+
+        ran = _options.run(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -199,7 +201,9 @@ def refresh_listing_in_background(session_id: str) -> None:
         else {"start_new_session": True}
     )
     try:
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, str(Path(__file__).resolve()), "refresh-listing", session_id],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

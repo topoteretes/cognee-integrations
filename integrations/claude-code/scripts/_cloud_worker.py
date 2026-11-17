@@ -99,7 +99,9 @@ def ensure_worker() -> None:
 
     rotate_if_oversized(state / "cloud-worker.log")
     with (state / "cloud-worker.log").open("a", encoding="utf-8") as stream:
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, script],
             stdin=subprocess.DEVNULL,
             stdout=stream,
@@ -915,7 +917,9 @@ def run() -> None:
                 return
             desired = read(state / "cloud-worker-runtime.json")
             if desired.get("script") and desired["script"] != str(Path(__file__).resolve()):
-                os.execv(desired["python"], [desired["python"], desired["script"]])
+                import _options  # hands this process's options to the child
+
+                _options.execv(desired["python"], [desired["python"], desired["script"]])
             try:
                 _bootstrap_sessions()
                 if time.time() - last_health >= 20:

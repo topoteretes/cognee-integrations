@@ -9,7 +9,10 @@ holder of the Claude Code session it runs in; the relay runs that same script
 as its own child, pointed at that holder, and sends the output back.
 
 The relay holds no key itself, so one relay serves every open session, each
-with its own options: two sessions never replace each other's relay.
+with its own options: two sessions never replace each other's relay. The
+holder answers the relayed script because the relay started it: the holder
+answers only hooks, the relay (started with ``python -I``) and what those
+start, so a shell cannot read the keys by going around the relay.
 
 What the relay accepts:
 
@@ -224,8 +227,10 @@ def ensure_relay() -> None:
             if os.name == "nt"
             else {"start_new_session": True}
         )
+        # Under -I: the options holder answers the relay (and what it runs)
+        # only when it was started this way.
         subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "serve"],
+            [sys.executable, "-I", str(Path(__file__).resolve()), "serve"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -527,4 +532,7 @@ def main(argv: list) -> int:
 
 
 if __name__ == "__main__":
+    # -I leaves the script's own folder off the import path.
+    if str(_SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS))
     sys.exit(main(sys.argv))

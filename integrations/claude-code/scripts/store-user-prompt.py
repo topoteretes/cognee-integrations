@@ -118,7 +118,9 @@ def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: di
 
     try:
         env = child_env()
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,

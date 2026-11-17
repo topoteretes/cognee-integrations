@@ -30,6 +30,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   read from a holder change `server-url.json`; session start, before its
   holder is up, takes the recorded server instead of clearing it. A forced
   local backend still wins over the server option.
+- **Only the plugin's own processes can read the keys.** On macOS and Linux
+  the options holder answers a hook, the relay, and what those start, and
+  nothing else: a command run through the Bash tool gets nothing. Hooks and the
+  relay now run under `python -I`, and background work that outlives its hook
+  gets the options from it on a pipe.
 - **One relay for every open session.** The relay holds no key and runs each
   script against the options holder of the session that asked, so two open
   sessions no longer replace each other's relay mid-run.

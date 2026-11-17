@@ -274,7 +274,9 @@ def _sync_current(host_key: str, session_id: str, dataset: str) -> str:
         env["COGNEE_SESSION_REF"] = host_key
         env["COGNEE_SYNC_SESSION_ID"] = session_id
         env["COGNEE_SYNC_DATASET"] = dataset
-        proc = subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        proc = _options.popen(
             [sys.executable, str(_SYNC_SCRIPT)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -385,7 +387,9 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
 
         env = child_env()
         env["COGNEE_SESSION_REF"] = host_key
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,

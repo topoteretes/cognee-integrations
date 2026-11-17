@@ -80,7 +80,9 @@ def _spawn_detached_sync() -> bool:
         if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
             env["COGNEE_SYNC_START_DELAY"] = str(_SESSION_END_START_DELAY_DEFAULT)
         env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
             cwd=os.getcwd(),
             env=env,

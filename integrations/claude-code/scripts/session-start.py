@@ -1686,7 +1686,9 @@ def _spawn_idle_watcher(
         env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
@@ -1822,7 +1824,9 @@ def _spawn_exit_watcher(
         env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, str(_EXIT_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
@@ -1940,7 +1944,9 @@ def _spawn_bootstrap(
         env = child_env()
         if session_key:
             env["COGNEE_SESSION_REF"] = session_key
-        subprocess.Popen(
+        import _options  # hands this process's options to the child
+
+        _options.popen(
             [sys.executable, str(Path(__file__).resolve()), _BOOTSTRAP_ARG, json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,

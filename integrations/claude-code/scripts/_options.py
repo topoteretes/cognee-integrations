@@ -27,6 +27,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -184,6 +185,10 @@ def _from_pipe():
             fd = msvcrt.open_osfhandle(int(raw[1:]), os.O_RDONLY)
         else:
             fd = int(raw)
+            # Only the pipe a parent handed over: a process that inherited the
+            # variable without the descriptor may have another file there.
+            if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+                return None
         with os.fdopen(fd, "rb") as stream:
             answer = json.loads(stream.read().decode("utf-8") or "null")
     except (OSError, ValueError):
@@ -242,7 +247,7 @@ def value(name: str) -> str:
     return str(values().get(name, "")).strip()
 
 
-def popen(args: list, *, env: dict, **kwargs) -> subprocess.Popen:
+def popen(args: list, *, env: dict | None = None, **kwargs) -> subprocess.Popen:
     """``subprocess.Popen`` that hands this process's options to the child on a
     pipe, so the child has them even once this session's holder is gone.
 
@@ -250,7 +255,7 @@ def popen(args: list, *, env: dict, **kwargs) -> subprocess.Popen:
     hundred bytes, far below its buffer, so it is written in full before the
     child starts, and the parent's ends are closed once the child has its copy.
     """
-    env = dict(env)
+    env = dict(os.environ if env is None else env)
     env.pop("COGNEE_OPTIONS_FD", None)
     if not have_options():
         return subprocess.Popen(args, env=env, **kwargs)
@@ -279,3 +284,41 @@ def popen(args: list, *, env: dict, **kwargs) -> subprocess.Popen:
         return subprocess.Popen(args, env=env, **kwargs)
     finally:
         os.close(read_end)
+
+
+def run(args: list, *, env: dict | None = None, input=None, timeout=None, **kwargs):
+    """``subprocess.run`` with this process's options handed over (``popen``)."""
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    if input is not None:
+        kwargs["stdin"] = subprocess.PIPE
+    proc = popen(args, env=env, **kwargs)
+    try:
+        out, err = proc.communicate(input, timeout=timeout)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    return subprocess.CompletedProcess(args, proc.returncode, out, err)
+
+
+def execv(path: str, argv: list) -> None:
+    """``os.execv`` that keeps this process's options: the new program finds
+    them on a pipe, so it need not reach the holder again. On Windows, where
+    ``execv`` starts a new process, it reads them from the holder as before."""
+    if os.name != "nt" and have_options():
+        read_end, write_end = os.pipe()
+        try:
+            os.write(write_end, json.dumps(dict(_cache)).encode("utf-8"))
+        finally:
+            os.close(write_end)
+        os.set_inheritable(read_end, True)
+        os.environ["COGNEE_OPTIONS_FD"] = str(read_end)
+        try:
+            os.execv(path, argv)
+        except OSError:
+            os.environ.pop("COGNEE_OPTIONS_FD", None)
+            os.close(read_end)
+            raise
+    os.execv(path, argv)
