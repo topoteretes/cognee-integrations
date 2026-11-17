@@ -1,12 +1,13 @@
 """The relay: how a script run from a shell reaches Cognee without holding a key.
 
-The plugin's keys are plugin options. Claude Code hands them to the plugin's
-hooks and to what those hooks start, and to nothing else: a script that a skill
-runs through the Bash tool has no key. So a hook starts this relay, a small
-process that stays up while sessions are in use. A skill's script hands its
-command line to the relay, the relay runs that same script as its own child
-(which has the options), and sends the output back. The key never leaves the
-processes Claude Code gave it to, and is never written to disk.
+The plugin's keys are plugin options. The plugin's hooks, and what those hooks
+start, read them from the options holder of their session (``_holder.py``); a
+script that a skill runs through the Bash tool is neither and has no key. So a
+hook starts this relay, a small process that stays up while sessions are in
+use. A skill's script hands its command line to the relay, the relay runs that
+same script as its own child (which reaches the holder), and sends the output
+back. The key never leaves the plugin's own processes and is never written to
+disk.
 
 What the relay accepts:
 
@@ -154,7 +155,11 @@ def _fingerprint() -> str:
         changed = str(os.path.getmtime(os.path.abspath(__file__)))
     except OSError:
         changed = ""
-    text = "\n".join((_key_option(), _bound_url(), str(_SCRIPTS), sys.executable, version, changed))
+    # The holder the options come from: a relay whose session (and holder) is
+    # gone is replaced by one that reads from a live holder.
+    holder = os.environ.get("COGNEE_OPTIONS_HOLDER", "")
+    parts = (_key_option(), _bound_url(), holder, str(_SCRIPTS), sys.executable, version, changed)
+    text = "\n".join(parts)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -250,7 +255,9 @@ def _child_env(extra: dict) -> dict:
     # key option is for the relay's server only.
     asked = _normalized(env.get("COGNEE_LOCAL_API_URL") or env.get("COGNEE_BASE_URL") or "")
     if asked and asked != bound:
-        env.pop("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", None)
+        env["COGNEE_RELAY_NO_KEY"] = "1"
+    else:
+        env.pop("COGNEE_RELAY_NO_KEY", None)
     env[KEY_URL_VAR] = bound
     env[RELAYED_VAR] = "1"
     return env

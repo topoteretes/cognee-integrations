@@ -2,8 +2,8 @@
 
 The plugin directory holds a plugin that reads a credential from the user's
 machine. So the Cognee API key, the LLM key, the embedding key and the login
-are plugin options (``userConfig``, the secret ones ``sensitive``), which
-Claude Code hands to hooks as ``CLAUDE_PLUGIN_OPTION_*``. This file pins that:
+are plugin options (``userConfig``, the secret ones ``sensitive``), which the
+plugin's options holder hands to its hooks (``_holder.py``). This file pins that:
 
 * a key in the shell or in ``~/.cognee/.env`` is dropped, never used, and
   named (name only) so session start can say so;
@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 import pytest
+from utils.options_holder import apply_options, set_options
 from utils.suites import CLAUDE
 
 _SCRIPTS = CLAUDE.scripts_dir
@@ -48,6 +49,9 @@ def _python(code: str, home: Path, **env: str) -> dict:
     base = _bare_env(home)
     base.update({"COGNEE_PLUGIN_IN_VENV": "1", "COGNEE_IDLE_DISABLED": "1"})
     base.update(env)
+    # Options are written as Claude Code's variables here, for readability;
+    # the plugin reads them from an options holder, so they go to one.
+    base = apply_options(CLAUDE, base)
     ran = subprocess.run(
         [sys.executable, "-c", code],
         cwd=str(_SCRIPTS),
@@ -121,9 +125,9 @@ print(json.dumps({{"values": values, "named": named}}))
 
 
 _KEYS = """
-import json, os, _plugin_common as pc, config
+import json, os, _env_file, _plugin_common as pc, config
 cfg = config.load_config()
-option = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "")
+option = _env_file.cloud_key_option()
 pc.save_cached_api_key("https://tenant.cognee.test", option)
 print(json.dumps({
     "config": cfg.get("api_key"),
@@ -273,10 +277,12 @@ def _stop(state: dict) -> None:
 
 
 def _shell(home: Path, *argv: str, **env: str) -> subprocess.CompletedProcess:
-    """Run a script as a skill's shell does: no options in the environment."""
+    """Run a script as a skill's shell does: no options, unless the test gives
+    some (then through a holder, as a relayed script gets them)."""
     base = _bare_env(home)
     base.update({"COGNEE_PLUGIN_IN_VENV": "1", "COGNEE_IDLE_DISABLED": "1"})
     base.update(env)
+    base = apply_options(CLAUDE, base)
     return subprocess.run(
         [sys.executable, *argv],
         cwd=str(_SCRIPTS),
@@ -414,8 +420,9 @@ def test_the_relay_does_not_start_without_the_key_option(tmp_path):
 def start(hook_module, temp_home, tmp_path, monkeypatch):
     module = hook_module(CLAUDE, "session-start.py")
     monkeypatch.setattr(module, "_KEY_OPTIONS_NOTICE", tmp_path / "notice.json")
-    for name in ("COGNEE_BASE_URL", "COGNEE_BACKEND", "COGNEE_PLUGIN_IGNORED_SETTINGS", _OPTION):
+    for name in ("COGNEE_BASE_URL", "COGNEE_BACKEND", "COGNEE_PLUGIN_IGNORED_SETTINGS"):
         monkeypatch.delenv(name, raising=False)
+    set_options(monkeypatch, cognee_api_key="")
     return module
 
 
@@ -427,7 +434,7 @@ def test_cloud_without_the_key_option_is_said_at_every_start(start, monkeypatch)
     assert "COGNEE_API_KEY in your shell or ~/.cognee/.env is no longer read" in first
     assert "/plugin" in first
     assert start._key_options_message() == first
-    monkeypatch.setenv(_OPTION, "ck_option")
+    set_options(monkeypatch, cognee_api_key="ck_option")
     assert start._key_options_message() == ""
 
 
@@ -443,7 +450,7 @@ def test_an_ignored_local_key_is_said_once(start, monkeypatch):
     assert _said(start) == ""
     # A key whose option is filled in is not mentioned at all.
     monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "EMBEDDING_API_KEY,COGNEE_USER_EMAIL")
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "sk_option")
+    set_options(monkeypatch, embedding_api_key="sk_option")
     assert "no longer reads COGNEE_USER_EMAIL from" in _said(start)
 
 
@@ -459,14 +466,14 @@ def test_a_once_only_notice_is_recorded_only_when_emitted(start, monkeypatch):
 def test_an_ignored_llm_key_pauses_local_memory_at_every_start(start, monkeypatch):
     monkeypatch.delenv("COGNEE_LLM_OBSERVER", raising=False)
     # No other LLM chosen (the shared test env turns the local models option on).
-    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", raising=False)
+    set_options(monkeypatch, local_models="")
     monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "LLM_API_KEY")
     first = _said(start)
     assert "local memory is paused" in first
     assert "COGNEE_LLM_OBSERVER=true" in first and "new dataset" in first
     assert _said(start) == first
     # The option settles it.
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk_option")
+    set_options(monkeypatch, llm_api_key="sk_option")
     assert _said(start) == ""
 
 

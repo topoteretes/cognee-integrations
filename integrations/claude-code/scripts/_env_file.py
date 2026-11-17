@@ -2,8 +2,9 @@
 
 Every key comes from the plugin's options (the ``userConfig`` section of the
 plugin manifest): the Cognee API key, the LLM key and the embedding
-key. Claude Code keeps them in its secure store and hands them to the plugin's
-hooks, and to the processes those hooks start, as ``CLAUDE_PLUGIN_OPTION_*``.
+key. Claude Code keeps them in its secure store and starts the plugin's options
+holder with them (``_holder.py``, a local MCP server); the hooks, and the
+processes those hooks start, read them from the holder (``_options.py``).
 The same holds for the login of a server that has no API key (an email and a
 password option), and the server URL has an option of its own.
 The plugin reads a key nowhere else: a value for one of the names in
@@ -158,14 +159,36 @@ def _blocked(name: str) -> bool:
     return name in _DENYLIST_EXACT or name.startswith(_DENYLIST_PREFIXES) or name in OPTION_ONLY
 
 
+def _option(name: str) -> str:
+    """An option's value as the options holder hands it over, or ""."""
+    import _options
+
+    return _options.value(name)
+
+
+def wait_for_options(seconds: float) -> bool:
+    """Wait up to ``seconds`` for this session's options holder, which Claude
+    Code starts alongside the first hooks, then apply the server URL option.
+    Session start calls this; True once the options are in."""
+    import _options
+
+    found = bool(_options.values(wait=seconds))
+    if found:
+        try:
+            _apply_url_option()
+        except Exception:
+            pass
+    return found
+
+
 def login_email_option() -> str:
     """The login email option (a server without an API key), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_EMAIL", "").strip()
+    return _option("cognee_user_email")
 
 
 def login_password_option() -> str:
     """The login password option, or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_PASSWORD", "").strip()
+    return _option("cognee_user_password")
 
 
 def _in_hook() -> bool:
@@ -186,7 +209,7 @@ def _apply_url_option() -> None:
     the record.
     """
     if _in_hook():
-        url = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "").strip()
+        url = _option("cognee_base_url")
         try:
             recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url", "")
         except Exception:
@@ -212,30 +235,33 @@ def _apply_url_option() -> None:
 
 def cloud_key_option() -> str:
     """The Cognee API key option as Claude Code handed it to this process, or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "").strip()
+    return _option("cognee_api_key")
 
 
 def llm_key_option() -> str:
     """The LLM key option (local mode), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "").strip()
+    return _option("llm_api_key")
 
 
 def embedding_key_option() -> str:
     """The embedding key option (local mode), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "").strip()
+    return _option("embedding_api_key")
 
 
 def local_models_option() -> bool:
     """Whether the user chose to build memory without an LLM key, on cognee's
     local models (GLiNER and fastembed). Off unless the option says so."""
-    value = os.environ.get("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "").strip().lower()
+    value = _option("local_models").lower()
     return value in ("1", "true", "yes", "on")
 
 
 def has_options() -> bool:
-    """Whether Claude Code handed this process the plugin's options: true in a
-    hook and in what a hook started, false in a script run from a shell."""
-    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip())
+    """Whether this process can have the plugin's options: true in a hook and
+    in what a hook started, false in a script run from a shell."""
+    return bool(
+        os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+        or os.environ.get("COGNEE_OPTIONS_HOLDER", "").strip()
+    )
 
 
 def server_key_env() -> dict:

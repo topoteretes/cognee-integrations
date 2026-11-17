@@ -3334,9 +3334,27 @@ def _apply_recall_mode_notice(output: dict, payload: dict | None = None) -> dict
     return result
 
 
+#: How long session start waits for the options holder (``_holder.py``), which
+#: Claude Code starts alongside the first hooks. It is usually up in well under
+#: a second; without it the plugin has no keys.
+_OPTIONS_WAIT_SECONDS = 8.0
+
+
+def _wait_for_options() -> None:
+    from _env_file import wait_for_options
+
+    started = time.monotonic()
+    found = wait_for_options(_OPTIONS_WAIT_SECONDS)
+    waited_ms = int((time.monotonic() - started) * 1000)
+    hook_log(
+        "options_holder_found" if found else "options_holder_missing", {"waited_ms": waited_ms}
+    )
+
+
 def main():
     if is_observer_child():
         return
+    _wait_for_options()
     # First run: leave a commented ~/.cognee/.env template so one-time config
     # has a documented file to land in. Values (if any) were already loaded
     # into os.environ when _plugin_common was imported.

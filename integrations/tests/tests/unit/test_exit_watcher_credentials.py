@@ -4,6 +4,7 @@ import json
 from unittest.mock import Mock
 
 import pytest
+from utils.options_holder import set_key
 
 
 @pytest.mark.parametrize("explicit_key", ["watcher-test-key", ""])
@@ -42,7 +43,7 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
 def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, monkeypatch):
     watcher = hook_module(suite, "exit-watcher.py")
     monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
-    monkeypatch.setenv(suite.api_key_env, "environment-test-key")
+    set_key(monkeypatch, suite, "environment-test-key")
     monkeypatch.setattr(
         watcher.sys,
         "argv",

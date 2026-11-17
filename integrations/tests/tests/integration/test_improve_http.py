@@ -23,6 +23,7 @@ run_session_improve orchestration lives in unit/test_improve_orchestration.py.
 from __future__ import annotations
 
 import pytest
+from utils.options_holder import set_key
 
 IMPROVE = "/api/v1/improve"
 STATUS = "/api/v1/datasets/status"
@@ -32,7 +33,7 @@ STATUS = "/api/v1/datasets/status"
 def pc(suite, isolated_modules, mock_server, monkeypatch):
     common = isolated_modules(suite, "_plugin_common")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.setenv(suite.api_key_env, "principal-key")
+    set_key(monkeypatch, suite, "principal-key")
     monkeypatch.setattr(common, "hook_log", lambda *a, **k: None)
     return common
 
