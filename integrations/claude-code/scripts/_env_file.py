@@ -50,6 +50,36 @@ import stat
 import sys
 from pathlib import Path
 
+# The plugin's options, as the options holder hands them over its socket
+# (scripts/_holder.py, started by Claude Code with the options).
+_HOLDER_SOCKET = Path.home() / ".cognee-plugin" / "claude-code" / "holder" / "holder.sock"
+_handed: dict = {}
+
+
+def _handed_option(name: str) -> str:
+    if not _handed:
+        try:
+            import json
+            import socket
+
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            conn.settimeout(2.0)
+            conn.connect(str(_HOLDER_SOCKET))
+            with conn:
+                chunks = []
+                while True:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            answer = json.loads(b"".join(chunks).decode("utf-8") or "{}")
+            if isinstance(answer, dict):
+                _handed.update({k: str(v) for k, v in answer.items()})
+        except Exception:
+            return ""
+    return str(_handed.get(name, "")).strip()
+
+
 _COGNEE_HOME = Path.home() / ".cognee"
 _DEFAULT_ENV_FILE = _COGNEE_HOME / ".env"
 
@@ -160,12 +190,12 @@ def _blocked(name: str) -> bool:
 
 def login_email_option() -> str:
     """The login email option (a server without an API key), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_EMAIL", "").strip()
+    return _handed_option("cognee_user_email").strip()
 
 
 def login_password_option() -> str:
     """The login password option, or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_USER_PASSWORD", "").strip()
+    return _handed_option("cognee_user_password").strip()
 
 
 def _in_hook() -> bool:
@@ -186,7 +216,7 @@ def _apply_url_option() -> None:
     the record.
     """
     if _in_hook():
-        url = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "").strip()
+        url = _handed_option("cognee_base_url").strip()
         try:
             recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url", "")
         except Exception:
@@ -212,23 +242,23 @@ def _apply_url_option() -> None:
 
 def cloud_key_option() -> str:
     """The Cognee API key option as Claude Code handed it to this process, or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "").strip()
+    return _handed_option("cognee_api_key").strip()
 
 
 def llm_key_option() -> str:
     """The LLM key option (local mode), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "").strip()
+    return _handed_option("llm_api_key").strip()
 
 
 def embedding_key_option() -> str:
     """The embedding key option (local mode), or ""."""
-    return os.environ.get("CLAUDE_PLUGIN_OPTION_EMBEDDING_API_KEY", "").strip()
+    return _handed_option("embedding_api_key").strip()
 
 
 def local_models_option() -> bool:
     """Whether the user chose to build memory without an LLM key, on cognee's
     local models (GLiNER and fastembed). Off unless the option says so."""
-    value = os.environ.get("CLAUDE_PLUGIN_OPTION_LOCAL_MODELS", "").strip().lower()
+    value = _handed_option("local_models").strip().lower()
     return value in ("1", "true", "yes", "on")
 
 
