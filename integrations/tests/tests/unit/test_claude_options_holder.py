@@ -226,12 +226,14 @@ def test_a_child_started_after_the_holder_is_gone_gets_the_options_on_a_pipe(tmp
 import json, os, subprocess, sys, _options
 _options.values()
 os.remove({str(record)!r})
-child = _options.popen(
-    [sys.executable, "-c", {_CHILD_KEY!r}],
-    env=dict(os.environ),
-    stdout=subprocess.PIPE,
-    text=True,
-)
+with _options.handing_over() as (handed_fd, handed):
+    child = subprocess.Popen(
+        [sys.executable, "-c", {_CHILD_KEY!r}],
+        env={{**os.environ, **handed_fd}},
+        stdout=subprocess.PIPE,
+        text=True,
+        **handed,
+    )
 out, _ = child.communicate(timeout=30)
 print(out.strip().splitlines()[-1])
 """

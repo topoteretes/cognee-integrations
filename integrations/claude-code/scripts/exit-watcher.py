@@ -66,7 +66,7 @@ def _spawn_sync(
 ) -> None:
     """Start the final sync. Claude Code has exited by now and its options
     holder with it, so the sync gets this watcher's options on a pipe
-    (``_options.popen``) instead of looking for a holder."""
+    (``_options.handing_over``) instead of looking for a holder."""
     try:
         env = child_env()
         if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
@@ -82,15 +82,17 @@ def _spawn_sync(
             env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
         if service_url:
             env["COGNEE_BASE_URL"] = service_url
-        _options.popen(
-            [sys.executable, str(_SYNC_SCRIPT), _DETACHED_SYNC_ARG],
-            cwd=os.getcwd(),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(_SYNC_SCRIPT), _DETACHED_SYNC_ARG],
+                cwd=os.getcwd(),
+                env={**env, **handed_fd},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                **handed,
+            )
         _log("exit_sync_deferred", session=session_id, dataset=dataset)
     except Exception as exc:
         _log("exit_sync_detach_failed", error=str(exc)[:300])

@@ -100,15 +100,20 @@ def ensure_worker() -> None:
     rotate_if_oversized(state / "cloud-worker.log")
     with (state / "cloud-worker.log").open("a", encoding="utf-8") as stream:
         import _options  # hands this process's options to the child
+        from _proc import child_env
 
-        _options.popen(
-            [sys.executable, script],
-            stdin=subprocess.DEVNULL,
-            stdout=stream,
-            stderr=stream,
-            start_new_session=True,
-            close_fds=True,
-        )
+        handed_env = child_env()
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, script],
+                stdin=subprocess.DEVNULL,
+                stdout=stream,
+                stderr=stream,
+                start_new_session=True,
+                close_fds=True,
+                env={**handed_env, **handed_fd},
+                **handed,
+            )
 
 
 def _refresh_console_log() -> None:
@@ -725,15 +730,18 @@ def start_improve_pass(*, spawn=None) -> bool:
             # The pass is a new process, and the session that started this
             # worker may have ended (its options holder with it): it gets the
             # worker's options on a pipe.
-            _options.popen(
-                [sys.executable, str(Path(__file__).resolve()), IMPROVE_PASS_ARG],
-                env=child_env(),
-                stdin=subprocess.DEVNULL,
-                stdout=stream,
-                stderr=stream,
-                start_new_session=True,
-                close_fds=True,
-            )
+            handed_env = child_env()
+            with _options.handing_over() as (handed_fd, handed):
+                subprocess.Popen(
+                    [sys.executable, str(Path(__file__).resolve()), IMPROVE_PASS_ARG],
+                    env={**handed_env, **handed_fd},
+                    stdin=subprocess.DEVNULL,
+                    stdout=stream,
+                    stderr=stream,
+                    start_new_session=True,
+                    close_fds=True,
+                    **handed,
+                )
     else:
         spawn()
     return True
@@ -919,7 +927,8 @@ def run() -> None:
             if desired.get("script") and desired["script"] != str(Path(__file__).resolve()):
                 import _options  # hands this process's options to the child
 
-                _options.execv(desired["python"], [desired["python"], desired["script"]])
+                _options.keep_for_exec()
+                os.execv(desired["python"], [desired["python"], desired["script"]])
             try:
                 _bootstrap_sessions()
                 if time.time() - last_health >= 20:

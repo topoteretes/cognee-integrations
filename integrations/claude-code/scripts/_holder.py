@@ -34,7 +34,7 @@ the hook's own script must be one of the plugin's. So a command the agent runs
 through the Bash tool (``python3 -c ...``, or a plugin script started from a
 shell) is refused: it is neither a hook nor started by the relay. Processes
 that outlive the hook that started them get their options on a pipe from it
-instead (``_options.popen``). What this does not stop is a process of the user
+instead (``_options.handing_over``). What this does not stop is a process of the user
 that rewrites the plugin's own files. On Windows (the loopback form) there is
 no caller check: the random code file is the only gate.
 

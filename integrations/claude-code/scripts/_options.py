@@ -9,7 +9,7 @@ Code exports to hooks, else the process's ancestors) and records the holder in
 The values are read once per process and kept in memory. A process that starts
 another one after its session may have ended (the exit watcher's final sync,
 the cloud worker's improve passes) hands them over on a pipe instead
-(``popen``): the child reads them from the descriptor named in
+(``handing_over``): the child reads them from the descriptor named in
 ``COGNEE_OPTIONS_FD`` and needs no holder at all.
 
 A script run from a shell (a skill's command) has neither: it finds no holder
@@ -23,6 +23,7 @@ modules.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -247,26 +248,24 @@ def value(name: str) -> str:
     return str(values().get(name, "")).strip()
 
 
-def popen(args: list, *, env: dict | None = None, **kwargs) -> subprocess.Popen:
-    """``subprocess.Popen`` that hands this process's options to the child on a
-    pipe, so the child has them even once this session's holder is gone.
+@contextlib.contextmanager
+def handing_over():
+    """Hand this process's options to a child started inside the block.
 
-    Without options of its own this is a plain ``Popen``. The pipe holds a few
+    Yields ``(variables, keywords)``: the variable to add to the child's
+    environment (the pipe's descriptor, or an empty value when there is
+    nothing to hand over) and the keyword arguments the caller adds to its own
+    start of the child, so the descriptor is passed on. The child then has the
+    options even once this session's holder is gone. The pipe holds a few
     hundred bytes, far below its buffer, so it is written in full before the
-    child starts, and the parent's ends are closed once the child has its copy.
+    child starts; this process's end is closed when the block ends.
     """
-    if env is None:
-        from _proc import child_env
-
-        env = child_env()
-    env = dict(env)
-    env.pop("COGNEE_OPTIONS_FD", None)
     if not have_options():
-        return subprocess.Popen(args, env=env, **kwargs)
-    have = dict(_cache)
+        yield {"COGNEE_OPTIONS_FD": ""}, {}
+        return
     read_end, write_end = os.pipe()
     try:
-        os.write(write_end, json.dumps(have).encode("utf-8"))
+        os.write(write_end, json.dumps(dict(_cache)).encode("utf-8"))
     finally:
         os.close(write_end)
     try:
@@ -275,54 +274,25 @@ def popen(args: list, *, env: dict | None = None, **kwargs) -> subprocess.Popen:
 
             handle = msvcrt.get_osfhandle(read_end)
             os.set_handle_inheritable(handle, True)
-            info = kwargs.pop("startupinfo", None) or subprocess.STARTUPINFO()
-            attributes = dict(getattr(info, "lpAttributeList", None) or {})
-            attributes["handle_list"] = [*attributes.get("handle_list", []), handle]
-            info.lpAttributeList = attributes
-            env["COGNEE_OPTIONS_FD"] = "h%d" % handle
-            kwargs["startupinfo"] = info
-            kwargs["close_fds"] = True
+            info = subprocess.STARTUPINFO()
+            info.lpAttributeList = {"handle_list": [handle]}
+            yield {"COGNEE_OPTIONS_FD": "h%d" % handle}, {"startupinfo": info}
         else:
-            env["COGNEE_OPTIONS_FD"] = str(read_end)
-            kwargs["pass_fds"] = (*tuple(kwargs.get("pass_fds") or ()), read_end)
-        return subprocess.Popen(args, env=env, **kwargs)
+            yield {"COGNEE_OPTIONS_FD": str(read_end)}, {"pass_fds": (read_end,)}
     finally:
         os.close(read_end)
 
 
-def run(args: list, *, env: dict | None = None, input=None, timeout=None, **kwargs):
-    """``subprocess.run`` with this process's options handed over (``popen``)."""
-    if kwargs.pop("capture_output", False):
-        kwargs["stdout"] = subprocess.PIPE
-        kwargs["stderr"] = subprocess.PIPE
-    if input is not None:
-        kwargs["stdin"] = subprocess.PIPE
-    proc = popen(args, env=env, **kwargs)
+def keep_for_exec() -> None:
+    """Before ``os.execv``: the program this process becomes finds the options
+    on a pipe and need not reach the holder again. On Windows, where ``execv``
+    starts a new process, it reads them from the holder as before."""
+    if os.name == "nt" or not have_options():
+        return
+    read_end, write_end = os.pipe()
     try:
-        out, err = proc.communicate(input, timeout=timeout)
-    except BaseException:
-        proc.kill()
-        proc.wait()
-        raise
-    return subprocess.CompletedProcess(args, proc.returncode, out, err)
-
-
-def execv(path: str, argv: list) -> None:
-    """``os.execv`` that keeps this process's options: the new program finds
-    them on a pipe, so it need not reach the holder again. On Windows, where
-    ``execv`` starts a new process, it reads them from the holder as before."""
-    if os.name != "nt" and have_options():
-        read_end, write_end = os.pipe()
-        try:
-            os.write(write_end, json.dumps(dict(_cache)).encode("utf-8"))
-        finally:
-            os.close(write_end)
-        os.set_inheritable(read_end, True)
-        os.environ["COGNEE_OPTIONS_FD"] = str(read_end)
-        try:
-            os.execv(path, argv)
-        except OSError:
-            os.environ.pop("COGNEE_OPTIONS_FD", None)
-            os.close(read_end)
-            raise
-    os.execv(path, argv)
+        os.write(write_end, json.dumps(dict(_cache)).encode("utf-8"))
+    finally:
+        os.close(write_end)
+    os.set_inheritable(read_end, True)
+    os.environ["COGNEE_OPTIONS_FD"] = str(read_end)

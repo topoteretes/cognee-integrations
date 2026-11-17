@@ -1633,7 +1633,8 @@ def _reexec_into_venv() -> None:
         # this process already has on a pipe.
         import _options
 
-        _options.execv(str(vpy), [str(vpy), "-I", *prefix, *sys.argv])
+        _options.keep_for_exec()
+        os.execv(str(vpy), [str(vpy), "-I", *prefix, *sys.argv])
     except OSError as exc:
         # Better to run degraded under the host interpreter than to die.
         hook_log("venv_reexec_failed", {"error": str(exc)[:200]})

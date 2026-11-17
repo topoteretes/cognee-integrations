@@ -147,14 +147,19 @@ def _run_switch(session_id: str, *args: str, timeout: float) -> dict:
     ]
     try:
         import _options  # hands this process's options to the child
+        from _proc import child_env
 
-        ran = _options.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-        )
+        handed_env = child_env()
+        with _options.handing_over() as (handed_fd, handed):
+            ran = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                env={**handed_env, **handed_fd},
+                **handed,
+            )
     except subprocess.TimeoutExpired:
         return {"error": "the dataset script gave no answer within %d s" % int(timeout)}
     except Exception as exc:
@@ -202,14 +207,19 @@ def refresh_listing_in_background(session_id: str) -> None:
     )
     try:
         import _options  # hands this process's options to the child
+        from _proc import child_env
 
-        _options.popen(
-            [sys.executable, str(Path(__file__).resolve()), "refresh-listing", session_id],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **kwargs,
-        )
+        handed_env = child_env()
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), "refresh-listing", session_id],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **kwargs,
+                env={**handed_env, **handed_fd},
+                **handed,
+            )
     except Exception:
         pass
 

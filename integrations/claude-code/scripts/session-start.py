@@ -1688,15 +1688,17 @@ def _spawn_idle_watcher(
             env["COGNEE_SESSION_REF"] = session_key
         import _options  # hands this process's options to the child
 
-        _options.popen(
-            [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=log_fh,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                env={**env, **handed_fd},
+                start_new_session=True,
+                close_fds=True,
+                **handed,
+            )
         print("cognee-plugin: idle watcher started", file=sys.stderr)
     except Exception as e:
         print(f"cognee-plugin: idle watcher launch failed ({e})", file=sys.stderr)
@@ -1826,15 +1828,17 @@ def _spawn_exit_watcher(
             env["COGNEE_SESSION_REF"] = session_key
         import _options  # hands this process's options to the child
 
-        _options.popen(
-            [sys.executable, str(_EXIT_WATCHER_SCRIPT), json.dumps(bootstrap)],
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=log_fh,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [sys.executable, str(_EXIT_WATCHER_SCRIPT), json.dumps(bootstrap)],
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                env={**env, **handed_fd},
+                start_new_session=True,
+                close_fds=True,
+                **handed,
+            )
         hook_log(
             "exit_watcher_started",
             {
@@ -1946,15 +1950,22 @@ def _spawn_bootstrap(
             env["COGNEE_SESSION_REF"] = session_key
         import _options  # hands this process's options to the child
 
-        _options.popen(
-            [sys.executable, str(Path(__file__).resolve()), _BOOTSTRAP_ARG, json.dumps(bootstrap)],
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=log_fh,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
+        with _options.handing_over() as (handed_fd, handed):
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    _BOOTSTRAP_ARG,
+                    json.dumps(bootstrap),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                env={**env, **handed_fd},
+                start_new_session=True,
+                close_fds=True,
+                **handed,
+            )
         hook_log("bootstrap_spawned", {"session_id": session_id})
         return True
     except Exception as exc:
