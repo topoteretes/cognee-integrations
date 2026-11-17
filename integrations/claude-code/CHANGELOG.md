@@ -26,6 +26,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `cognee-switch-datasets` skill. Recall, capture, sync and the skills are
   unchanged.
 
+### Changed
+
+- **The credit line's label is a code span:** `` > `Cognee memory:` … ``. With the
+  module gone Claude Code draws the line as written, and a code span keeps the
+  label in a colour of its own. A plain label still counts as a credit.
+
 ## [1.8.8]
 
 ### Changed

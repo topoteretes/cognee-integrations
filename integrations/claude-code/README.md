@@ -570,10 +570,11 @@ See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#
 When an answer uses recalled memory, the agent says so in one line at the end:
 
 ```
-> Cognee memory: Maya's orders and support chat, from the live_context_support_agent_demo dataset
+> `Cognee memory:` Maya's orders and support chat, from the live_context_support_agent_demo dataset
 ```
 
-Claude Code draws that line under the answer with the Cognee mark in place of the label.
+The label is a code span, so Claude Code draws it in its theme's code colour and
+it stands apart from the answer.
 
 How it works:
 
