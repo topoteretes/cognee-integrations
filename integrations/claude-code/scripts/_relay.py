@@ -255,9 +255,9 @@ def _child_env(extra: dict) -> dict:
     # key option is for the relay's server only.
     asked = _normalized(env.get("COGNEE_LOCAL_API_URL") or env.get("COGNEE_BASE_URL") or "")
     if asked and asked != bound:
-        env["COGNEE_RELAY_NO_KEY"] = "1"
+        env["COGNEE_RELAY_OTHER_SERVER"] = "1"
     else:
-        env.pop("COGNEE_RELAY_NO_KEY", None)
+        env.pop("COGNEE_RELAY_OTHER_SERVER", None)
     env[KEY_URL_VAR] = bound
     env[RELAYED_VAR] = "1"
     return env

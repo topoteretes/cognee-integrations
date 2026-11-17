@@ -200,7 +200,7 @@ def test_the_relay_can_withhold_the_key_for_another_server(tmp_path):
     ran = subprocess.run(
         [sys.executable, "-c", code],
         cwd=str(_SCRIPTS),
-        env=_env(tmp_path, COGNEE_RELAY_NO_KEY="1", **env),
+        env=_env(tmp_path, COGNEE_RELAY_OTHER_SERVER="1", **env),
         capture_output=True,
         text=True,
         timeout=30,

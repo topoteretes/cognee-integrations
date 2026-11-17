@@ -30,8 +30,9 @@ from pathlib import Path
 _DIR = Path.home() / ".cognee-plugin" / "claude-code" / "holder"
 #: Inherited by the processes a hook starts: the holder's record file.
 HOLDER_VAR = "COGNEE_OPTIONS_HOLDER"
-#: Set by the relay for a script it runs for another server: no Cognee key.
-NO_KEY_VAR = "COGNEE_RELAY_NO_KEY"
+#: Set by the relay for a script it runs for another server than the options
+#: name: the Cognee API key option is not handed to that run.
+OTHER_SERVER_VAR = "COGNEE_RELAY_OTHER_SERVER"
 
 _cache: dict = {}
 _cache_from = [""]
@@ -156,6 +157,6 @@ def values(wait: float = 0.0) -> dict:
 
 def value(name: str) -> str:
     """One option's value, stripped; "" when unset or without a holder."""
-    if name == "cognee_api_key" and os.environ.get("COGNEE_RELAY_NO_KEY", "") == "1":
+    if name == "cognee_api_key" and os.environ.get("COGNEE_RELAY_OTHER_SERVER", "") == "1":
         return ""
     return str(values().get(name, "")).strip()
