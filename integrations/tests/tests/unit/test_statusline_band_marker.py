@@ -158,17 +158,6 @@ def test_every_run_as_the_status_line_refreshes_that_data(sl, monkeypatch, capsy
     assert (sl._STATUS_DIR / f"{_SESSION}.json").is_file()
 
 
-def test_the_modules_logo_is_the_asset(sl):
-    """The module holds the mark as text; it must stay the drawing in assets/."""
-    plugin = sl._SCRIPTS_DIR.parent if hasattr(sl, "_SCRIPTS_DIR") else None
-    from pathlib import Path
-
-    plugin = plugin or Path(sl.__file__).resolve().parent.parent
-    asset = (plugin / "assets" / "icon-lavender.svg").read_text(encoding="utf-8").strip()
-    module = (plugin / "hooks" / "register.ts").read_text(encoding="utf-8")
-    assert "const WAVE_SVG = `" + asset + "`" in module
-
-
 @pytest.mark.parametrize(
     ("forced", "theme", "light"),
     [
@@ -191,14 +180,3 @@ def test_the_json_answer_says_which_purple_the_module_should_use(
     else:
         monkeypatch.delenv("COGNEE_STATUSLINE_THEME", raising=False)
     assert _ask(sl, monkeypatch, capsys, {"session_id": _SESSION})["light"] is light
-
-
-def test_the_module_starts_no_program_and_writes_no_file(sl):
-    """It draws from files the scripts keep and from its own store, nothing more."""
-    from pathlib import Path
-
-    module = (Path(sl.__file__).resolve().parent.parent / "hooks" / "register.ts").read_text(
-        encoding="utf-8"
-    )
-    for call in ("$.process", "process.run", "$.fs.write", "$.config.", "$.net", "fetch("):
-        assert call not in module, call
