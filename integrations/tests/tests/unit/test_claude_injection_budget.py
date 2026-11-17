@@ -381,5 +381,5 @@ def test_instruction_asks_for_the_dataset_line(lookup):
     text = lookup.credit_instruction(False, 2)
     assert "Cognee found 2 memories for this prompt" in text
     assert "as [dataset <name>]" in text
-    assert "> Cognee memory: <what you remembered>, from the <dataset> dataset" in text
+    assert "> `Cognee memory:` <what you remembered>, from the <dataset> dataset" in text
     assert "<document>" not in text and "[mN]" not in text and "🧠" not in text

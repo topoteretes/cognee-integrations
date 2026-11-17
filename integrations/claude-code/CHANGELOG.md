@@ -10,6 +10,28 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.9]
+
+### Removed
+
+- **The hooks module (`hooks/register.ts`).** The plugin directory holds every
+  plugin that ships a Claude Code mod ("This plugin includes a mod"), and a held
+  version never reaches a reviewer (SDK-1622). Gone with it: the status row
+  above the prompt, memory activity after the spinner, the dataset picker and
+  `/cognee-dataset`, the `see fix` dialog, the first-run tour and
+  `/cognee-tour`, the styled credit note under answers, and the `icon`, `band`,
+  `spinner` and `tour` options.
+- The memory status line is drawn below the prompt again, by the settings
+  `statusLine` that session start installs. Switch datasets with the
+  `cognee-switch-datasets` skill. Recall, capture, sync and the skills are
+  unchanged.
+
+### Changed
+
+- **The credit line's label is a code span:** `` > `Cognee memory:` … ``. With the
+  module gone Claude Code draws the line as written, and a code span keeps the
+  label in a colour of its own. A plain label still counts as a credit.
+
 ## [1.8.8]
 
 ### Changed

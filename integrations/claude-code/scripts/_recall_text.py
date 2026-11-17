@@ -402,9 +402,10 @@ SESSION_STATE_DIRNAME = "sessions"
 CREDIT_FILE = "credit.json"
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
-#: The credit line, "> Cognee memory: …", as the answer's last line (the 🧠
-#: older answers put before the label still counts).
-_UNTAGGED_CREDIT_RE = re.compile(r"^\s*(?:>\s*)?(?:🧠\s*)?Cognee memory:\s*\S")
+#: The credit line, "> `Cognee memory:` …", as the answer's last line. The label
+#: is a code span so Claude Code draws it in its code colour; a plain label, and
+#: the 🧠 older answers put before it, still count.
+_UNTAGGED_CREDIT_RE = re.compile(r"^\s*(?:>\s*)?(?:🧠\s*)?`?Cognee memory:`?\s*\S")
 _AGENTS = {
     "claude": "Claude Code",
     "codex": "Codex",
@@ -418,7 +419,7 @@ CREDIT_INSTRUCTION = (
     "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
     "with the dataset it came from, as [dataset <name>]. If your answer uses "
     "information from a tagged item, end the answer with one line:\n"
-    "> Cognee memory: <what you remembered>, from the <dataset> dataset\n"
+    "> `Cognee memory:` <what you remembered>, from the <dataset> dataset\n"
     "Name each dataset you used once, and for an item tagged with no dataset say where "
     "it came from as its tag says. Never credit Cognee for what you know from project "
     "instruction files, your own memory files, the code, or this conversation. If no "
