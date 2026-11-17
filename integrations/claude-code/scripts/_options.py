@@ -148,7 +148,7 @@ def values(wait: float = 0.0) -> dict:
                 _cache.clear()
                 _cache.update(answer)
                 _cache_from[0] = record
-                os.environ[HOLDER_VAR] = record
+                os.environ["COGNEE_OPTIONS_HOLDER"] = record
                 return dict(_cache)
         if time.monotonic() >= deadline:
             return {}

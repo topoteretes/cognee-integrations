@@ -44,11 +44,22 @@ def _folder() -> Path:
     return _where[0]
 
 
+_started: dict = {}
+
+
 def holder_env(values: dict) -> dict:
-    """Start a holder answering ``values``; the variable that points at it."""
-    state = _folder() / ("test-%d.json" % next(_count))
-    _holder().serve({k: str(v) for k, v in values.items()}, state)
-    return {HOLDER_VAR: str(state)}
+    """A holder answering ``values``; the variable that points at it.
+
+    One holder per distinct set of values, shared by every test in this
+    process: each holder keeps a thread, and the suite asks for thousands.
+    """
+    values = {k: str(v) for k, v in values.items()}
+    wanted = tuple(sorted(values.items()))
+    if wanted not in _started:
+        state = _folder() / ("test-%d.json" % next(_count))
+        _holder().serve(values, state)
+        _started[wanted] = str(state)
+    return {HOLDER_VAR: _started[wanted]}
 
 
 _OPTION_PREFIX = "CLAUDE_PLUGIN_OPTION_"
