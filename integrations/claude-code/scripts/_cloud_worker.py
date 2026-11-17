@@ -716,9 +716,16 @@ def start_improve_pass(*, spawn=None) -> bool:
         if not idle or not due_improves():
             return False
     if spawn is None:
+        import _options
+        from _proc import child_env
+
         with (root() / "cloud-worker.log").open("a", encoding="utf-8") as stream:
-            subprocess.Popen(
+            # The pass is a new process, and the session that started this
+            # worker may have ended (its options holder with it): it gets the
+            # worker's options on a pipe.
+            _options.popen(
                 [sys.executable, str(Path(__file__).resolve()), IMPROVE_PASS_ARG],
+                env=child_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=stream,
                 stderr=stream,

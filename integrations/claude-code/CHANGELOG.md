@@ -22,6 +22,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (SDK-1620). The holder moves the values off its command line at once, serves
   them over a socket only you can open, and removes its files when the session
   ends. Session start waits up to 8 seconds for it.
+- **Work that runs after a session ends keeps its keys.** The final sync after
+  Claude Code exits and the cloud worker's improve passes start once the
+  session's options holder may be gone, so the process that starts them hands
+  over its options on a pipe.
+- **The recorded server survives a hook that has no options yet.** Only options
+  read from a holder change `server-url.json`; session start, before its
+  holder is up, takes the recorded server instead of clearing it. A forced
+  local backend still wins over the server option.
+- **One relay for every open session.** The relay holds no key and runs each
+  script against the options holder of the session that asked, so two open
+  sessions no longer replace each other's relay mid-run.
 - **`.*rc` replaces `.npmrc` and `.netrc` in the capture deny-list**, in every
   host. It also keeps other dot-rc files, such as shell profiles, out of memory.
 

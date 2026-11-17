@@ -172,12 +172,16 @@ def wait_for_options(seconds: float) -> bool:
     Session start calls this; True once the options are in."""
     import _options
 
-    found = bool(_options.values(wait=seconds))
+    _options.values(wait=seconds)
+    found = _options.have_options()
     if found:
         try:
             _apply_url_option()
         except Exception:
             pass
+        # Same order as at load: the option first, then a forced-local switch,
+        # which must still win over the option's server.
+        _apply_backend_switch()
     return found
 
 
@@ -207,8 +211,16 @@ def _apply_url_option() -> None:
     records the option's value so that a process with no options (the status
     line, a skill's script) resolves the same server; an emptied option removes
     the record.
+
+    Only options that were really read decide the record. A hook that has not
+    reached its holder yet (session start, before the wait) or no longer can
+    (a process that outlived its session) has no options, not an empty URL
+    option: it takes the record, like any process without options, and leaves
+    it alone.
     """
-    if _in_hook():
+    import _options
+
+    if _in_hook() and _options.have_options():
         url = _option("cognee_base_url")
         try:
             recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url", "")
@@ -223,14 +235,45 @@ def _apply_url_option() -> None:
                     _URL_RECORD.unlink()
             except Exception:
                 pass
+        if not url and _from_record:
+            # Before the options came in this process took the recorded server,
+            # which the option has now cleared: go back to what it would have
+            # resolved without the record.
+            _undo_record_url()
     else:
         try:
             url = str(json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url") or "")
         except Exception:
             url = ""
+        if url and not _from_record:
+            _from_record.append(os.environ.get("COGNEE_BASE_URL"))
     if url:
         # Over any export; the file's own value does not replace it either.
         os.environ["COGNEE_BASE_URL"] = url
+
+
+#: Set when this process took the server from the record: what
+#: ``COGNEE_BASE_URL`` held before (None when unset).
+_from_record: list = []
+
+
+def _undo_record_url() -> None:
+    before = _from_record.pop()
+    if before is not None:
+        os.environ["COGNEE_BASE_URL"] = before
+        return
+    os.environ.pop("COGNEE_BASE_URL", None)
+    _injected.pop("COGNEE_BASE_URL", None)
+    # The file's value was skipped at load while the record's was in place.
+    try:
+        path = env_file_path()
+        if path.is_file():
+            listed = parse_env_file(path).get("COGNEE_BASE_URL", "")
+            if listed:
+                os.environ["COGNEE_BASE_URL"] = listed
+                _injected["COGNEE_BASE_URL"] = listed
+    except Exception:
+        pass
 
 
 def cloud_key_option() -> str:

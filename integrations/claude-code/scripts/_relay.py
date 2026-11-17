@@ -4,10 +4,12 @@ The plugin's keys are plugin options. The plugin's hooks, and what those hooks
 start, read them from the options holder of their session (``_holder.py``); a
 script that a skill runs through the Bash tool is neither and has no key. So a
 hook starts this relay, a small process that stays up while sessions are in
-use. A skill's script hands its command line to the relay, the relay runs that
-same script as its own child (which reaches the holder), and sends the output
-back. The key never leaves the plugin's own processes and is never written to
-disk.
+use. A skill's script hands its command line to the relay, together with the
+holder of the Claude Code session it runs in; the relay runs that same script
+as its own child, pointed at that holder, and sends the output back.
+
+The relay holds no key itself, so one relay serves every open session, each
+with its own options: two sessions never replace each other's relay.
 
 What the relay accepts:
 
@@ -144,9 +146,11 @@ def _bound_url() -> str:
 
 
 def _fingerprint() -> str:
-    """Changes when the key option, the server it is for, or the plugin's code
-    does, so that the running relay is replaced and never answers with what it
-    was started with. A hash: the key itself is not stored."""
+    """Changes when the server the key is for, or the plugin's code, does, so
+    that the running relay is replaced and never answers with what it was
+    started with. Neither the key nor the session's holder is part of it: each
+    relayed script reads its own session's options, so every session with the
+    same server shares one relay."""
     try:
         from _version import PLUGIN_VERSION as version
     except Exception:
@@ -155,10 +159,7 @@ def _fingerprint() -> str:
         changed = str(os.path.getmtime(os.path.abspath(__file__)))
     except OSError:
         changed = ""
-    # The holder the options come from: a relay whose session (and holder) is
-    # gone is replaced by one that reads from a live holder.
-    holder = os.environ.get("COGNEE_OPTIONS_HOLDER", "")
-    parts = (_key_option(), _bound_url(), holder, str(_SCRIPTS), sys.executable, version, changed)
+    parts = (_bound_url(), str(_SCRIPTS), sys.executable, version, changed)
     text = "\n".join(parts)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -212,8 +213,8 @@ def ensure_relay() -> None:
         if _alive(pid):
             if state.get("fingerprint") == _fingerprint():
                 return
-            # The key option or the plugin changed: the old relay must not go
-            # on answering with what it was started with.
+            # The server or the plugin changed: the old relay must not go on
+            # answering with what it was started with.
             try:
                 os.kill(pid, 15)
             except Exception:
@@ -237,13 +238,23 @@ def ensure_relay() -> None:
 # ---------------------------------------------------------------- the relay
 
 
-def _child_env(extra: dict) -> dict:
-    """The relay's environment (which holds the options), with the caller's
-    values for the names in ``PASSED``: set when the caller has one, removed
-    when it does not, so one terminal's mode never leaks into another's."""
+def _child_env(extra: dict, holder: str = "") -> dict:
+    """The relay's environment, with the caller's values for the names in
+    ``PASSED``: set when the caller has one, removed when it does not, so one
+    terminal's mode never leaks into another's.
+
+    ``holder`` is the options holder of the caller's Claude Code session; the
+    child reads its options there. Only a live record in the holder folder is
+    taken. Without one the child keeps the relay's own, which is the holder of
+    the session that started the relay, or none.
+    """
+    import _options
     from _proc import child_env
 
     env = child_env()
+    env.pop("COGNEE_OPTIONS_FD", None)
+    if holder and _options.is_record(holder):
+        env["COGNEE_OPTIONS_HOLDER"] = holder
     for name in PASSED:
         value = (extra or {}).get(name)
         if isinstance(value, str) and value:
@@ -274,7 +285,7 @@ def _run(request: dict) -> dict:
         ran = subprocess.run(
             [*head, str(_SCRIPTS / script), *argv],
             cwd=cwd if cwd and os.path.isdir(cwd) else None,
-            env=_child_env(request.get("settings") or {}),
+            env=_child_env(request.get("settings") or {}, str(request.get("holder") or "")),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -417,6 +428,21 @@ def _shell_value(name: str) -> str:
     return _SHELL.get(name, "")
 
 
+def _caller_holder() -> str:
+    """The options holder of the Claude Code session this shell runs in, or "".
+
+    The relay runs the script against it, so each session uses its own
+    options. Naming another of the user's own sessions gets that session's
+    options, which are the same user's; nothing outside the user is opened.
+    """
+    try:
+        import _options
+
+        return _options.session_record()
+    except Exception:
+        return ""
+
+
 def relay(script: str, argv: list) -> int | None:
     """Run ``script`` through the relay and print what it printed.
 
@@ -450,7 +476,13 @@ def relay(script: str, argv: list) -> int | None:
         "COGNEE_LOCAL_API_URL": _shell_value("COGNEE_LOCAL_API_URL"),
         "COGNEE_PLUGIN_DATASET": _shell_value("COGNEE_PLUGIN_DATASET"),
     }
-    request = {"script": script, "argv": list(argv), "cwd": cwd, "settings": env}
+    request = {
+        "script": script,
+        "argv": list(argv),
+        "cwd": cwd,
+        "settings": env,
+        "holder": _caller_holder(),
+    }
     if state.get("code"):
         request["code"] = str(state["code"])
     try:

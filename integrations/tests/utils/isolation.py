@@ -39,6 +39,7 @@ ISOLATED_MODULES = (
     "_credits",
     "_cognee_client",
     "_env_file",
+    "_options",
     "_logfiles",
     "_file_lock",
     "_deadlines",

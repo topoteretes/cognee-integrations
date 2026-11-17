@@ -218,10 +218,17 @@ def test_the_url_option_is_used_by_hooks_and_recorded_for_the_rest(tmp_path):
     )
     # So does the recorded option, in a process with no options.
     assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test") == _REMOTE
-    # An emptied option removes the record; an export is then used.
-    assert _python(_URL, tmp_path, **hook) == ""
+    # A hook that reaches no holder has no options, not an emptied URL option:
+    # it takes the record and leaves it in place (session start before its
+    # holder is up, a sync that outlived its session). SDK-1620 review #2.
+    assert _python(_URL, tmp_path, **hook) == _REMOTE
+    assert _python(_URL, tmp_path) == _REMOTE
+    # An emptied option (the holder answers with no URL) removes the record;
+    # an export is then used.
+    emptied = {"CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": "", **hook}
+    assert _python(_URL, tmp_path, **emptied) == ""
     assert _python(_URL, tmp_path) == ""
-    assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test", **hook) == (
+    assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test", **emptied) == (
         "https://export.test"
     )
 

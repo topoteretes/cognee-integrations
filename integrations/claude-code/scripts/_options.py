@@ -6,12 +6,16 @@ its own Claude Code session by that session's pid (``CLAUDE_PID``, which Claude
 Code exports to hooks, else the process's ancestors) and records the holder in
 ``COGNEE_OPTIONS_HOLDER``, so the processes it starts reach the same holder.
 
-The values are read once per process and kept in memory: a watcher or worker
-that outlives its session goes on with what it read while the session ran.
+The values are read once per process and kept in memory. A process that starts
+another one after its session may have ended (the exit watcher's final sync,
+the cloud worker's improve passes) hands them over on a pipe instead
+(``popen``): the child reads them from the descriptor named in
+``COGNEE_OPTIONS_FD`` and needs no holder at all.
 
 A script run from a shell (a skill's command) has neither: it finds no holder
 and has no options. Such scripts reach the server through the relay
-(``_relay.py``), as before.
+(``_relay.py``), which runs them against their own session's holder
+(``session_record``).
 
 Stdlib only, and fast when there is no holder: no import of the plugin's other
 modules.
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -30,12 +35,18 @@ from pathlib import Path
 _DIR = Path.home() / ".cognee-plugin" / "claude-code" / "holder"
 #: Inherited by the processes a hook starts: the holder's record file.
 HOLDER_VAR = "COGNEE_OPTIONS_HOLDER"
+#: Set for a child that gets its parent's options on a pipe: the descriptor
+#: (POSIX) or ``h<handle>`` (Windows) to read them from, once.
+FD_VAR = "COGNEE_OPTIONS_FD"
 #: Set by the relay for a script it runs for another server than the options
 #: name: the Cognee API key option is not handed to that run.
 OTHER_SERVER_VAR = "COGNEE_RELAY_OTHER_SERVER"
+_RECORD_NAME = re.compile(r"^\d+\.json$")
 
 _cache: dict = {}
-_cache_from = [""]
+#: Where the cached values came from: "" (nothing read yet), "pipe", or the
+#: holder record they were read from. Set once; a process never reads twice.
+_source = [""]
 
 
 def _ancestors() -> list:
@@ -70,14 +81,27 @@ def _ancestors() -> list:
     return found
 
 
-def _record_for_session() -> str:
-    """The holder record of this process's Claude Code session, or ""."""
-    held = os.environ.get("COGNEE_OPTIONS_HOLDER", "").strip()
-    if held:
-        return held
-    if not os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip():
-        # Not a hook, nor started by one: a shell. It uses the relay.
-        return ""
+def is_record(path: str) -> bool:
+    """Whether ``path`` is a live holder record: ``<pid>.json`` in the holder
+    folder. The relay checks what a caller names with this."""
+    try:
+        record = Path(path)
+        return (
+            bool(_RECORD_NAME.match(record.name))
+            and record.parent.resolve() == _DIR.resolve()
+            and record.is_file()
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def session_record() -> str:
+    """The holder record of the Claude Code session this process runs in, or "".
+
+    Found by ``CLAUDE_PID``, else by walking up to the first ancestor that has
+    a holder. Used by a hook, and by a script run from a shell to tell the
+    relay which session it belongs to.
+    """
     candidates = []
     raw = os.environ.get("CLAUDE_PID", "").strip()
     if raw.isdigit():
@@ -89,6 +113,19 @@ def _record_for_session() -> str:
         if record.is_file():
             return str(record)
     return ""
+
+
+def _record_for_session() -> str:
+    """The holder record this process reads from, or ""."""
+    held = os.environ.get("COGNEE_OPTIONS_HOLDER", "").strip()
+    if held and Path(held).is_file():
+        return held
+    if not os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip():
+        # Not a hook, nor started by one: a shell. It uses the relay.
+        return ""
+    # An inherited holder whose session has ended falls through to this
+    # process's own session, if it has one.
+    return session_record()
 
 
 def _ask(record: str):
@@ -128,31 +165,74 @@ def _ask(record: str):
     return {str(k): str(v) for k, v in answer.items()}
 
 
+def _keep(answer: dict, source: str) -> dict:
+    _cache.clear()
+    _cache.update(answer)
+    _source[0] = source
+    return dict(_cache)
+
+
+def _from_pipe():
+    """The values a parent handed this process on a pipe, read once; or None."""
+    raw = os.environ.pop("COGNEE_OPTIONS_FD", "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.startswith("h"):
+            import msvcrt
+
+            fd = msvcrt.open_osfhandle(int(raw[1:]), os.O_RDONLY)
+        else:
+            fd = int(raw)
+        with os.fdopen(fd, "rb") as stream:
+            answer = json.loads(stream.read().decode("utf-8") or "null")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(answer, dict):
+        return None
+    return {str(k): str(v) for k, v in answer.items()}
+
+
 def values(wait: float = 0.0) -> dict:
-    """Every option the holder has, by its ``userConfig`` name; {} without one.
+    """Every option this process has, by its ``userConfig`` name; {} without any.
 
     ``wait`` is how long to keep looking for a holder that is still starting:
     Claude Code starts its MCP servers alongside the first hooks, so session
     start waits for it. Later hooks find it at once.
     """
+    if _source[0]:
+        # Read once per process: a watcher or worker whose session (and
+        # holder) has ended goes on with what it read, as long as it still
+        # names that holder.
+        held = os.environ.get("COGNEE_OPTIONS_HOLDER", "").strip()
+        if _source[0] == "pipe" or held == _source[0]:
+            return dict(_cache)
+        _source[0] = ""
+    handed = _from_pipe()
+    if handed is not None:
+        return _keep(handed, "pipe")
     deadline = time.monotonic() + max(0.0, wait)
     while True:
         record = _record_for_session()
-        if record and record == _cache_from[0]:
-            # Read once per process: a watcher or worker whose session (and
-            # holder) has ended goes on with what it read.
-            return dict(_cache)
         if record:
             answer = _ask(record)
             if answer is not None:
-                _cache.clear()
-                _cache.update(answer)
-                _cache_from[0] = record
                 os.environ["COGNEE_OPTIONS_HOLDER"] = record
-                return dict(_cache)
+                return _keep(answer, record)
         if time.monotonic() >= deadline:
             return {}
         time.sleep(0.1)
+
+
+def have_options() -> bool:
+    """Whether this process got its options (from a holder or a parent's pipe).
+
+    False also when every option is unset but no holder answered: the two must
+    not be confused, since "the URL option is empty" clears the recorded server
+    only when the options were really read.
+    """
+    values()
+    return bool(_source[0])
 
 
 def value(name: str) -> str:
@@ -160,3 +240,42 @@ def value(name: str) -> str:
     if name == "cognee_api_key" and os.environ.get("COGNEE_RELAY_OTHER_SERVER", "") == "1":
         return ""
     return str(values().get(name, "")).strip()
+
+
+def popen(args: list, *, env: dict, **kwargs) -> subprocess.Popen:
+    """``subprocess.Popen`` that hands this process's options to the child on a
+    pipe, so the child has them even once this session's holder is gone.
+
+    Without options of its own this is a plain ``Popen``. The pipe holds a few
+    hundred bytes, far below its buffer, so it is written in full before the
+    child starts, and the parent's ends are closed once the child has its copy.
+    """
+    env = dict(env)
+    env.pop("COGNEE_OPTIONS_FD", None)
+    if not have_options():
+        return subprocess.Popen(args, env=env, **kwargs)
+    have = dict(_cache)
+    read_end, write_end = os.pipe()
+    try:
+        os.write(write_end, json.dumps(have).encode("utf-8"))
+    finally:
+        os.close(write_end)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle = msvcrt.get_osfhandle(read_end)
+            os.set_handle_inheritable(handle, True)
+            info = kwargs.pop("startupinfo", None) or subprocess.STARTUPINFO()
+            attributes = dict(getattr(info, "lpAttributeList", None) or {})
+            attributes["handle_list"] = [*attributes.get("handle_list", []), handle]
+            info.lpAttributeList = attributes
+            env["COGNEE_OPTIONS_FD"] = "h%d" % handle
+            kwargs["startupinfo"] = info
+            kwargs["close_fds"] = True
+        else:
+            env["COGNEE_OPTIONS_FD"] = str(read_end)
+            kwargs["pass_fds"] = (*tuple(kwargs.get("pass_fds") or ()), read_end)
+        return subprocess.Popen(args, env=env, **kwargs)
+    finally:
+        os.close(read_end)
