@@ -31,15 +31,22 @@ _OPTION = "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY"
 _REMOTE = "https://tenant.cognee.test"
 
 
+#: What Windows needs in any process environment: without SYSTEMROOT, Winsock
+#: cannot load (WinError 10106) and no socket opens. Hooks get these from
+#: Claude Code's environment; a bare test environment must copy them.
+_WINDOWS_SYSTEM_VARS = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
+
+
+def _bare_env(home: Path) -> dict:
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home), "USERPROFILE": str(home)}
+    env.update({name: os.environ[name] for name in _WINDOWS_SYSTEM_VARS if name in os.environ})
+    return env
+
+
 def _python(code: str, home: Path, **env: str) -> dict:
     """Run ``code`` in a fresh interpreter in the scripts folder; its JSON output."""
-    base = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": str(home),
-        "USERPROFILE": str(home),
-        "COGNEE_PLUGIN_IN_VENV": "1",
-        "COGNEE_IDLE_DISABLED": "1",
-    }
+    base = _bare_env(home)
+    base.update({"COGNEE_PLUGIN_IN_VENV": "1", "COGNEE_IDLE_DISABLED": "1"})
     base.update(env)
     ran = subprocess.run(
         [sys.executable, "-c", code],
@@ -261,7 +268,7 @@ def _stop(state: dict) -> None:
 
 def _shell(home: Path, *argv: str, **env: str) -> subprocess.CompletedProcess:
     """Run a script as a skill's shell does: no options in the environment."""
-    base = {"PATH": os.environ.get("PATH", ""), "HOME": str(home), "USERPROFILE": str(home)}
+    base = _bare_env(home)
     base.update({"COGNEE_PLUGIN_IN_VENV": "1", "COGNEE_IDLE_DISABLED": "1"})
     base.update(env)
     return subprocess.run(
@@ -336,7 +343,7 @@ def test_the_forget_helper_says_why_no_key_was_sent(temp_home, mock_server):
         pytest.skip("needs a POSIX bash")
     state = _start_relay(temp_home, _ELSEWHERE, "ck_option")
     try:
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(temp_home)}
+        env = _bare_env(temp_home)
         env.update({"COGNEE_IDLE_DISABLED": "1", "COGNEE_BASE_URL": mock_server.url})
         ran = subprocess.run(
             [bash, str(_SCRIPTS / "cognee-forget.sh"), "datasets"],
