@@ -1,4 +1,8 @@
 {
+  "description": "Cognee memory: the settings hooks run the memory pipeline; the hooks module draws the live activity (desktop band, spinner, answer line).",
+  "modules": [
+    "./register.ts"
+  ],
   "hooks": {
     "SessionStart": [
       {

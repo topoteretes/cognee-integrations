@@ -7,4 +7,4 @@ none of them opens the manifest.
 
 from __future__ import annotations
 
-PLUGIN_VERSION = "1.8.9"
+PLUGIN_VERSION = "1.8.8"
