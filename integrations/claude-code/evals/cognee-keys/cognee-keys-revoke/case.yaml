@@ -1,4 +1,0 @@
-schema_version: "1.1"
-name: cognee-keys-revoke
-context:
-  scaffold_script: isolate.sh
