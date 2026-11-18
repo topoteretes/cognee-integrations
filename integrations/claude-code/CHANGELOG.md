@@ -10,6 +10,19 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.10]
+
+### Changed
+
+- **Back to 1.8.7.** This release restores the 1.8.7 code: it reverts the
+  options holder from 1.8.8 (#623) and the removal of the hooks module from 1.8.9
+  (#624). Keys are read from the plugin's options again, and the hooks module
+  (`hooks/register.ts`), with its status row and picker, is back.
+
+### Upgrade note
+
+- Start a new session after updating.
+
 ## [1.8.7]
 
 ### Changed
