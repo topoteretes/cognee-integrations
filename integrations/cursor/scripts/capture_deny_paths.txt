@@ -5,7 +5,8 @@
 *.key
 id_rsa*
 id_ed25519*
-.*rc
+.npmrc
+.netrc
 */.aws/credentials
 */.ssh/*
 *.p12

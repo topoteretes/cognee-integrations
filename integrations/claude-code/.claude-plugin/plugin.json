@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
-  "version": "1.8.8",
+  "version": "1.8.7",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -88,21 +88,6 @@
       "title": "First-run tour",
       "description": "On the first session on this machine, show three short hints under the status row about what it shows and does (/cognee-tour replays them).",
       "default": true
-    }
-  },
-  "mcpServers": {
-    "options": {
-      "command": "python3",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/scripts/_holder.py",
-        "${user_config.cognee_base_url}",
-        "${user_config.cognee_api_key}",
-        "${user_config.llm_api_key}",
-        "${user_config.embedding_api_key}",
-        "${user_config.local_models}",
-        "${user_config.cognee_user_email}",
-        "${user_config.cognee_user_password}"
-      ]
     }
   }
 }

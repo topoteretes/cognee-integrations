@@ -73,7 +73,6 @@ NAMES = frozenset(
         "COGNEE_OBSERVER_PROBE_TTL",
         "COGNEE_OBSERVER_RETIRE_AFTER",
         "COGNEE_OBSERVER_TIMEOUT",
-        "COGNEE_OPTIONS_FD",
         "COGNEE_PLATFORM_API_URL",
         "COGNEE_PLUGIN_CITE_MEMORY",
         "COGNEE_PLUGIN_DATASET",
@@ -835,18 +834,6 @@ def sync(values: dict, injected: dict) -> None:
     elif last is not None:
         os.environ.pop("COGNEE_OBSERVER_TIMEOUT", None)
         injected.pop("COGNEE_OBSERVER_TIMEOUT")
-    last = injected.get("COGNEE_OPTIONS_FD")
-    if last is not None and os.environ.get("COGNEE_OPTIONS_FD") != last:
-        injected.pop("COGNEE_OPTIONS_FD")
-        last = None
-    if "COGNEE_OPTIONS_FD" in values:
-        if last is not None or "COGNEE_OPTIONS_FD" not in os.environ:
-            held = values["COGNEE_OPTIONS_FD"]
-            os.environ["COGNEE_OPTIONS_FD"] = held
-            injected["COGNEE_OPTIONS_FD"] = held
-    elif last is not None:
-        os.environ.pop("COGNEE_OPTIONS_FD", None)
-        injected.pop("COGNEE_OPTIONS_FD")
     last = injected.get("COGNEE_PLATFORM_API_URL")
     if last is not None and os.environ.get("COGNEE_PLATFORM_API_URL") != last:
         injected.pop("COGNEE_PLATFORM_API_URL")
@@ -1957,9 +1944,6 @@ def overridden(values: dict) -> list:
     held = values.get("COGNEE_OBSERVER_TIMEOUT")
     if held is not None and os.environ.get("COGNEE_OBSERVER_TIMEOUT", held) != held:
         found.append("COGNEE_OBSERVER_TIMEOUT")
-    held = values.get("COGNEE_OPTIONS_FD")
-    if held is not None and os.environ.get("COGNEE_OPTIONS_FD", held) != held:
-        found.append("COGNEE_OPTIONS_FD")
     held = values.get("COGNEE_PLATFORM_API_URL")
     if held is not None and os.environ.get("COGNEE_PLATFORM_API_URL", held) != held:
         found.append("COGNEE_PLATFORM_API_URL")

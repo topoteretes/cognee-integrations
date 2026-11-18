@@ -1,11 +1,9 @@
 """A detached watcher receives credentials through its environment, never argv."""
 
 import json
-import time
 from unittest.mock import Mock
 
 import pytest
-from utils.options_holder import set_key
 
 
 @pytest.mark.parametrize("explicit_key", ["watcher-test-key", ""])
@@ -42,11 +40,9 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
 
 
 def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, monkeypatch):
-    if suite.name == "claude-code":
-        pytest.skip("claude-code hands the final sync its options on a pipe (below)")
     watcher = hook_module(suite, "exit-watcher.py")
     monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
-    set_key(monkeypatch, suite, "environment-test-key")
+    monkeypatch.setenv(suite.api_key_env, "environment-test-key")
     monkeypatch.setattr(
         watcher.sys,
         "argv",
@@ -60,52 +56,3 @@ def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, m
 
     sync.assert_called_once()
     assert sync.call_args.kwargs["api_key"] == "environment-test-key"
-
-
-def test_claude_final_sync_has_the_key_after_the_session_holder_is_gone(
-    suite, hook_module, monkeypatch, tmp_path
-):
-    """SDK-1620 review #1: the final sync starts after Claude Code (and with it
-    the session's options holder) has gone. It must still have the key, which
-    the watcher read while the session ran and hands over on a pipe."""
-    if suite.name != "claude-code":
-        pytest.skip("the options holder is claude-code's")
-    from utils.options_holder import _holder
-
-    watcher = hook_module(suite, "exit-watcher.py")
-    state = tmp_path / "holder" / "4242.json"
-    _, close_holder = _holder().serve({"cognee_api_key": "ck-after-exit"}, state)
-    monkeypatch.setenv("COGNEE_OPTIONS_HOLDER", str(state))
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(suite.scripts_dir.parent))
-
-    out = tmp_path / "sync-saw.json"
-    probe = tmp_path / "probe_sync.py"
-    probe.write_text(
-        "import json, sys\n"
-        "sys.path.insert(0, %r)\n"
-        "import _options\n"
-        "open(%r, 'w').write(json.dumps(_options.value('cognee_api_key')))\n"
-        % (str(suite.scripts_dir), str(out)),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(watcher, "_SYNC_SCRIPT", probe)
-    monkeypatch.setattr(
-        watcher.sys,
-        "argv",
-        ["exit-watcher.py", json.dumps({"parent_pid": 123456, "session_id": "session-123"})],
-    )
-
-    def claude_code_exits(pid):
-        # Claude Code is gone: its holder closes and removes its record.
-        close_holder()
-        return False
-
-    monkeypatch.setattr(watcher, "_pid_alive", claude_code_exits)
-    watcher.main()
-
-    assert not state.exists()
-    for _ in range(200):
-        if out.exists() and out.read_text(encoding="utf-8"):
-            break
-        time.sleep(0.05)
-    assert json.loads(out.read_text(encoding="utf-8")) == "ck-after-exit"

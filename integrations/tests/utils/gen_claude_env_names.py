@@ -31,9 +31,6 @@ _READ = re.compile(
 #: Names the file may never set: they steer the process itself, they are keys
 #: (plugin options only), or Claude Code owns them.
 _NEVER = {"PATH", "HOME", "PYTHONPATH", "PYTHONHOME", "SHELL", "USER", "USERPROFILE", "APPDATA"}
-#: Set by the plugin for the processes it starts, never by a user: where the
-#: options holder is, and the relay's "no key for this server".
-_NEVER |= {"COGNEE_OPTIONS_HOLDER", "COGNEE_RELAY_OTHER_SERVER"}
 _NEVER_PREFIXES = ("LD_", "DYLD_", "CLAUDE_", "CODEX_")
 _KEYS = {
     "COGNEE_API_KEY",

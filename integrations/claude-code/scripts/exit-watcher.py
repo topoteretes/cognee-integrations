@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-import _options
 from _logfiles import append_line as _append_log_line
 from _proc import child_env
 from _proc import pid_alive as _pid_alive
@@ -62,11 +61,9 @@ def _spawn_sync(
     *,
     session_key: str = "",
     agent_session_name: str = "",
+    api_key: str = "",
     service_url: str = "",
 ) -> None:
-    """Start the final sync. Claude Code has exited by now and its options
-    holder with it, so the sync gets this watcher's options on a pipe
-    (``_options.handing_over``) instead of looking for a holder."""
     try:
         env = child_env()
         if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
@@ -82,17 +79,15 @@ def _spawn_sync(
             env["COGNEE_AGENT_SESSION_NAME"] = agent_session_name
         if service_url:
             env["COGNEE_BASE_URL"] = service_url
-        with _options.handing_over() as (handed_fd, handed):
-            subprocess.Popen(
-                [sys.executable, str(_SYNC_SCRIPT), _DETACHED_SYNC_ARG],
-                cwd=os.getcwd(),
-                env={**env, **handed_fd},
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                **handed,
-            )
+        subprocess.Popen(
+            [sys.executable, str(_SYNC_SCRIPT), _DETACHED_SYNC_ARG],
+            cwd=os.getcwd(),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         _log("exit_sync_deferred", session=session_id, dataset=dataset)
     except Exception as exc:
         _log("exit_sync_detach_failed", error=str(exc)[:300])
@@ -272,6 +267,7 @@ def main() -> None:
         dataset,
         session_key=session_key,
         agent_session_name=agent_session_name,
+        api_key=api_key,
         service_url=service_url,
     )
 
