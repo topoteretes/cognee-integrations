@@ -291,8 +291,6 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:mod_pick_failed` | `mod.pick_failed` |
 | `hook:mod_listing_start_failed` | `mod.listing_start_failed` |
 | `hook:key_options_notice` | `keys.options_notice` |
-| `hook:options_holder_found` | `keys.options_holder_found` |
-| `hook:options_holder_missing` | `keys.options_holder_missing` |
 | `hook:key_options_notice_failed` | `keys.options_notice_failed` |
 | `hook:switch_old_handle_released` | `switch.old_handle_released` |
 | `hook:switch_sync_forced_past_failure` | `switch.sync_forced_past_failure` |

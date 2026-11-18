@@ -10,63 +10,18 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.8.9]
-
-### Removed
-
-- **The hooks module (`hooks/register.ts`).** The plugin directory holds every
-  plugin that ships a Claude Code mod ("This plugin includes a mod"), and a held
-  version never reaches a reviewer (SDK-1622). Gone with it: the status row
-  above the prompt, memory activity after the spinner, the dataset picker and
-  `/cognee-dataset`, the `see fix` dialog, the first-run tour and
-  `/cognee-tour`, the styled credit note under answers, and the `icon`, `band`,
-  `spinner` and `tour` options.
-- The memory status line is drawn below the prompt again, by the settings
-  `statusLine` that session start installs. Switch datasets with the
-  `cognee-switch-datasets` skill. Recall, capture, sync and the skills are
-  unchanged.
+## [1.8.10]
 
 ### Changed
 
-- **The credit line's label is a code span:** `` > `Cognee memory:` … ``. With the
-  module gone Claude Code draws the line as written, and a code span keeps the
-  label in a colour of its own. A plain label still counts as a credit.
-
-## [1.8.8]
-
-### Changed
-
-- **The keys reach the hooks through an options holder.** Claude Code now
-  starts `scripts/_holder.py` with each session, as a local MCP server with no
-  tools, and passes it the plugin's options as arguments. The hooks read the
-  options from it instead of from Claude Code's `CLAUDE_PLUGIN_OPTION_*`
-  variables. This is the form the plugin directory accepts for a plugin's keys
-  (SDK-1620). The holder moves the values off its command line at once, serves
-  them over a socket only you can open, and removes its files when the session
-  ends. Session start waits up to 8 seconds for it.
-- **Work that runs after a session ends keeps its keys.** The final sync after
-  Claude Code exits and the cloud worker's improve passes start once the
-  session's options holder may be gone, so the process that starts them hands
-  over its options on a pipe.
-- **The recorded server survives a hook that has no options yet.** Only options
-  read from a holder change `server-url.json`; session start, before its
-  holder is up, takes the recorded server instead of clearing it. A forced
-  local backend still wins over the server option.
-- **Only the plugin's own processes can read the keys.** On macOS and Linux
-  the options holder answers a hook, the relay, and what those start, and
-  nothing else: a command run through the Bash tool gets nothing. Hooks and the
-  relay now run under `python -I`, and background work that outlives its hook
-  gets the options from it on a pipe.
-- **One relay for every open session.** The relay holds no key and runs each
-  script against the options holder of the session that asked, so two open
-  sessions no longer replace each other's relay mid-run.
-- **`.*rc` replaces `.npmrc` and `.netrc` in the capture deny-list**, in every
-  host. It also keeps other dot-rc files, such as shell profiles, out of memory.
+- **Back to 1.8.7.** This release restores the 1.8.7 code: it reverts the
+  options holder from 1.8.8 (#623) and the removal of the hooks module from 1.8.9
+  (#624). Keys are read from the plugin's options again, and the hooks module
+  (`hooks/register.ts`), with its status row and picker, is back.
 
 ### Upgrade note
 
-- Start a new session after updating: a session that was open before has no
-  options holder, so its hooks have no keys until it is restarted.
+- Start a new session after updating.
 
 ## [1.8.7]
 

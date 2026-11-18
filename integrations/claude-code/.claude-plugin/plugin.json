@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
-  "version": "1.8.9",
+  "version": "1.8.10",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -64,21 +64,30 @@
       "title": "Login password (server without an API key)",
       "description": "The password for the login email above. Usually left empty.",
       "sensitive": true
-    }
-  },
-  "mcpServers": {
-    "options": {
-      "command": "python3",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/scripts/_holder.py",
-        "${user_config.cognee_base_url}",
-        "${user_config.cognee_api_key}",
-        "${user_config.llm_api_key}",
-        "${user_config.embedding_api_key}",
-        "${user_config.local_models}",
-        "${user_config.cognee_user_email}",
-        "${user_config.cognee_user_password}"
-      ]
+    },
+    "icon": {
+      "type": "string",
+      "title": "Cognee logo",
+      "description": "Show the Cognee logo on the status row and on the credit line under answers. Set to none to hide it.",
+      "default": "wave"
+    },
+    "band": {
+      "type": "boolean",
+      "title": "Status row above the prompt",
+      "description": "Show Cognee's status row above the prompt: dataset picker, counters and current memory activity.",
+      "default": true
+    },
+    "spinner": {
+      "type": "boolean",
+      "title": "Show memory activity in the spinner",
+      "description": "Add what Cognee is doing (recalling, saving, consolidating) after the spinner while Claude works.",
+      "default": true
+    },
+    "tour": {
+      "type": "boolean",
+      "title": "First-run tour",
+      "description": "On the first session on this machine, show three short hints under the status row about what it shows and does (/cognee-tour replays them).",
+      "default": true
     }
   }
 }

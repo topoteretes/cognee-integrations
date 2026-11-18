@@ -116,7 +116,7 @@ def test_what_the_hook_sends_and_injects_follows_the_recall_mode(
     if suite.name == "claude-code":
         # Items are marked with where they came from, not numbered (SDK-1393),
         # and the braille mark stands in for the brain under the answer.
-        assert "> `Cognee memory:` <what you remembered>, from the <dataset> dataset" in context
+        assert "> Cognee memory: <what you remembered>, from the <dataset> dataset" in context
         assert "[m1" not in context and "\U0001f9e0" not in context
         return
     if suite.name == "codex":

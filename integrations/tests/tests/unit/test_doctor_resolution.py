@@ -25,7 +25,6 @@ import json
 import time
 
 import pytest
-from utils.options_holder import set_key
 
 
 @pytest.fixture
@@ -111,7 +110,7 @@ def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
 
 def test_api_key_source_env(suite, doctor, monkeypatch):
     monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
-    set_key(monkeypatch, suite, "test-key-from-env")
+    monkeypatch.setenv(suite.api_key_env, "test-key-from-env")
     assert doctor._resolve_api_key_source() == suite.api_key_source_label
 
 

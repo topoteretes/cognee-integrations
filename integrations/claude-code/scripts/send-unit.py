@@ -15,7 +15,6 @@ SessionStart), so the first prompt's memory block needs no downloads.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
@@ -48,24 +47,15 @@ _WARM_ARG = "--warm"
 
 def _spawn(*args: str) -> bool:
     try:
-        try:
-            # Claude Code: the detached run gets this hook's options on a pipe,
-            # since it outlives the hook its options holder answers.
-            from _options import handing_over
-        except ImportError:  # Codex has no options holder
-            handing_over = None
-        handover = handing_over() if handing_over else contextlib.nullcontext(({}, {}))
-        with handover as (handed_fd, handed):
-            subprocess.Popen(
-                [sys.executable, os.path.abspath(__file__), *args],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env={**os.environ, **handed_fd},
-                start_new_session=True,
-                close_fds=True,
-                **handed,
-            )
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=os.environ.copy(),
+            start_new_session=True,
+            close_fds=True,
+        )
         return True
     except Exception as exc:
         hook_log("coding_spawn_failed", {"args": list(args)[:1], "error": str(exc)[:200]})

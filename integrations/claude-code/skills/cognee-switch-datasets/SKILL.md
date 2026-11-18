@@ -33,6 +33,16 @@ where they are and start no new session. `auto` is reserved: no dataset can be
 named so. `pin` names the action, so a dataset called `pin` is switched to by
 its id.
 
+## Faster, with the hooks module loaded
+
+Where Claude Code loads the plugin's hooks module (2.1.287+), the user can switch
+without a model turn: `/cognee-dataset <name>` from the prompt (`/cognee-dataset`
+alone lists the datasets; `/cognee-dataset pin` and `/cognee-dataset auto` set the
+recall mode), or the dataset name in the status row above the prompt,
+which is a picker (in a terminal, focus it with `ctrl+x tab`). If the user asks you
+to switch, run this skill as below; if they ask
+how to switch themselves, point them there.
+
 ## Instructions
 
 ### 1. If the user only wants to change the recall mode

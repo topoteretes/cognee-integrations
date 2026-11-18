@@ -274,19 +274,15 @@ def _sync_current(host_key: str, session_id: str, dataset: str) -> str:
         env["COGNEE_SESSION_REF"] = host_key
         env["COGNEE_SYNC_SESSION_ID"] = session_id
         env["COGNEE_SYNC_DATASET"] = dataset
-        import _options  # hands this process's options to the child
-
-        with _options.handing_over() as (handed_fd, handed):
-            proc = subprocess.Popen(
-                [sys.executable, str(_SYNC_SCRIPT)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env={**env, **handed_fd},
-                start_new_session=True,
-                close_fds=True,
-                **handed,
-            )
+        proc = subprocess.Popen(
+            [sys.executable, str(_SYNC_SCRIPT)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
         hook_log(
             "switch_sync_started",
             {"session": session_id, "dataset": dataset, "via": "detached", "pid": proc.pid},
@@ -389,19 +385,15 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
 
         env = child_env()
         env["COGNEE_SESSION_REF"] = host_key
-        import _options  # hands this process's options to the child
-
-        with _options.handing_over() as (handed_fd, handed):
-            subprocess.Popen(
-                [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
-                stdin=subprocess.DEVNULL,
-                stdout=log_fh,
-                stderr=log_fh,
-                env={**env, **handed_fd},
-                start_new_session=True,
-                close_fds=True,
-                **handed,
-            )
+        subprocess.Popen(
+            [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
         hook_log("switch_watcher_restarted", {"session": session_id, "dataset": dataset})
     except Exception as exc:
         hook_log("switch_watcher_restart_failed", {"error": str(exc)[:200]})

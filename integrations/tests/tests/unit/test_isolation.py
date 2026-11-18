@@ -12,17 +12,9 @@ def test_build_env_isolates_and_targets_mock(suite, temp_home, mock_server):
     assert env["USERPROFILE"] == str(temp_home)
     assert env["COGNEE_BASE_URL"] == mock_server.url
     assert env["COGNEE_PLATFORM_API_URL"] == mock_server.url
-    if suite.api_key_env == "COGNEE_API_KEY":
-        assert env["COGNEE_API_KEY"] == "k"
-    else:
-        # claude-code's options (the key, and the deterministic local models
-        # choice) reach it through an options holder, not the environment.
-        assert "COGNEE_OPTIONS_HOLDER" in env
-        assert not any(k.startswith("CLAUDE_PLUGIN_OPTION_") for k in env)
+    assert env[suite.api_key_env] == "k"
     assert env[suite.cwd_env] == str(temp_home)
     for key, value in DETERMINISTIC_ENV.items():
-        if suite.api_key_env != "COGNEE_API_KEY" and key.startswith("CLAUDE_PLUGIN_OPTION_"):
-            continue
         assert env[key] == value
 
 

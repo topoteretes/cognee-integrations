@@ -233,20 +233,6 @@ def test_check_credits(suite, rt, answer, credited):
     assert rt.check_credits(answer, False) == {"injected": False, "credited": credited}
 
 
-@pytest.mark.parametrize(
-    "answer",
-    [
-        "done.\n> `Cognee memory:` you chose the server, from the ds1 dataset",
-        "done.\n> Cognee memory: you chose the server, from the ds1 dataset",
-    ],
-)
-def test_claude_counts_the_code_span_credit_and_the_plain_one(suite, rt, answer):
-    """The label is a code span so Claude Code colours it; a plain one still counts."""
-    if suite.name != "claude-code":
-        pytest.skip("Claude Code's credit line")
-    assert rt.check_credits(answer, True) == {"injected": True, "credited": True}
-
-
 def test_credit_state_round_trip(rt, tmp_path):
     assert not rt.has_credited(tmp_path, SESSION_KEY)
     rt.record_credit(tmp_path, SESSION_KEY, {"injected": True, "credited": False})
@@ -454,9 +440,9 @@ def _injected(rt, lookup) -> bool:
     return rt.injected_this_turn(_state_dir(lookup), SESSION_KEY)
 
 
-#: The credit line the instruction asks for: Claude Code's "> `Cognee memory:`",
+#: The credit line the instruction asks for: Claude Code's "> Cognee memory:",
 #: Codex's braille rows.
-CREDIT_LINE_RE = r"> (?:`Cognee memory:`|`⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what you remembered>,)"
+CREDIT_LINE_RE = r"> (?:Cognee memory:|`⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯`  <what you remembered>,)"
 
 
 def test_hit_is_marked_and_carries_the_first_credit_instruction(lookup, monkeypatch, rt):

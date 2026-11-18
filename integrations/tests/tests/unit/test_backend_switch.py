@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 
 import pytest
-from utils.options_holder import set_options
 
 #: Each suite's own switch. Every other switch must be ignored.
 OWN_BACKEND_VAR = {
@@ -178,8 +177,8 @@ def test_config_forced_local_despite_cloud_vars(config_mod, monkeypatch):
     monkeypatch.setenv("COGNEE_API_KEY", "ck")
     monkeypatch.setenv("LLM_API_KEY", "sk")
     # claude-code reads its keys from the plugin options instead.
-    set_options(monkeypatch, cognee_api_key="ck")
-    set_options(monkeypatch, llm_api_key="sk")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk")
     monkeypatch.setenv("COGNEE_BACKEND", "local")
     cfg = config_mod.load_config()
     assert not config_mod.is_cloud_mode(cfg)
