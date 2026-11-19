@@ -220,8 +220,10 @@ _DASHBOARD_POWERSHELL = (
 )
 
 
-def _run_setup(method: str, home: Path, url: str) -> None:
+def _run_setup(method: str, home: Path, url: str, suite) -> None:
     env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    if method != "bom" and suite.name == "claude-code":
+        pytest.skip("Claude Code takes the server URL and key from its options, not ~/.cognee/.env")
     if method == "bom":
         # What Windows PowerShell 5.1 writes for `Out-File -Encoding utf8`.
         write_env_file(home, url, DEFAULT_TEST_API_KEY, bom=True)
@@ -267,7 +269,7 @@ def test_each_setup_snippet_gives_a_working_first_prompt(
     mock = private_mock_server
     home = tmp_path / "Users" / "Test User"
     home.mkdir(parents=True)
-    _run_setup(method, home, mock.url)
+    _run_setup(method, home, mock.url, host)
     assert (home / ".cognee" / ".env").is_file()
     project = home / "project"
     project.mkdir()

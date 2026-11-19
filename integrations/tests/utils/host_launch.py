@@ -186,9 +186,13 @@ def host_env(
         )
     else:
         env.update(CLAUDE_PLUGIN_ROOT=str(plugin_root), CLAUDE_PLUGIN_DATA=str(data))
-    if suite.api_key_env != "COGNEE_API_KEY":
-        # claude-code's keys are plugin options: the host hands the hooks the
-        # key the user entered there, whatever ~/.cognee/.env says.
+    if suite.name == "claude-code":
+        # Claude Code's connection settings are plugin options: the host hands
+        # the hooks what the user entered there (``write_env_file`` saves it),
+        # whatever ~/.cognee/.env says. A local session has none.
+        for name, value in _saved_options(home).items():
+            env["CLAUDE_PLUGIN_OPTION_" + name.upper()] = value
+    elif suite.api_key_env != "COGNEE_API_KEY":
         env[suite.api_key_env] = _DEFAULT_TEST_API_KEY
     if extra:
         env.update(extra)
@@ -342,11 +346,30 @@ def make_home(tmp_path: Path, profile: str) -> Path:
     return home
 
 
+#: Where these tests keep the plugin options a user saved (Claude Code keeps
+#: them in its settings and secure store and hands them to every hook).
+_OPTIONS_FILE = ".test-plugin-options.json"
+
+
+def _saved_options(home: Path) -> dict:
+    try:
+        return json.loads((home / _OPTIONS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def write_env_file(home: Path, url: str, api_key: str, *, bom: bool = False) -> None:
-    """Cloud mode the way the setup instructions configure it: ``~/.cognee/.env``."""
+    """Cloud mode the way the setup instructions configure it.
+
+    ``~/.cognee/.env`` for the plugins that read it (Codex); the Claude Code
+    plugin takes the server URL and key from its options, saved alongside.
+    """
     data = f'COGNEE_BASE_URL="{url}"\nCOGNEE_API_KEY={api_key}\n'.encode("utf-8")
     (home / ".cognee").mkdir(parents=True, exist_ok=True)
     (home / ".cognee" / ".env").write_bytes(b"\xef\xbb\xbf" + data if bom else data)
+    (home / _OPTIONS_FILE).write_text(
+        json.dumps({"cognee_base_url": url, "cognee_api_key": api_key}), encoding="utf-8"
+    )
 
 
 class HostSession:

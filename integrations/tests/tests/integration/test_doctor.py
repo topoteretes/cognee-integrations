@@ -38,9 +38,16 @@ _REPORT_KEYS = {
 
 
 @pytest.fixture
-def doctor(suite, isolated_modules, mock_server, monkeypatch):
+def doctor(suite, isolated_modules, mock_server, monkeypatch, temp_home):
     module = isolated_modules(suite, "doctor")
-    monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
+    if suite.name == "claude-code":
+        # The URL is a plugin option there; the doctor, which has no options,
+        # reads the record a hook leaves.
+        record = temp_home / ".cognee-plugin" / "claude-code" / "server-url.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"url": mock_server.url}), encoding="utf-8")
+    else:
+        monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
     return module
 
 
