@@ -211,14 +211,13 @@ def _matches(tool: str, prefix: str | None, name: str, params) -> bool:
     return len(command) == len(prefix) or command[len(prefix)].isspace()
 
 
-def allow_tool(name: str, params) -> bool:
-    """Whether a tool call may be captured.
+def tool_allowed(name: str, params) -> bool:
+    """The per-tool policy alone, without the COGNEE_CAPTURE switch.
 
-    Raises :class:`CapturePatternError` when an allow or deny entry cannot be
-    parsed, so a misspelled pattern never silently disables capture.
+    Raises :class:`CapturePatternError` like :func:`allow_tool` when an allow or
+    deny entry cannot be parsed, so a misspelled pattern never silently disables
+    capture.
     """
-    if not capture_enabled():
-        return False
     allowed = _tool_patterns("COGNEE_CAPTURE_TOOLS", ["*"])
     denied = _tool_patterns("COGNEE_CAPTURE_DENY_TOOLS", [])
     if not any(_matches(tool, prefix, name, params) for tool, prefix in allowed):
@@ -226,6 +225,15 @@ def allow_tool(name: str, params) -> bool:
     if any(_matches(tool, prefix, name, params) for tool, prefix in denied):
         return False
     return not (_has_sensitive_path(params) or _command_reads_secret(params))
+
+
+def allow_tool(name: str, params) -> bool:
+    """Whether a tool call may be captured.
+
+    Raises :class:`CapturePatternError` when an allow or deny entry cannot be
+    parsed, so a misspelled pattern never silently disables capture.
+    """
+    return capture_enabled() and tool_allowed(name, params)
 
 
 def capture_pattern_error() -> str:
