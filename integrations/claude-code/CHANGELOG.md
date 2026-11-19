@@ -10,6 +10,31 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.11]
+
+### Fixed
+
+- **Saving plugin options and running `/reload-plugins` now applies them to the
+  open session.** A reload hands hooks the new options but does not rerun
+  SessionStart, so the session's launch record kept the API key and server it
+  started with. The cloud worker skips records whose key and server differ from
+  its own, so a session started before the key was set never registered: its
+  status row stayed on "connecting…" until a new session. The next prompt now
+  regenerates the record for the current key and server, and the worker
+  registers the session. A switch to a local server still needs a new session.
+- **A cloud worker started without an API key is replaced once a hook has
+  one.** The key reaches the plugin only through the options Claude Code hands
+  each hook, so a worker started by a session that had no key never learned it
+  and served none of the sessions that did. The worker now records its key's
+  hash (never the key) next to its pid; a hook with a key stops a keyless worker
+  and starts one with the key. A keyless worker delivers nothing, so no queued
+  capture is lost.
+
+### Upgrade note
+
+- A worker started by an earlier version records no key hash and is not
+  replaced; it exits after 30 idle minutes, or stop it once by hand.
+
 ## [1.8.10]
 
 ### Changed

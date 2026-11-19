@@ -614,3 +614,123 @@ def test_target_follows_an_edit_of_the_env_file(suite, isolated_modules, monkeyp
     monkeypatch.setenv("COGNEE_BASE_URL", "https://exported.example")
     env_file.write_text('COGNEE_BASE_URL="https://tenant-c.aws.cognee.ai"\n', encoding="utf-8")
     assert worker.target()["base_url"] == "https://exported.example"
+
+
+def test_key_saved_after_session_start_rebinds_the_session_on_the_next_prompt(worker, monkeypatch):
+    """/reload-plugins does not rerun SessionStart. A session that started
+    without a key kept its keyless launch record, which the worker skips, so it
+    never registered and its status line stayed on "connecting…"."""
+    events = []
+    monkeypatch.setattr(worker, "log", lambda event, **kw: events.append(event))
+    keyless = {"base_url": "https://cloud.example", "principal": "no-key"}
+    monkeypatch.setattr(worker, "target", lambda: keyless)
+    worker.register_session(
+        {
+            "cwd": "/repo",
+            "session_id": "claude_host-a",
+            "session_key": "host-a",
+            "dataset": "ds",
+            "agent_session_name": "conn_a",
+            "base_url": "https://cloud.example",
+        }
+    )
+    path = worker.session_dir("host-a") / "worker.json"
+    record = worker.read(path)
+    record.update(attempts=3, next_attempt=record["created_at"] + 3600, unregistered=True)
+    worker.atomic_json(path, record)
+
+    keyed = {"base_url": "https://cloud.example", "principal": "key"}
+    monkeypatch.setattr(worker, "target", lambda: keyed)
+    worker.touch_session()
+
+    record = worker.read(path)
+    assert record["target"] == keyed
+    assert record["registered"] is False
+    assert record["attempts"] == 0 and record["next_attempt"] == 0
+    assert "unregistered" not in record
+    assert events == ["cloud_session_retargeted"]
+
+    # An unchanged target is only an activity bump.
+    worker.touch_session()
+    assert events == ["cloud_session_retargeted"]
+
+
+def _launch(worker):
+    worker.register_session(
+        {
+            "cwd": "/repo",
+            "session_id": "claude_host-a",
+            "session_key": "host-a",
+            "dataset": "ds",
+            "agent_session_name": "conn_a",
+            "base_url": "https://cloud.example",
+        }
+    )
+    path = worker.session_dir("host-a") / "worker.json"
+    worker.atomic_json(path, {**worker.read(path), "registered": True})
+    return path
+
+
+def test_a_server_change_in_the_options_regenerates_the_launch(worker, monkeypatch):
+    """The server URL option is applied by /reload-plugins like the key."""
+    import importlib
+
+    path = _launch(worker)
+    moved = {"base_url": "https://other.example", "principal": "key"}
+    monkeypatch.setattr(worker, "target", lambda: moved)
+    launches = []
+    monkeypatch.setattr(
+        importlib.import_module("_plugin_common"),
+        "set_launch_base_url",
+        lambda key, url: launches.append((key, url)),
+    )
+
+    assert worker.rebind_launch() is True
+
+    record = worker.read(path)
+    assert record["target"] == moved
+    assert record["base_url"] == "https://other.example"
+    assert record["registered"] is False
+    assert record["dataset"] == "ds" and record["session_id"] == "claude_host-a"
+    # The applied change is not reported as one that needs a new session.
+    assert launches == [("host-a", "https://other.example")]
+    # Unchanged options leave the record alone.
+    assert worker.rebind_launch() is False
+
+
+def test_a_switch_to_a_local_server_still_needs_a_new_session(worker, monkeypatch):
+    path = _launch(worker)
+    monkeypatch.setattr(
+        worker, "target", lambda: {"base_url": "http://localhost:8011", "principal": "key"}
+    )
+
+    assert worker.rebind_launch() is False
+    assert worker.read(path)["target"]["base_url"] == "https://cloud.example"
+
+
+@pytest.mark.parametrize(
+    ("running", "mine", "replaced"),
+    [
+        ("keyless", "key", True),  # spawned before the key was set
+        ("key", "other-key", False),  # sessions may hold different keys
+        ("keyless", "keyless", False),  # a keyless hook never replaces
+        (None, "key", False),  # a worker from before the principal was recorded
+    ],
+)
+def test_only_a_keyless_worker_is_replaced_by_a_hook_with_a_key(
+    worker, monkeypatch, running, mine, replaced
+):
+    principals = {"keyless": worker.KEYLESS_PRINCIPAL, "key": "k1", "other-key": "k2"}
+    monkeypatch.setattr(
+        worker,
+        "target",
+        lambda: {"base_url": "https://cloud.example", "principal": principals[mine]},
+    )
+    killed = []
+    monkeypatch.setattr(worker.os, "kill", lambda pid, sig: killed.append(pid))
+    record = {"pid": 4242}
+    if running:
+        record["principal"] = principals[running]
+
+    assert worker._replace_keyless_worker(record) is replaced
+    assert killed == ([4242] if replaced else [])

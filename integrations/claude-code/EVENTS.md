@@ -409,6 +409,10 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.auto_memory_setup_failed`: auto memory setup failed.
 - `cloud.injection_ledger_failed`: injection ledger failed.
 - `cloud.capture_spooled`: capture spooled.
+- `cloud.cloud_session_retargeted`: the plugin options (Cognee API key or server URL) changed after session start, typically saved and then applied with `/reload-plugins`, which does not rerun SessionStart; the session's launch record was regenerated for the new key and server so the worker registers the session again. A switch to a local server still needs a new session.
+- `cloud.launch_rebind_failed`: regenerating the launch record for changed options failed; the prompt goes on with the old record.
+- `cloud.cloud_worker_replaced`: a hook with an API key found the running worker started without one (spawned before the key was set) and stopped it so a worker with the key starts in its place.
+- `cloud.cloud_worker_replace_failed`: stopping that keyless worker failed; it keeps running.
 - `cloud.cloud_work_expired`: cloud work expired.
 - `cloud.cloud_work_retry`: cloud work retry.
 - `cloud.cloud_capture_delivered`: cloud capture delivered.

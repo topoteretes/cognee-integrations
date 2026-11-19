@@ -33,6 +33,10 @@ IDLE_EXIT_SECONDS = 30 * 60
 #: unexpected results, HTTP errors) are archived after this many attempts.
 #: Busy/running answers and an unreachable server cost nothing and are not counted.
 MAX_IMPROVE_FAILURES = 3
+#: ``target()["principal"]`` of a process with no Cognee API key.
+KEYLESS_PRINCIPAL = hashlib.sha256(b"").hexdigest()
+#: How long a starting worker waits for a replaced one to release the lock.
+WORKER_LOCK_WAIT_SECONDS = 5
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -91,9 +95,11 @@ def ensure_worker() -> None:
     atomic_json(state / "cloud-worker-runtime.json", {"script": script, "python": sys.executable})
     from _proc import pid_alive
 
-    pid = read(state / "cloud-worker-pid.json").get("pid", 0)
+    running = read(state / "cloud-worker-pid.json")
+    pid = running.get("pid", 0)
     if pid and pid_alive(pid):
-        return
+        if not _replace_keyless_worker(running):
+            return
     # The worker owns a lifetime file lock, so simultaneous spawns are harmless.
     from _logfiles import rotate_if_oversized
 
@@ -107,6 +113,29 @@ def ensure_worker() -> None:
             start_new_session=True,
             close_fds=True,
         )
+
+
+def _replace_keyless_worker(running: dict) -> bool:
+    """Stop a running worker that has no API key when this process has one.
+
+    The key reaches hooks only as a plugin option in their environment, so a
+    worker spawned before the key was set never learns it, and it serves only
+    sessions whose key matches its own. A keyless worker can deliver nothing,
+    so stopping it loses no work. Returns True when the caller should spawn.
+    """
+    if running.get("principal") != KEYLESS_PRINCIPAL:
+        return False
+    if target()["principal"] == KEYLESS_PRINCIPAL:
+        return False
+    import signal
+
+    try:
+        os.kill(running["pid"], signal.SIGTERM)
+    except OSError as exc:
+        log("cloud_worker_replace_failed", error=str(exc)[:200])
+        return False
+    log("cloud_worker_replaced", pid=running["pid"], reason="keyless")
+    return True
 
 
 def _refresh_console_log() -> None:
@@ -154,12 +183,59 @@ def register_session(bootstrap: dict) -> None:
     update(key, metadata={"ended_at": None})
 
 
+def rebind_launch() -> bool:
+    """Regenerate this session's launch record when the plugin options changed.
+
+    ``/reload-plugins`` hands hooks the new options (key, server URL) but does
+    not rerun SessionStart, so the record kept the key and server the session
+    started with, and the worker, which skips records whose target differs from
+    its own, never served the session. The record is rebuilt for the current
+    target and its registration reset, so the worker registers it again.
+    A switch to a local server is left to a new session. Returns True when the
+    record was regenerated.
+    """
+    from _plugin_common import get_session_key, set_launch_base_url
+
+    key = get_session_key()
+    if not key:
+        return False
+    identity = target()
+    if not enabled(identity):
+        return False
+    path = session_dir(key) / "worker.json"
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        if not acquired:
+            return False
+        state = read(path)
+        if not state or state.get("target") == identity:
+            return False
+        now = time.time()
+        for stale in ("unregistered", "last_error"):
+            state.pop(stale, None)
+        state.update(
+            base_url=identity["base_url"],
+            target=identity,
+            created_at=now,
+            activity_at=now,
+            registered=False,
+            next_attempt=0,
+            attempts=0,
+        )
+        atomic_json(path, state)
+    # The launch's server, as base_url_change_notice reads it: the change is
+    # applied, so it is not reported as one that needs a new session.
+    set_launch_base_url(key, identity["base_url"])
+    log("cloud_session_retargeted", session=state.get("session_id", ""))
+    return True
+
+
 def touch_session() -> None:
     from _plugin_common import get_session_key
 
     key = get_session_key()
     if not key:
         return
+    rebind_launch()
     path = session_dir(key) / "worker.json"
     with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
         if acquired:
@@ -853,10 +929,14 @@ def run() -> None:
     )
 
     state = root()
-    with file_lock(state / "cloud-worker.lock") as acquired:
+    # A replacement starts while the worker it replaces is still exiting.
+    with file_lock(state / "cloud-worker.lock", timeout=WORKER_LOCK_WAIT_SECONDS) as acquired:
         if not acquired:
             return
-        atomic_json(state / "cloud-worker-pid.json", {"pid": os.getpid()})
+        atomic_json(
+            state / "cloud-worker-pid.json",
+            {"pid": os.getpid(), "principal": target()["principal"]},
+        )
         from _plugin_common import sweep_stale_state
 
         sweep_stale_state()

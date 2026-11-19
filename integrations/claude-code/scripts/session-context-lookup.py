@@ -1334,6 +1334,14 @@ def main():
         return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
 
+    # Before the notices: options changed by /reload-plugins are applied to the
+    # launch here, so a server change it applies is not reported as pending.
+    try:
+        from _cloud_worker import rebind_launch
+
+        rebind_launch()
+    except Exception as exc:
+        hook_log("launch_rebind_failed", {"error": str(exc)[:200]})
     notice_output = with_base_url_notice(None, "UserPromptSubmit") or {}
     notice = str(notice_output.get("hookSpecificOutput", {}).get("additionalContext") or "")
     output = None
