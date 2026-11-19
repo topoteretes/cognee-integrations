@@ -591,31 +591,33 @@ def test_a_rejected_capture_is_reported_as_failed(worker, monkeypatch):
     assert saved.get("ok") is False and "buffered" not in saved
 
 
-# ── the worker follows ~/.cognee/.env ──────────────────────────────────────
+# ── the worker's server comes from the URL option, not ~/.cognee/.env ────
 
 
-def test_target_follows_an_edit_of_the_env_file(suite, isolated_modules, monkeypatch, tmp_path):
-    """The worker lives for hours. Pinned to the tenant it started with, it
-    never served a session pointed at another, whose captures and improves
-    then starved (a dataset switch waited its full 14 minutes on one)."""
+def test_target_ignores_an_edit_of_the_env_file(suite, isolated_modules, monkeypatch, tmp_path):
+    """The worker lives for hours and re-reads ~/.cognee/.env, but the server
+    URL is a plugin option: a COGNEE_BASE_URL written to the file (or exported)
+    never moves it to another server; the option the hook handed it decides."""
     if suite.name != "claude-code":
         pytest.skip("Cloud worker")
-    # The loader scrubs COGNEE_* before the import, so the file is named
-    # afterwards: exactly a worker that started before the file was edited.
+    import importlib
+
     worker = isolated_modules(suite, "_cloud_worker")
     monkeypatch.setattr(worker, "ensure_worker", lambda: None)
+    env_file_mod = importlib.import_module("_env_file")
+    # Started by a hook: the plugin options are in its environment.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "https://tenant-a.aws.cognee.ai")
     env_file = tmp_path / "cognee.env"
     monkeypatch.setenv("COGNEE_ENV_FILE", str(env_file))
-    env_file.write_text('COGNEE_BASE_URL="https://tenant-a.aws.cognee.ai"\n', encoding="utf-8")
-    assert worker.target()["base_url"] == "https://tenant-a.aws.cognee.ai"
-
     env_file.write_text('COGNEE_BASE_URL="https://tenant-b.stg-aws.cognee.ai"\n', encoding="utf-8")
-    assert worker.target()["base_url"] == "https://tenant-b.stg-aws.cognee.ai"
+    monkeypatch.setattr(env_file_mod, "_loaded", False)
+    assert worker.target()["base_url"] == "https://tenant-a.aws.cognee.ai"
+    assert "COGNEE_BASE_URL" in env_file_mod.ignored_key_names()
 
-    # A real export still wins over the file, as at load.
-    monkeypatch.setenv("COGNEE_BASE_URL", "https://exported.example")
+    # An edit of the file while the worker runs changes nothing.
     env_file.write_text('COGNEE_BASE_URL="https://tenant-c.aws.cognee.ai"\n', encoding="utf-8")
-    assert worker.target()["base_url"] == "https://exported.example"
+    assert worker.target()["base_url"] == "https://tenant-a.aws.cognee.ai"
 
 
 def test_key_saved_after_session_start_rebinds_the_session_on_the_next_prompt(worker, monkeypatch):

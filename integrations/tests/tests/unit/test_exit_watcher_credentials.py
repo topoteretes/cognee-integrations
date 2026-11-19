@@ -41,7 +41,15 @@ def test_exit_watcher_spawn_keeps_key_out_of_argv(suite, hook_module, monkeypatc
 
 def test_exit_watcher_passes_environment_key_to_final_sync(suite, hook_module, monkeypatch):
     watcher = hook_module(suite, "exit-watcher.py")
-    monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
+    if suite.name == "claude-code":
+        # A hook starts the watcher, handing it the plugin options: the server
+        # URL is one of them (an exported COGNEE_BASE_URL is ignored there).
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(suite.scripts_dir.parent))
+        monkeypatch.setenv(
+            "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "http://managed-cognee.internal:8012"
+        )
+    else:
+        monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
     monkeypatch.setenv(suite.api_key_env, "environment-test-key")
     monkeypatch.setattr(
         watcher.sys,

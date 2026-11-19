@@ -138,13 +138,24 @@ def test_recall_hook_shows_the_notice_end_to_end(
     common.ensure_launch_record(host_key, str(temp_home))
     common.set_launch_base_url(host_key, "http://localhost:8011")
 
+    if suite.name == "claude-code":
+        # The server URL is a plugin option there, handed to the hook.
+        where = {
+            "service_url": None,
+            "extra_env": {
+                "CLAUDE_PLUGIN_ROOT": str(suite.scripts_dir.parent),
+                "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": closed_port_url,
+            },
+        }
+    else:
+        where = {"service_url": closed_port_url}
     result = run_hook(
         suite,
         "session-context-lookup.py",
         stdin=prompt,
         home=temp_home,
-        service_url=closed_port_url,
         timeout=60,
+        **where,
     )
     assert result.returncode == 0, result.stderr
     output = json.loads(result.stdout)

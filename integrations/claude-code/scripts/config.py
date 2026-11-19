@@ -38,6 +38,7 @@ from typing import Optional
 
 from _env_file import (
     cloud_key_option,
+    forced_backend,
     llm_key_option,
     load_env_file,
     login_email_option,
@@ -221,6 +222,9 @@ def load_config() -> dict:
             )
 
     backend = str(config.get("backend") or "auto").lower()
+    if backend == "auto" and forced_backend() == "cloud":
+        # The Cognee API key option without a server URL (``_env_file``).
+        backend = "cloud"
     if backend in ("native", "local", "sdk"):
         config["base_url"] = ""
         config["api_key"] = ""

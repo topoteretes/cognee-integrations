@@ -1,8 +1,9 @@
 """The COGNEE_BACKEND terminal switch (plus the per-plugin variants).
 
 Users keep BOTH modes' variables in ~/.cognee/.env; with nothing exported the
-cloud vars win (COGNEE_BASE_URL routes the connection). One export flips a
-single terminal:
+cloud vars win (COGNEE_BASE_URL routes the connection) — except in
+claude-code, which takes the server URL from its plugin option only and
+ignores the file's. One export flips a single terminal:
 
     export COGNEE_BACKEND=local    # or cloud
 
@@ -66,11 +67,22 @@ def _file_key(ef, name: str, value: str) -> str:
     return "" if name in getattr(ef, "OPTION_ONLY", ()) else value
 
 
-def test_no_switch_cloud_vars_win(env_file):
+def _file_url(suite) -> str:
+    """What a COGNEE_BASE_URL set in the env file becomes in the environment:
+    the URL, or nothing for claude-code, which takes the server URL from its
+    plugin option only (and names the file's as ignored)."""
+    return "" if suite.name == "claude-code" else CLOUD_URL
+
+
+def test_no_switch_cloud_vars_win(env_file, suite):
     ef, load = env_file
     load(CLOUD_ENV_FILE)
-    assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL
+    assert os.environ.get("COGNEE_BASE_URL", "") == _file_url(suite)
     assert os.environ.get("COGNEE_API_KEY", "") == _file_key(ef, "COGNEE_API_KEY", "ck_from_file")
+    if suite.name == "claude-code":
+        assert "COGNEE_BASE_URL" in ef.ignored_key_names()
+        # Both connection options empty: local mode, nothing forced.
+        assert ef.forced_backend() == ""
 
 
 def test_forced_local_scrubs_cloud_vars_from_environ(env_file, monkeypatch):
@@ -103,13 +115,18 @@ def test_scrub_survives_a_child_rerunning_the_loader(env_file, monkeypatch):
     monkeypatch.delenv("COGNEE_BACKEND")  # even if the child lost the switch
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
-    assert os.environ["COGNEE_BASE_URL"] == ""
+    # claude-code removes the variable instead: it never takes the file's URL.
+    assert os.environ.get("COGNEE_BASE_URL", "") == ""
     assert os.environ.get("COGNEE_API_KEY", "") == ""
 
 
-def test_forced_cloud_scrubs_nothing(env_file, monkeypatch):
+def test_forced_cloud_scrubs_nothing(env_file, suite, monkeypatch):
     ef, load = env_file
     monkeypatch.setenv("COGNEE_BACKEND", "cloud")
+    if suite.name == "claude-code":
+        # Its server URL comes from the plugin option (here, in a hook).
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", CLOUD_URL)
     load(CLOUD_ENV_FILE)
     assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL
     assert os.environ.get("COGNEE_API_KEY", "") == _file_key(ef, "COGNEE_API_KEY", "ck_from_file")

@@ -16,7 +16,13 @@ def test_shell_beats_dotenv_and_legacy_json(suite, isolated_modules, monkeypatch
     (config._STATE_DIR / "config.json").write_text(json.dumps({"dataset": "obsolete"}))
     cfg = config.load_config()
     assert cfg["dataset"] == "from-shell"
-    assert cfg["base_url"] == "https://file.example"
+    if suite.name == "claude-code":
+        # Its server URL is a plugin option only: the file's is ignored and
+        # named, and with both connection options empty it runs locally.
+        assert cfg["base_url"] == ""
+        assert "COGNEE_BASE_URL" in ef.ignored_key_names()
+    else:
+        assert cfg["base_url"] == "https://file.example"
 
 
 def test_plugin_specific_backend_wins(suite, isolated_modules, monkeypatch):

@@ -230,6 +230,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
 | `hook:recall_error` | `recall.error` |
+| `hook:recall_failed` | `recall.failed` |
 | `hook:recall_graph_not_built` | `recall.graph_not_built` |
 | `hook:recall_guidance_absent` | `recall.guidance_absent` |
 | `hook:recall_health_accounting_failed` | `recall.health_accounting_failed` |

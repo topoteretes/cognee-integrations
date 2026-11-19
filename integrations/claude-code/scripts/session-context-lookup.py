@@ -416,11 +416,11 @@ def _bounded_notice(header: str, notice: str) -> str:
     return "Cognee: configuration notice omitted to fit context; inspect hook.log for details."
 
 
-def _outage_output(state: str, notice: str = "") -> dict:
-    """Envelope for a prompt whose recall was skipped: see ``outage_header``."""
+def _outage_output(state: str, notice: str = "", verb: str = "skipped") -> dict:
+    """Envelope for a prompt whose recall was skipped or failed: see ``outage_header``."""
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
-    header = outage_header(state, saves, warmup_backlog(), "; ")
+    header = outage_header(state, saves, warmup_backlog(), "; ", verb)
     return _recall_output(header, _bounded_notice(header, notice))
 
 
@@ -819,15 +819,16 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         # 401/403.
         hook_log("recall_auth_rejected", {"base_url": service_url})
 
+    # A refused connection with no prior ready marker for this URL is likely
+    # the server still launching/migrating: no failure is recorded or shown.
+    warming = server_down and not (prior_state == "ready" and prior_same_target)
     # Fold this prompt's recall outcomes back into the shared health state.
     # Best-effort: accounting must never break the keystroke->answer path.
     try:
         if server_down:
-            # Suppress the write during a genuine cold-start warm-up: a refused
-            # connection with no prior ready marker for this URL is likely the
-            # server still launching/migrating — stay quiet rather than flash a
-            # false red (and don't feed the breaker with warm-up refusals).
-            warming = not (prior_state == "ready" and prior_same_target)
+            # Suppress the write during a genuine cold-start warm-up: stay quiet
+            # rather than flash a false red (and don't feed the breaker with
+            # warm-up refusals).
             if not warming:
                 write_connection_state(
                     "unreachable", service_url, detail="connection refused during recall"
@@ -885,6 +886,23 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
     except Exception as exc:
         hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})
+
+    # Every scope errored and none answered: this recall failed, it did not
+    # find nothing. Reported as the next prompt's cached outage would be, and
+    # not counted as an empty recall. Timeouts alone keep their own wording.
+    if not scopes_ok and ((server_down and not warming) or scopes_answered_err):
+        if auth_rejected:
+            failure = "auth_failed"
+        elif server_down:
+            failure = "unreachable"
+        elif server_errors:
+            failure = "server_error"
+        elif payment_refused:
+            failure = "payment_required"
+        else:
+            failure = "http_error"
+        hook_log("recall_failed", {"reason": failure, "base_url": service_url})
+        return _outage_output(failure, notice, verb="failed"), None
 
     # Bucket results by source for human-readable output. The server returns
     # plain dicts; anything else is skipped.

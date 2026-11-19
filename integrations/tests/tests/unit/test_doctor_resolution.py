@@ -37,6 +37,18 @@ def pc(suite, isolated_modules):
     return isolated_modules(suite, "_plugin_common")
 
 
+def _point_at(suite, monkeypatch, home, url: str) -> None:
+    """Configure the server URL the way the suite takes it: an export, or for
+    claude-code (whose URL is a plugin option, and which ignores an export) the
+    record a hook leaves for a process with no options, such as the doctor."""
+    if suite.name == "claude-code":
+        record = home / ".cognee-plugin" / "claude-code" / "server-url.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"url": url}), encoding="utf-8")
+    else:
+        monkeypatch.setenv("COGNEE_BASE_URL", url)
+
+
 # ── mode resolution ────────────────────────────────────────────────────────
 
 
@@ -48,13 +60,13 @@ def test_local_mode_when_no_base_url(doctor):
 @pytest.mark.parametrize(
     "url", ["http://localhost:8011", "http://127.0.0.1:8000", "http://[::1]:8000"]
 )
-def test_managed_mode_for_every_loopback_form(doctor, monkeypatch, url):
-    monkeypatch.setenv("COGNEE_BASE_URL", url)
+def test_managed_mode_for_every_loopback_form(suite, doctor, monkeypatch, temp_home, url):
+    _point_at(suite, monkeypatch, temp_home, url)
     assert doctor._resolve_mode() == "Local Managed"
 
 
-def test_cloud_mode_with_remote_url(doctor, monkeypatch):
-    monkeypatch.setenv("COGNEE_BASE_URL", "https://company.cognee.ai")
+def test_cloud_mode_with_remote_url(suite, doctor, monkeypatch, temp_home):
+    _point_at(suite, monkeypatch, temp_home, "https://company.cognee.ai")
     assert doctor._resolve_mode() == "Cloud"
 
 
@@ -66,8 +78,8 @@ def test_server_url_dash_in_local_mode(doctor):
     assert display == "-"
 
 
-def test_server_url_shown_in_server_mode(doctor, monkeypatch):
-    monkeypatch.setenv("COGNEE_BASE_URL", "http://custom:9999")
+def test_server_url_shown_in_server_mode(suite, doctor, monkeypatch, temp_home):
+    _point_at(suite, monkeypatch, temp_home, "http://custom:9999")
     _display, raw = doctor._resolve_server_url()
     assert "custom:9999" in raw
 
@@ -108,8 +120,8 @@ def test_legacy_config_json_is_ignored(pc, suite, isolated_modules, temp_home):
 # ── API key source ─────────────────────────────────────────────────────────
 
 
-def test_api_key_source_env(suite, doctor, monkeypatch):
-    monkeypatch.setenv("COGNEE_BASE_URL", "http://managed-cognee.internal:8012")
+def test_api_key_source_env(suite, doctor, monkeypatch, temp_home):
+    _point_at(suite, monkeypatch, temp_home, "http://managed-cognee.internal:8012")
     monkeypatch.setenv(suite.api_key_env, "test-key-from-env")
     assert doctor._resolve_api_key_source() == suite.api_key_source_label
 

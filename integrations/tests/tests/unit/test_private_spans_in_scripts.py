@@ -7,6 +7,7 @@ was handed: a ``<private>`` span or a recognised secret must not be in it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -49,6 +50,12 @@ def test_cli_fallback_gets_the_sanitized_text(
         "COGNEE_BASE_URL": closed_port_url,
         "COGNEE_API_KEY": "test-key",
     }
+    if suite.name == "claude-code":
+        # A skill's script has no plugin options and ignores an exported URL:
+        # it takes the server a hook recorded from the URL option.
+        record = temp_home / ".cognee-plugin" / "claude-code" / "server-url.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"url": closed_port_url}), encoding="utf-8")
     result = subprocess.run(
         ["bash", str(suite.scripts_dir / script), *argv],
         env=env,

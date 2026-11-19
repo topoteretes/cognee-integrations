@@ -6,7 +6,8 @@ are plugin options (``userConfig``, the secret ones ``sensitive``), which
 Claude Code hands to hooks as ``CLAUDE_PLUGIN_OPTION_*``. This file pins that:
 
 * a key in the shell or in ``~/.cognee/.env`` is dropped, never used, and
-  named (name only) so session start can say so;
+  named (name only) so session start can say so; so is a ``COGNEE_BASE_URL``
+  there: the server URL is an option too;
 * the option is the key for the configured server, never for the plugin's own
   local server, and is never written to the key cache;
 * a script run from a shell, which has no options, reaches the server through
@@ -84,8 +85,14 @@ def test_a_key_in_the_shell_is_dropped_and_named(tmp_path):
     assert seen["env"]["COGNEE_API_KEY"] is None
     assert seen["env"]["LLM_API_KEY"] is None
     assert seen["env"]["COGNEE_USER_PASSWORD"] is None
-    assert seen["env"]["COGNEE_BASE_URL"] == _REMOTE
-    assert seen["ignored"] == ["COGNEE_API_KEY", "COGNEE_USER_PASSWORD", "LLM_API_KEY"]
+    # The server URL is an option as well: an export is dropped and named.
+    assert seen["env"]["COGNEE_BASE_URL"] is None
+    assert seen["ignored"] == [
+        "COGNEE_API_KEY",
+        "COGNEE_BASE_URL",
+        "COGNEE_USER_PASSWORD",
+        "LLM_API_KEY",
+    ]
 
 
 def test_a_key_in_the_env_file_is_never_loaded(tmp_path):
@@ -98,11 +105,12 @@ def test_a_key_in_the_env_file_is_never_loaded(tmp_path):
     seen = _python(_SEEN, tmp_path)
     assert seen["env"]["COGNEE_API_KEY"] is None
     assert seen["env"]["LLM_API_KEY"] is None
-    # Everything that is not a key still comes from the file.
-    assert seen["env"]["COGNEE_BASE_URL"] == _REMOTE
+    # The server URL is an option: the file's is never used, and is named.
+    assert seen["env"]["COGNEE_BASE_URL"] is None
+    # Everything else that is not a key still comes from the file.
     assert seen["env"]["LLM_MODEL"] == "openai/gpt-4o-mini"
     # An empty value is not a key the user has to move.
-    assert seen["ignored"] == ["COGNEE_API_KEY", "LLM_API_KEY"]
+    assert seen["ignored"] == ["COGNEE_API_KEY", "COGNEE_BASE_URL", "LLM_API_KEY"]
 
 
 def test_the_parser_never_returns_a_keys_value(tmp_path):
@@ -137,7 +145,13 @@ print(json.dumps({
 
 
 def test_the_option_is_the_key_for_the_configured_server_only(tmp_path):
-    seen = _python(_KEYS, tmp_path, COGNEE_BASE_URL=_REMOTE, **{_OPTION: "ck_option"})
+    seen = _python(
+        _KEYS,
+        tmp_path,
+        CLAUDE_PLUGIN_ROOT="/plugin",
+        CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL=_REMOTE,
+        **{_OPTION: "ck_option"},
+    )
     assert seen["config"] == "ck_option"
     assert seen["remote"] == "ck_option"
     assert seen["resolved"] == ["ck_option", "plugin_option"]
@@ -148,10 +162,21 @@ def test_the_option_is_the_key_for_the_configured_server_only(tmp_path):
     assert seen["in_env"] is None
 
 
-def test_the_option_reaches_a_local_address_only_when_the_terminal_is_pinned_to_cloud(tmp_path):
+def test_the_option_reaches_the_local_address_only_when_pinned_to_cloud_and_named_by_the_url(
+    tmp_path,
+):
     code = 'import json, _plugin_common as pc; print(json.dumps(pc.user_cloud_key("http://localhost:8011")))'
+    hook = {"CLAUDE_PLUGIN_ROOT": "/plugin", _OPTION: "ck_option"}
     assert _python(code, tmp_path, **{_OPTION: "ck_option"}) == ""
-    assert _python(code, tmp_path, COGNEE_BACKEND="cloud", **{_OPTION: "ck_option"}) == "ck_option"
+    # The key option alone is cloud mode with no URL: the local default is only
+    # a fallback address then, never the key's server.
+    assert _python(code, tmp_path, **hook) == ""
+    assert _python(code, tmp_path, COGNEE_BACKEND="cloud", **hook) == ""
+    # Pinned to cloud with the URL option naming that address: the key goes there.
+    local = {"CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": "http://localhost:8011"}
+    assert _python(code, tmp_path, COGNEE_BACKEND="cloud", **hook, **local) == "ck_option"
+    # Not pinned, the plugin's own local address keeps its own key.
+    assert _python(code, tmp_path, **hook, **local) == ""
 
 
 def test_the_local_server_gets_the_llm_and_embedding_key_options(tmp_path):
@@ -214,20 +239,21 @@ def test_the_url_option_is_used_by_hooks_and_recorded_for_the_rest(tmp_path):
     )
     # So does the recorded option, in a process with no options.
     assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test") == _REMOTE
-    # An emptied option removes the record; an export is then used.
+    # An emptied option removes the record; an export is never used instead:
+    # both options empty is local mode.
     assert _python(_URL, tmp_path, **hook) == ""
     assert _python(_URL, tmp_path) == ""
-    assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test", **hook) == (
-        "https://export.test"
-    )
+    assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test", **hook) == ""
+    assert _python(_URL, tmp_path, COGNEE_BASE_URL="https://export.test") == ""
 
 
-def test_the_url_option_wins_over_the_env_file(tmp_path):
+def test_the_env_file_url_is_ignored_and_the_url_option_used(tmp_path):
     (tmp_path / ".cognee").mkdir()
     (tmp_path / ".cognee" / ".env").write_text(
         'COGNEE_BASE_URL="https://file.test"\n', encoding="utf-8"
     )
-    assert _python(_URL, tmp_path) == "https://file.test"
+    assert _python(_URL, tmp_path) == ""
+    assert _python(_URL, tmp_path, CLAUDE_PLUGIN_ROOT="/plugin") == ""
     assert (
         _python(
             _URL,
@@ -367,8 +393,16 @@ def test_the_forget_helper_says_why_no_key_was_sent(temp_home, mock_server):
         _stop(state)
 
 
+def _record_server_url(home: Path, url: str) -> None:
+    """What a hook records for the processes with no options: the URL option."""
+    record = home / ".cognee-plugin" / "claude-code" / "server-url.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"url": url}), encoding="utf-8")
+
+
 def test_without_a_relay_a_shell_script_runs_in_place_and_has_no_key(temp_home, mock_server):
-    ran = _shell(temp_home, "list-datasets.py", COGNEE_BASE_URL=mock_server.url)
+    _record_server_url(temp_home, mock_server.url)
+    ran = _shell(temp_home, "list-datasets.py")
     sent = mock_server.assert_called("GET", "/api/v1/datasets")
     assert not sent["headers"].get("X-Api-Key")
     assert ran.returncode in (0, 1)
@@ -478,6 +512,31 @@ def test_an_ignored_llm_key_with_the_observer_forced_is_said_once(start, monkeyp
     assert _said(start) == ""
 
 
+def test_a_key_without_a_server_url_asks_for_it_at_every_start(start, monkeypatch):
+    """The key option set and the URL option empty is cloud mode with nothing
+    to connect to; a COGNEE_BASE_URL left in the file is named as unread."""
+    import importlib
+
+    monkeypatch.setenv(_OPTION, "ck_option")
+    monkeypatch.setattr(importlib.import_module("_env_file"), "_key_without_url", True)
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "COGNEE_BASE_URL")
+    first = _said(start)
+    assert "server URL option is empty" in first and "/plugin" in first
+    assert "COGNEE_BASE_URL in your shell or ~/.cognee/.env is no longer read" in first
+    assert _said(start) == first
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", _REMOTE)
+    monkeypatch.setattr(importlib.import_module("_env_file"), "_key_without_url", False)
+    monkeypatch.setenv("COGNEE_BASE_URL", _REMOTE)
+    assert _said(start) == ""
+
+
+def test_an_ignored_server_url_with_no_options_is_said_once(start, monkeypatch):
+    monkeypatch.setenv("COGNEE_PLUGIN_IGNORED_SETTINGS", "COGNEE_BASE_URL")
+    first = _said(start)
+    assert "no longer reads COGNEE_BASE_URL" in first and "runs locally" in first
+    assert _said(start) == ""
+
+
 def test_nothing_is_said_when_no_key_was_found(start, monkeypatch):
     assert start._key_options_message() == ""
 
@@ -549,7 +608,11 @@ print(json.dumps([first, *now]))
 
 
 def test_the_request_helper_sends_the_key_only_to_the_configured_server(temp_home, mock_server):
-    env = {"COGNEE_BASE_URL": mock_server.url, _OPTION: "ck_option"}
+    env = {
+        "CLAUDE_PLUGIN_ROOT": str(_SCRIPTS.parent),
+        "CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL": mock_server.url,
+        _OPTION: "ck_option",
+    }
     elsewhere = _shell(temp_home, "_authed_request.py", "GET", "https://elsewhere.test/x", **env)
     assert elsewhere.returncode == 1
     assert "is not on the configured server" in elsewhere.stderr
