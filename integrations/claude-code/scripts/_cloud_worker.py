@@ -40,6 +40,8 @@ KEYLESS_PRINCIPAL = hashlib.sha256(b"").hexdigest()
 WORKER_LOCK_WAIT_SECONDS = 120
 #: Environment prefix of the plugin options Claude Code hands each hook.
 OPTION_PREFIX = "CLAUDE_PLUGIN_OPTION_"
+#: The plugin's name, the key prefix of its saved options in the user settings.
+PLUGIN_NAME = "cognee-memory"
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -101,12 +103,17 @@ def ensure_worker() -> None:
     running = read(state / "cloud-worker-pid.json")
     pid = running.get("pid", 0)
     if pid and pid_alive(pid):
+        retiring = read(state / "cloud-worker-retire.json")
+        if (
+            retiring.get("pid") == pid
+            and time.time() - retiring.get("at", 0) < WORKER_LOCK_WAIT_SECONDS
+        ):
+            return  # its replacement is already waiting for the lock
         reason = _replacement_reason(running)
         if not reason:
             return
-        # Stopped between passes, never mid-request; the new worker waits for it.
-        atomic_json(state / "cloud-worker-retire.json", {"pid": pid, "reason": reason})
-        log("cloud_worker_replaced", pid=pid, reason=reason)
+        if not _retire(running, reason):
+            return
     # The worker owns a lifetime file lock, so simultaneous spawns are harmless.
     from _logfiles import rotate_if_oversized
 
@@ -123,29 +130,60 @@ def ensure_worker() -> None:
 
 
 def options_fingerprint() -> str:
-    """A hash of the plugin options this process was handed, "" outside a hook.
+    """A hash of the plugin options this process was handed, or "" without any.
 
     Claude Code hands the options (API key, server URL, ...) to each hook as
     ``CLAUDE_PLUGIN_OPTION_*``; the worker inherits those of the hook that
-    started it and keeps them for its life. Only the hash is ever stored.
+    started it and keeps them for its life. A plugin loaded from a directory
+    (``--plugin-dir``) is handed none, so its hooks never decide the worker's
+    options. Only the hash is ever stored.
+    """
+    options = sorted((k, v) for k, v in os.environ.items() if k.startswith(OPTION_PREFIX))
+    if not options:
+        return ""
+    return hashlib.sha256(json.dumps(options).encode()).hexdigest()
+
+
+def _options_match_saved() -> bool:
+    """Whether this hook's text options are the ones Claude Code has saved.
+
+    A Claude Code process keeps the options it loaded until ``/reload-plugins``,
+    so a session in an older process can hand its hooks stale ones. The saved
+    non-sensitive options (``pluginConfigs`` in the user settings) expose that
+    for the server URL and the other text options; keys live in the system's
+    secure store and cannot be compared. True when nothing is saved to compare.
     """
     from _env_file import _in_hook
 
     if not _in_hook():
-        return ""
-    options = sorted((k, v) for k, v in os.environ.items() if k.startswith(OPTION_PREFIX))
-    return hashlib.sha256(json.dumps(options).encode()).hexdigest()
+        return False
+    configs = read(Path.home() / ".claude" / "settings.json").get("pluginConfigs") or {}
+    saved = next(
+        (
+            v.get("options")
+            for k, v in configs.items()
+            if str(k).split("@", 1)[0] == PLUGIN_NAME and isinstance(v, dict)
+        ),
+        None,
+    )
+    if not isinstance(saved, dict):
+        return True
+    for option, value in saved.items():
+        if isinstance(value, str) and os.environ.get(OPTION_PREFIX + option.upper(), "") != value:
+            return False
+    return True
 
 
 def _claim_current_options(fingerprint: str) -> None:
     """Record ``fingerprint`` as the options the worker should run with.
 
-    Called only when a session's options change (a reload in that session) or
-    a new session starts, never merely because a hook's options differ from the
-    worker's: a session not reloaded yet keeps handing its hooks the old
-    options, and letting it claim them would replace the worker back and forth.
+    Called when a session's options change (a reload in that session), a new
+    session starts, or no options are current, never merely because a hook's
+    options differ from the worker's: a session not reloaded yet keeps handing
+    its hooks the old options, and letting it claim them would replace the
+    worker back and forth. Options that differ from the saved ones never claim.
     """
-    if fingerprint:
+    if fingerprint and _options_match_saved():
         atomic_json(root() / "options-current.json", {"options": fingerprint})
 
 
@@ -161,11 +199,38 @@ def _replacement_reason(running: dict) -> str:
     if not mine:
         return ""
     current = read(root() / "options-current.json").get("options")
+    if not current:
+        _claim_current_options(mine)
+        current = read(root() / "options-current.json").get("options")
     if mine == current and running.get("options") != mine:
         return "options_changed"
     if running.get("principal") == KEYLESS_PRINCIPAL and target()["principal"] != KEYLESS_PRINCIPAL:
         return "keyless"
     return ""
+
+
+def _retire(running: dict, reason: str) -> bool:
+    """Ask the running worker to stop; True when a replacement should start.
+
+    A worker that records its options checks for the request between passes,
+    so it never stops mid-request; its replacement waits for its lock. A worker
+    from an earlier version never reads the request and is terminated.
+    """
+    pid = running["pid"]
+    if "options" not in running:
+        import signal
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as exc:
+            log("cloud_worker_replace_failed", pid=pid, error=str(exc)[:200])
+            return False
+    else:
+        atomic_json(
+            root() / "cloud-worker-retire.json", {"pid": pid, "reason": reason, "at": time.time()}
+        )
+    log("cloud_worker_replaced", pid=pid, reason=reason)
+    return True
 
 
 def _refresh_console_log() -> None:

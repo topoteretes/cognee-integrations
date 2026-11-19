@@ -793,22 +793,80 @@ def test_a_keyless_worker_is_replaced_by_a_hook_with_a_key(
     assert (worker._replacement_reason(record) == "keyless") is replaced
 
 
-def test_a_replaced_worker_is_asked_to_stop_and_a_new_one_started(
-    suite, isolated_modules, monkeypatch
-):
-    if suite.name != "claude-code":
-        pytest.skip("Cloud worker")
+def _real_ensure_worker(suite, isolated_modules, monkeypatch, running, reason):
     worker = isolated_modules(suite, "_cloud_worker")
     monkeypatch.delenv("COGNEE_IDLE_DISABLED", raising=False)
     monkeypatch.setattr(worker, "log", lambda *a, **kw: None)
-    monkeypatch.setattr(worker, "_replacement_reason", lambda running: "options_changed")
-    worker.atomic_json(worker.root() / "cloud-worker-pid.json", {"pid": 4242})
-    proc = importlib.import_module("_proc")
-    monkeypatch.setattr(proc, "pid_alive", lambda pid: True)
-    spawned = []
+    monkeypatch.setattr(worker, "_replacement_reason", lambda running: reason)
+    worker.atomic_json(worker.root() / "cloud-worker-pid.json", running)
+    monkeypatch.setattr(importlib.import_module("_proc"), "pid_alive", lambda pid: True)
+    spawned, killed = [], []
     monkeypatch.setattr(worker.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+    monkeypatch.setattr(worker.os, "kill", lambda pid, sig: killed.append(pid))
+    return worker, spawned, killed
+
+
+def test_a_replaced_worker_is_asked_to_stop_between_passes(suite, isolated_modules, monkeypatch):
+    if suite.name != "claude-code":
+        pytest.skip("Cloud worker")
+    worker, spawned, killed = _real_ensure_worker(
+        suite, isolated_modules, monkeypatch, {"pid": 4242, "options": "old"}, "options_changed"
+    )
 
     worker.ensure_worker()
 
     assert worker.read(worker.root() / "cloud-worker-retire.json")["pid"] == 4242
+    assert len(spawned) == 1 and killed == []
+    # Its replacement is waiting for the lock: later hooks start no other.
+    worker.ensure_worker()
     assert len(spawned) == 1
+
+
+def test_a_worker_from_an_earlier_version_is_terminated(suite, isolated_modules, monkeypatch):
+    """It never reads the stop request, so asking would leave it running."""
+    if suite.name != "claude-code":
+        pytest.skip("Cloud worker")
+    worker, spawned, killed = _real_ensure_worker(
+        suite, isolated_modules, monkeypatch, {"pid": 4242}, "options_changed"
+    )
+
+    worker.ensure_worker()
+
+    assert killed == [4242] and len(spawned) == 1
+
+
+def test_a_hook_without_options_never_decides_the_workers(worker, monkeypatch):
+    """A plugin loaded with --plugin-dir is handed no options at all."""
+    _options(monkeypatch)
+    _launch(worker)
+
+    assert worker.options_fingerprint() == ""
+    assert not (worker.root() / "options-current.json").exists()
+    assert worker._replacement_reason(_running(worker, "other")) == ""
+
+
+def test_options_that_differ_from_the_saved_ones_never_claim(worker, monkeypatch):
+    """An older Claude Code process keeps the options it loaded."""
+    settings = worker.Path.home() / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        '{"pluginConfigs": {"cognee-memory@cognee": {"options": '
+        '{"cognee_base_url": "https://new.example", "band": true}}}}'
+    )
+    _options(monkeypatch, cognee_api_key="k", cognee_base_url="https://old.example")
+    _launch(worker)
+    assert not (worker.root() / "options-current.json").exists()
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "https://new.example")
+    _launch(worker)
+    current = worker.read(worker.root() / "options-current.json")["options"]
+    assert current == worker.options_fingerprint()
+
+
+def test_with_no_current_options_a_hook_claims_its_own(worker, monkeypatch):
+    _options(monkeypatch, cognee_api_key="key")
+
+    assert worker._replacement_reason(_running(worker, "old")) == "options_changed"
+    assert worker.read(worker.root() / "options-current.json")["options"] == (
+        worker.options_fingerprint()
+    )
