@@ -37,10 +37,22 @@ _REPORT_KEYS = {
 }
 
 
+def _point_at(suite, monkeypatch, home, url: str) -> None:
+    """Point the doctor at ``url`` the way the suite takes it: an export, or for
+    claude-code (whose URL is a plugin option) the record a hook leaves for a
+    process with no options, such as the doctor."""
+    if suite.name == "claude-code":
+        record = home / ".cognee-plugin" / "claude-code" / "server-url.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"url": url}), encoding="utf-8")
+    else:
+        monkeypatch.setenv("COGNEE_BASE_URL", url)
+
+
 @pytest.fixture
-def doctor(suite, isolated_modules, mock_server, monkeypatch):
+def doctor(suite, isolated_modules, mock_server, monkeypatch, temp_home):
     module = isolated_modules(suite, "doctor")
-    monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
+    _point_at(suite, monkeypatch, temp_home, mock_server.url)
     return module
 
 
@@ -80,8 +92,10 @@ def test_report_sees_the_running_server(doctor, mock_server):
     mock_server.assert_called("GET", HEALTH)
 
 
-def test_report_marks_an_absent_server_unreachable(doctor, monkeypatch, closed_port_url):
-    monkeypatch.setenv("COGNEE_BASE_URL", closed_port_url)
+def test_report_marks_an_absent_server_unreachable(
+    doctor, monkeypatch, closed_port_url, suite, temp_home
+):
+    _point_at(suite, monkeypatch, temp_home, closed_port_url)
     report = doctor.collect_report()
     assert report["reachable"] is False
 

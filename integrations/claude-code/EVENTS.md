@@ -230,6 +230,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
 | `hook:recall_error` | `recall.error` |
+| `hook:recall_failed` | `recall.failed` |
 | `hook:recall_graph_not_built` | `recall.graph_not_built` |
 | `hook:recall_guidance_absent` | `recall.guidance_absent` |
 | `hook:recall_health_accounting_failed` | `recall.health_accounting_failed` |
@@ -409,6 +410,14 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.auto_memory_setup_failed`: auto memory setup failed.
 - `cloud.injection_ledger_failed`: injection ledger failed.
 - `cloud.capture_spooled`: capture spooled.
+- `cloud.cloud_session_retargeted`: the plugin options (Cognee API key or server URL) changed after session start, typically saved and then applied with `/reload-plugins`, which does not rerun SessionStart; the session's launch record was regenerated for the new key and server so the worker registers the session again. A switch to a local server still needs a new session.
+- `cloud.launch_rebind_failed`: regenerating the launch record for changed options failed; the prompt goes on with the old record.
+- `cloud.cloud_options_changed`: this Claude Code process handed its hooks new plugin options (saved, then applied with `/reload-plugins`); they become the options the cloud worker runs with. Decided per process (`CLAUDE_PID`), so `/clear` or `/compact` never claims. Only the options' hash is recorded.
+- `cloud.cloud_options_stale`: another Claude Code window applied newer plugin options than this one has (or this one's differ from the saved ones); the session is told once to run `/reload-plugins`, and its hooks leave the worker alone.
+- `cloud.stale_options_notice_failed`: building the stale-options notice failed; the prompt goes on without it.
+- `cloud.cloud_worker_replaced`: a hook found the running worker on other options than the current ones (`reason: options_changed`; a worker from an earlier version records none) or without an API key while the hook has one (`reason: keyless`). It asked the worker to stop between passes (a worker from an earlier version, which does not read the request, is terminated) and started one with its own options, which waits for the old one's lock. Hooks with no options (a plugin loaded with `--plugin-dir`) and hooks whose server URL or other text options differ from the saved ones never decide the worker's options.
+- `cloud.cloud_worker_retired`: a worker stopped because a replacement with newer options was started.
+- `cloud.cloud_worker_replace_failed`: terminating a worker from an earlier version (which does not read the stop request) failed; it keeps running.
 - `cloud.cloud_work_expired`: cloud work expired.
 - `cloud.cloud_work_retry`: cloud work retry.
 - `cloud.cloud_capture_delivered`: cloud capture delivered.

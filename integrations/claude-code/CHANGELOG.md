@@ -10,6 +10,60 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.11]
+
+### Fixed
+
+- **Saving plugin options and running `/reload-plugins` now applies them to the
+  open session.** A reload hands hooks the new options but does not rerun
+  SessionStart, so the session's launch record kept the API key and server it
+  started with. The cloud worker skips records whose key and server differ from
+  its own, so a session started before the key was set never registered: its
+  status row stayed on "connecting…" until a new session. The next prompt now
+  regenerates the record for the current key and server, and the worker
+  registers the session. A switch to a local server still needs a new session.
+- **The cloud worker follows changed plugin options.** The worker runs with the
+  options of the hook that started it, for as long as it lives, so after a
+  reload it kept the old API key or server, or none. A Claude Code window that
+  starts, or reloads with changed options, now makes its options the current
+  ones, recorded as a hash only; the next hook carrying them asks the worker to
+  stop between passes and starts one with them. This is decided per window, not
+  per session: `/clear` or `/compact` in a window that has not reloaded keeps
+  its old options and never takes the worker back. A worker with no API key is
+  also replaced by a hook that has one and carries the current options. No
+  queued capture is cut off mid-request.
+- **A window with outdated plugin options is told to reload.** When another
+  window applied newer options, the next prompt here shows a one-time notice to
+  run `/reload-plugins`; until then this window leaves the worker alone.
+
+- **A recall rejected by the server is reported as failed.** A 401 on every
+  scope used to end as "recall 0 memory" with "(no memory matches for this
+  prompt)", and the status row said "nothing relevant". When no scope answers
+  and every scope errored (a rejected key, a server error, a refused
+  connection, another HTTP error), the prompt's header now says
+  `recall failed (Cognee API key rejected)` (or the failure), the status row
+  says "recall failed", and the turn is not counted as an empty recall.
+- **The server URL comes from the plugin option only.** `COGNEE_BASE_URL` in the
+  shell or `~/.cognee/.env` is ignored, like the API key already was. Editing
+  the file used to move a running session to another server while the
+  long-lived cloud worker, which had inherited the old URL, kept serving and
+  marking the old one ready, hiding the new server's "incorrect API key". The
+  mode now follows the two connection options: both empty is local mode; the
+  server URL option set connects to it; only the API key option set is cloud
+  mode with no server to connect to (session start asks for the URL, and the
+  status line shows `missing_cognee_base_url`). The `COGNEE_BACKEND` switch
+  still wins per terminal.
+
+### Upgrade note
+
+- A worker started by an earlier version records no options and is replaced by
+  the first hook carrying the current ones.
+- **If your server URL is in `~/.cognee/.env` or a shell export, move it to the
+  plugin's Cognee server URL option** (`/plugin`, Cognee Memory, Configure
+  options). Until then, with the API key option set, the plugin asks for the
+  URL; with no key, it runs locally. Session start names the ignored
+  `COGNEE_BASE_URL` once. The Codex plugin still reads it from the file.
+
 ## [1.8.10]
 
 ### Changed

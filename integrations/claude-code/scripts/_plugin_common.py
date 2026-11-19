@@ -1948,8 +1948,10 @@ DEFINITIVE_FAILURE_STATES = ("auth_failed", "unreachable", "server_error")
 _FAILURE_LABELS = {
     "unreachable": "server unreachable",
     "server_error": "server error",
-    "auth_failed": "auth failed",
+    "auth_failed": "Cognee API key rejected",
     "not_responding": "server not responding",
+    "payment_required": "out of credits",
+    "http_error": "request rejected",
 }
 
 
@@ -1959,8 +1961,11 @@ def describe_connection_failure(state: str) -> str:
     return _FAILURE_LABELS.get(state, f"server {state.replace('_', ' ')}")
 
 
-def outage_header(state: str, saves: dict, backlog: dict | None, joiner: str) -> str:
-    """The one-line header for a prompt whose recall was skipped: the server is known bad.
+def outage_header(
+    state: str, saves: dict, backlog: dict | None, joiner: str, verb: str = "skipped"
+) -> str:
+    """The one-line header for a prompt whose recall was skipped (the server is
+    known bad) or ``verb="failed"`` (every scope of this prompt's recall errored).
 
     An empty recall used to be the only sign of an outage. The lookup hook returned
     nothing, so no header was shown, and because the save counter was only read on
@@ -1973,7 +1978,7 @@ def outage_header(state: str, saves: dict, backlog: dict | None, joiner: str) ->
         / 0 trace / 0 answer; buffered last turn 6 trace / 1 answer (not saved yet);
         7 awaiting replay, oldest 20d
     """
-    parts = [f"recall skipped ({describe_connection_failure(state)})", saves_segment(saves)]
+    parts = [f"recall {verb} ({describe_connection_failure(state)})", saves_segment(saves)]
     parts.extend(buffered_saves_segments(saves, backlog))
     return "Cognee memory: " + joiner.join(parts)
 
@@ -2467,7 +2472,11 @@ def user_cloud_key(service_url: str = "") -> str:
     if not key:
         return ""
     url = _normalize_service_url(service_url or _local_api_url())
-    if url == _DEFAULT_LOCAL_SERVICE_URL and forced_backend() != "cloud":
+    # The local default is never the key's server, unless cloud is forced AND
+    # a URL names it: cloud with no URL resolves to the default as a fallback.
+    if url == _DEFAULT_LOCAL_SERVICE_URL and (
+        forced_backend() != "cloud" or not os.environ.get("COGNEE_BASE_URL", "").strip()
+    ):
         return ""
     if os.environ.get("COGNEE_RELAYED", "") == "1":
         bound = _normalize_service_url(os.environ.get("COGNEE_RELAY_KEY_URL", ""))

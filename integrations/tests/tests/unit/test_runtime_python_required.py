@@ -124,8 +124,15 @@ def test_doctor_reports_the_interpreter_the_next_start_will_use(doctor, monkeypa
     assert fake in value and "venv not built yet" in value
 
 
-def test_doctor_runtime_row_not_needed_in_cloud(doctor, monkeypatch):
-    monkeypatch.setenv("COGNEE_BASE_URL", "https://api.cognee.ai")
+def test_doctor_runtime_row_not_needed_in_cloud(suite, doctor, monkeypatch, temp_home):
+    if suite.name == "claude-code":
+        # The doctor has no plugin options and ignores an exported URL: it
+        # takes the server a hook recorded from the URL option.
+        record = temp_home / ".cognee-plugin" / "claude-code" / "server-url.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text('{"url": "https://api.cognee.ai"}', encoding="utf-8")
+    else:
+        monkeypatch.setenv("COGNEE_BASE_URL", "https://api.cognee.ai")
     assert doctor._resolve_runtime_python() == "Not needed (remote server)"
 
 

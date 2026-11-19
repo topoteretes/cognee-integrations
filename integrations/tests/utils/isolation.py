@@ -141,6 +141,14 @@ def build_env(
     if service_url is not None:
         env["COGNEE_BASE_URL"] = service_url
         env.setdefault("COGNEE_PLATFORM_API_URL", service_url)
+        if suite.name == "claude-code":
+            # Claude Code takes the server URL from its option only: a hook is
+            # handed it, and a process without options (a skill's script, the
+            # status line) reads the record a hook leaves.
+            env["CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL"] = service_url
+            record = Path(home) / ".cognee-plugin" / "claude-code" / "server-url.json"
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text(json.dumps({"url": service_url}), encoding="utf-8")
     if api_key is not None:
         env[suite.api_key_env] = api_key
     if extra:

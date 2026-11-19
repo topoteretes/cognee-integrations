@@ -208,12 +208,18 @@ def test_hook_reports_offline_without_building_a_venv(
         dotenv = cognee_home(temp_home) / ".env"
         dotenv.parent.mkdir(parents=True, exist_ok=True)
         dotenv.write_text("COGNEE_MANAGED_ENDPOINT=true\n", encoding="utf-8")
+    service_url = closed_port_url
+    if suite.name == "claude-code":
+        # The server URL is a plugin option there, handed to the hook.
+        extra["CLAUDE_PLUGIN_ROOT"] = str(suite.scripts_dir.parent)
+        extra["CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL"] = closed_port_url
+        service_url = None
     result = run_hook(
         suite,
         "session-start.py",
         stdin=payloads.session_start(),
         home=temp_home,
-        service_url=closed_port_url,
+        service_url=service_url,
         extra_env={**extra, "COGNEE_LAZY_BOOTSTRAP": "1"},
         timeout=60,
     )

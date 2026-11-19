@@ -17,6 +17,8 @@ Covers, for every suite:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from utils.switch import run_switch
 
@@ -173,6 +175,12 @@ def _remember_into(suite, home, url, tmp_path, dataset, *, shared):
     (stub / "sitecustomize.py").write_text(_RESOLVER_STUB)
     log = tmp_path / "resolved.txt"
     log.touch()
+    if suite.name == "claude-code":
+        # A skill's script has no plugin options and ignores an exported URL:
+        # it takes the server a hook recorded from the URL option.
+        record = home / ".cognee-plugin" / "claude-code" / "server-url.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"url": url}), encoding="utf-8")
     env = build_env(
         suite,
         home,

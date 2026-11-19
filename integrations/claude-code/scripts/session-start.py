@@ -372,6 +372,16 @@ def _key_options_message() -> str:
                 cloud_names
             )
         lines.append(line)
+    url_option = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "").strip()
+    if not url_option and cloud_key_option() and is_cloud_mode(config) and not url:
+        line = (
+            "Cognee is not connected: the Cognee API key option is set, but the Cognee "
+            "server URL option is empty. Enter your server's URL next to the key. "
+            + _KEY_OPTIONS_HOW
+        )
+        if "COGNEE_BASE_URL" in ignored:
+            line += " The COGNEE_BASE_URL in your shell or ~/.cognee/.env is no longer read."
+        lines.append(line)
     paused = _llm_paused_by_ignored_key(config, ignored, llm_key_option())
     if paused:
         lines.append(
@@ -389,6 +399,8 @@ def _key_options_message() -> str:
             ("EMBEDDING_API_KEY", embedding_key_option()),
             ("COGNEE_USER_EMAIL", login_email_option()),
             ("COGNEE_USER_PASSWORD", login_password_option()),
+            # Reported above, every session, when the key option needs it.
+            ("COGNEE_BASE_URL", url_option or cloud_key_option()),
         )
         if name in ignored and not option
     ]
@@ -398,11 +410,17 @@ def _key_options_message() -> str:
         except Exception:
             seen = None
         if seen != local_names:
-            lines.append(
+            line = (
                 "Cognee no longer reads %s from your shell or ~/.cognee/.env: it takes "
                 "them from this plugin's options. %s"
                 % (" and ".join(local_names), _KEY_OPTIONS_HOW)
             )
+            if "COGNEE_BASE_URL" in local_names:
+                line += (
+                    " With the server URL and API key options empty, Cognee runs locally"
+                    " on this machine; to use your Cognee server, enter its URL and key there."
+                )
+            lines.append(line)
             _pending_notice["names"] = local_names
     return "\n\n".join(lines)
 

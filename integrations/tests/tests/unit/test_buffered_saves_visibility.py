@@ -276,7 +276,7 @@ def test_segments_name_buffered_writes_and_the_backlog(pc):
     ]
 
 
-def test_outage_header_names_the_failure_and_uses_the_hosts_joiner(pc):
+def test_outage_header_names_the_failure_and_uses_the_hosts_joiner(pc, suite):
     saves = {"prompt": 1, "trace": 0, "answer": 0, "trace_buffered": 6, "answer_buffered": 1}
     backlog = {"pending": 7, "oldest_age_seconds": 20 * 86400}
     assert pc.outage_header("unreachable", saves, backlog, "; ") == (
@@ -290,7 +290,7 @@ def test_outage_header_names_the_failure_and_uses_the_hosts_joiner(pc):
         " · saved last turn 0 prompt / 0 trace / 0 answer"
     )
     assert [pc.describe_connection_failure(s) for s in pc.DEFINITIVE_FAILURE_STATES] == [
-        "auth failed",
+        "Cognee API key rejected" if suite.name == "claude-code" else "auth failed",
         "server unreachable",
         "server error",
     ]

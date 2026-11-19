@@ -28,11 +28,11 @@ Deliberately stdlib-only: hook scripts must run outside the plugin venv on the
 cloud path, so python-dotenv is not an option. The parser accepts a leading
 ``export `` so users can paste their existing shell export lines verbatim.
 
-The file may hold BOTH modes' variables at once (cloud connection + local LLM
-key); with nothing exported, cloud wins because ``COGNEE_BASE_URL`` routes the
-connection. One export flips a single terminal: ``COGNEE_BACKEND=local`` (or
-``=cloud``), with the plugin-specific variable (``_PLUGIN_BACKEND_VAR``)
-beating the shared name. A forced-local switch is applied to the process
+The server URL is an option as well: a ``COGNEE_BASE_URL`` in the shell or in
+the file is ignored (``_apply_url_option``). Both connection options empty is
+local mode; either one set is cloud mode. One export flips a single terminal:
+``COGNEE_BACKEND=local`` (or ``=cloud``), with the plugin-specific variable
+(``_PLUGIN_BACKEND_VAR``) beating the shared name. A forced-local switch is applied to the process
 environment itself (see ``_apply_backend_switch``) so the HTTP hot paths and spawned
 children — which read ``COGNEE_BASE_URL`` from the environment directly, not
 via ``config.load_config`` — see the same mode.
@@ -109,11 +109,12 @@ _TEMPLATE = """\
 # LLM_API_KEY="sk-..."
 
 ## Cloud / remote mode — the Claude Code plugin takes the server URL from its
-## options too (Cognee server URL, next to the API key); this line is used
-## only when that option is empty. The Codex plugin reads it from here:
+## options only (Cognee server URL, next to the API key) and ignores this
+## line. The Codex plugin reads it from here:
 # COGNEE_BASE_URL="<your Cognee Cloud URL>"
 
-## Local mode (default when COGNEE_BASE_URL is unset) — the plugin runs a
+## Local mode (the Claude Code plugin's default when both the server URL and
+## the API key options are empty) — the plugin runs a
 ## local Cognee API, with an LLM key of your own:
 # LLM_MODEL="openai/gpt-4o-mini"
 ## ...or give it no LLM key: with the `claude` CLI on PATH the Claude Code
@@ -175,39 +176,58 @@ def _in_hook() -> bool:
 
 
 def _apply_url_option() -> None:
-    """Take the server URL from its option.
+    """Take the server URL from its option, and from nowhere else.
 
-    Order: the option, then a ``COGNEE_BASE_URL`` export, then ~/.cognee/.env:
-    the shell and the file are used only when the option is empty, as the
-    option's description says. The Cognee API key option is sent to the server
-    this resolves, so a leftover export must never outrank the option. A hook
-    records the option's value so that a process with no options (the status
-    line, a skill's script) resolves the same server; an emptied option removes
-    the record.
+    The mode follows the two connection options: both empty is local mode;
+    the URL option set connects to that server; the Cognee API key option set
+    with no URL is cloud mode with nothing to connect to, the same state as the
+    ``COGNEE_BACKEND=cloud`` switch with no URL (no local server is started,
+    and the status line shows ``missing_cognee_base_url``). A
+    ``COGNEE_BASE_URL`` in the shell or in ~/.cognee/.env is never used, so an
+    edit of the file cannot move a running session or the worker to another
+    server; the name is reported as ignored. An exported backend switch still
+    wins for its terminal.
+
+    A hook records what it resolved so that a process with no options (the
+    status line, a skill's script) resolves the same; options that are both
+    empty remove the record.
     """
     if _in_hook():
         url = os.environ.get("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "").strip()
+        cloud = not url and bool(cloud_key_option())
+        record = {"url": url} if url else ({"cloud": True} if cloud else None)
         try:
-            recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url", "")
+            recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8"))
         except Exception:
-            recorded = ""
-        if url != recorded:
+            recorded = None
+        if record != recorded:
             try:
-                if url:
+                if record:
                     _URL_RECORD.parent.mkdir(parents=True, exist_ok=True)
-                    _URL_RECORD.write_text(json.dumps({"url": url}), encoding="utf-8")
+                    _URL_RECORD.write_text(json.dumps(record), encoding="utf-8")
                 else:
                     _URL_RECORD.unlink()
             except Exception:
                 pass
     else:
         try:
-            url = str(json.loads(_URL_RECORD.read_text(encoding="utf-8")).get("url") or "")
+            recorded = json.loads(_URL_RECORD.read_text(encoding="utf-8"))
         except Exception:
-            url = ""
+            recorded = {}
+        recorded = recorded if isinstance(recorded, dict) else {}
+        url = str(recorded.get("url") or "").strip()
+        cloud = not url and recorded.get("cloud") is True
+    exported = os.environ.get("COGNEE_BASE_URL", "").strip()
+    if exported and exported != url:
+        _note_ignored("COGNEE_BASE_URL")
     if url:
-        # Over any export; the file's own value does not replace it either.
         os.environ["COGNEE_BASE_URL"] = url
+    else:
+        os.environ.pop("COGNEE_BASE_URL", None)
+    # Read by ``forced_backend`` instead of setting the switch in the
+    # environment: every process resolves it from its own options or the record.
+    global _key_without_url
+    _key_without_url = cloud
 
 
 def cloud_key_option() -> str:
@@ -325,6 +345,9 @@ def parse_env_file(path: Path, key_names: list | None = None, not_keys: tuple = 
 
 
 _loaded = False
+# The Cognee API key option is set and the server URL option is empty: cloud
+# mode with no server to connect to (``_apply_url_option``).
+_key_without_url = False
 # What this loader put into the environment (from the file, or the backend
 # switch), key to value: what a refresh may change again. A real export is
 # never among them, and a value changed by anything else since is left alone.
@@ -347,6 +370,10 @@ def _take(values: dict) -> None:
     import _env_names
 
     usable = {name: value for name, value in values.items() if not _blocked(name)}
+    # The server URL comes from the plugin option only (``_apply_url_option``).
+    held = usable.pop("COGNEE_BASE_URL", "").strip()
+    if held and held != os.environ.get("COGNEE_BASE_URL", "").strip():
+        _note_ignored("COGNEE_BASE_URL")
     _file_values.clear()
     _file_values.update(usable)
     _env_names.sync(usable, _injected)
@@ -443,6 +470,9 @@ def forced_backend_with_source() -> tuple[str, str]:
             return "local", var
         if value in _CLOUD_BACKEND_VALUES:
             return "cloud", var
+    if _key_without_url:
+        # A key with no URL is cloud mode, the same as an exported switch.
+        return "cloud", "CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY"
     return "", ""
 
 

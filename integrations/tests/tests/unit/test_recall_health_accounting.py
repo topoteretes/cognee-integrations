@@ -311,3 +311,51 @@ def test_claude_failed_retests_back_off_to_an_hour(suite, isolated_modules, monk
     common.clear_slow_streak(URL)  # any answer resets the back-off
     start = common.datetime.now(common.timezone.utc).timestamp()
     assert round(common.mark_recall_slow(URL) - start, -1) == 600
+
+
+# ── a recall where every scope errored is a failure, not an empty result ──────
+
+
+def _failed_recall(lookup, monkeypatch, suite, recall, **kw):
+    if suite.name != "claude-code":
+        pytest.skip("Claude Code reports a failed recall as failed")
+    phases: list = []
+    monkeypatch.setattr(lookup, "phase_begin", lambda phase, **k: None)
+    monkeypatch.setattr(lookup, "phase_end", lambda phase, **k: phases.append(k))
+    run = drive_recall(lookup, monkeypatch, recall=recall, **kw)
+    context = run.output["hookSpecificOutput"]["additionalContext"]
+    return run, phases, context
+
+
+@pytest.mark.parametrize(
+    ("recall", "label"),
+    [
+        (_raise(lambda: _http_error(401)), "Cognee API key rejected"),
+        (_raise(lambda: _http_error(503)), "server error"),
+        (_raise(lambda: _http_error(422)), "request rejected"),
+        (_raise(_refused), "server unreachable"),
+    ],
+    ids=["401", "503", "422", "refused"],
+)
+def test_a_recall_where_every_scope_errored_says_it_failed(
+    lookup, monkeypatch, suite, recall, label
+):
+    """A 401 used to end as "recall 0 memory" with "(no memory matches for this
+    prompt)" and the phase marked ok, so the bar said "nothing relevant"."""
+    run, phases, context = _failed_recall(
+        lookup, monkeypatch, suite, recall, prior_state=READY_PRIOR
+    )
+
+    assert context.startswith(f"Cognee memory: recall failed ({label})"), context
+    assert "no memory matches" not in context
+    assert phases == [{"count": 0, "ok": False}]
+    assert [e for e, _ in run.events].count("recall_failed") == 1, run.events
+
+
+def test_a_cold_start_refusal_is_not_reported_as_a_failed_recall(lookup, monkeypatch, suite):
+    run, phases, context = _failed_recall(
+        lookup, monkeypatch, suite, _raise(_refused), prior_state=None
+    )
+
+    assert "recall failed" not in context
+    assert phases == [{"count": 0, "ok": True}]

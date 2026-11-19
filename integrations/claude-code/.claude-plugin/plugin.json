@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Persistent memory for Claude Code, built on Cognee's knowledge graph. Captures your prompts, tool calls and answers, recalls what's relevant on every prompt, and carries decisions and lessons into later sessions. Runs locally or on Cognee Cloud.",
-  "version": "1.8.10",
+  "version": "1.8.11",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -26,13 +26,13 @@
     "cognee_base_url": {
       "type": "string",
       "title": "Cognee server URL",
-      "description": "Your Cognee Cloud instance, such as https://your-instance.cognee.ai, or your own Cognee server. Leave empty to run Cognee locally on this machine. A COGNEE_BASE_URL in your shell or ~/.cognee/.env is used only when this is empty.",
+      "description": "Your Cognee Cloud instance, such as https://your-instance.cognee.ai, or your own Cognee server. Leave this and the API key empty to run Cognee locally on this machine. COGNEE_BASE_URL in your shell or ~/.cognee/.env is not used.",
       "default": ""
     },
     "cognee_api_key": {
       "type": "string",
       "title": "Cognee API key",
-      "description": "Your Cognee Cloud API key (ck_…), or the key of your own Cognee server. Needed when COGNEE_BASE_URL points the plugin at a server; local mode needs none. Kept in Claude Code's secure store and sent only to that server.",
+      "description": "Your Cognee Cloud API key (ck_…), or the key of your own Cognee server. Needed when the server URL above points the plugin at a server; local mode needs none. Set without a server URL, the plugin waits for the URL instead of running locally. Kept in Claude Code's secure store and sent only to that server.",
       "sensitive": true
     },
     "llm_api_key": {
