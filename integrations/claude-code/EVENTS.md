@@ -211,6 +211,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:precompact_start` | `precompact.start` |
 | `hook:precompact_sync_defer_failed` | `precompact.sync_defer_failed` |
 | `hook:precompact_sync_deferred` | `precompact.sync_deferred` |
+| `hook:project_memory_claim_failed` | `project.memory_claim_failed` |
 | `hook:project_memory_prepared` | `project.memory_prepared` |
 | `hook:project_memory_retry_mark_failed` | `project.memory_retry_mark_failed` |
 | `hook:prompt_missing_session_key` | `prompt.missing_session_key` |

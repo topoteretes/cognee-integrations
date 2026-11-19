@@ -18,7 +18,10 @@ key or dataset that is not final yet.
 from __future__ import annotations
 
 import json
+import os
 import socket
+import subprocess
+import sys
 import time
 import urllib.error
 
@@ -275,3 +278,72 @@ def test_pending_notice_is_shown_once_while_still_pending(env, monkeypatch):
     assert pm.pending_notice("primary", "s") == pm.PENDING_NOTICE
     assert "memory is queued and will be sent once it can" in pm.PENDING_NOTICE
     assert pm.pending_notice("primary", "s") == ""
+
+
+def _exited_pid() -> int:
+    """A pid no process holds any more (the child has been reaped)."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+def test_a_session_whose_owner_died_before_handing_over_is_prepared_by_a_hook(
+    env_drain, monkeypatch
+):
+    # The SessionStart hook was killed (timeout, SIGKILL) between begin() and
+    # prepare(), so its finally never called allow_retry: pending, no retry_at,
+    # and an owner_pid that is gone. Nothing else will prepare the session, so
+    # route() does, and the queued captures drain.
+    pm, common = env_drain
+    pm.begin("primary", "s", "/tmp")
+    pm.claim("primary", "s", _exited_pid())
+    server = _Server()
+    monkeypatch.setattr(common, "_json_http_request", server)
+    common.append_warmup_entry("primary", "s", {"type": "qa", "question": "q", "answer": "a"})
+    assert common.drain_warmup_entries("primary", "s") == (1, 0)
+    assert server.writes()[0]["entry"]["node_set"] == ["project-fixed"]
+    state = _state(pm, common)
+    assert state["pending"] is False and "owner_pid" not in state
+
+
+def test_a_session_whose_owner_still_runs_is_left_to_it(env, monkeypatch):
+    # begin() records the hook's own pid; while that process lives (or is a
+    # worker later hooks restart: owner None), route() only raises, as before.
+    pm, common = env
+    pm.begin("primary", "s", "/tmp")
+    assert _state(pm, common)["owner_pid"] == os.getpid()
+    server = _Server()
+    monkeypatch.setattr(common, "_json_http_request", server)
+    with pytest.raises(RuntimeError, match="pending"):
+        pm.route("primary", "s")
+    pm.claim("primary", "s", None)
+    assert _state(pm, common)["owner_pid"] is None
+    with pytest.raises(RuntimeError, match="pending"):
+        pm.route("primary", "s")
+    assert server.calls == []
+
+
+def test_a_dead_owner_whose_probe_fails_backs_off_like_any_other(env, monkeypatch):
+    pm, common = env
+    pm.begin("primary", "s", "/tmp")
+    pm.claim("primary", "s", _exited_pid())
+    monkeypatch.setattr(common, "_json_http_request", _Server(fail=_timeout()))
+    with pytest.raises(RuntimeError, match="pending"):
+        pm.route("primary", "s")
+    state = _state(pm, common)
+    assert state["pending"] is True and state["attempts"] == 1 and "retry_at" in state
+
+
+def test_claim_leaves_a_prepared_or_backed_off_state_alone(env, monkeypatch):
+    pm, common = env
+    pm.begin("primary", "s", "/tmp")
+    monkeypatch.setattr(common, "_json_http_request", _Server(fail=_timeout()))
+    pm.prepare("primary", "s")
+    pm.claim("primary", "s", _exited_pid())
+    assert _state(pm, common)["owner_pid"] == os.getpid()
+
+    monkeypatch.setattr(common, "_json_http_request", _Server())
+    _expire_retry(pm, common)
+    pm.route("primary", "s")
+    pm.claim("primary", "s", _exited_pid())
+    assert "owner_pid" not in _state(pm, common)
