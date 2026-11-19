@@ -114,8 +114,7 @@ def _resolve_server_url() -> tuple:
 
 _KEY_SOURCE_LABELS = {
     "plugin_agent_key": "Plugin identity",
-    "plugin_option": "Plugin option",
-    "session_start": "Session start",
+    "env_api_key": "ENV",
     "cache_single_key": "Config",
     "missing": "Default",
 }
@@ -123,10 +122,18 @@ _KEY_SOURCE_LABELS = {
 
 def _resolve_api_key_source() -> str:
     """Return a human-friendly label for where the API key came from."""
+    from _env_file import env_file_path, parse_env_file
     from _plugin_common import _api_key_with_source
 
-    _key, source = _api_key_with_source()
-    return _KEY_SOURCE_LABELS.get(source, source)
+    key, source = _api_key_with_source()
+    label = _KEY_SOURCE_LABELS.get(source, source)
+    if source == "env_api_key" and key:
+        # The env layer is fed by both real exports and ~/.cognee/.env
+        # (setdefault); tell them apart for debuggability.
+        file_key = parse_env_file(env_file_path()).get("COGNEE_API_KEY", "")
+        if file_key and file_key == key:
+            label = "Env file"
+    return label
 
 
 def _resolve_memory_sharing() -> str:
@@ -324,35 +331,17 @@ def _resolve_llm() -> str:
     if decision.get("error"):
         return f"None — {decision['error']}"
     reason = str(decision.get("reason") or "")
-    from _observer import server_llm_choice
-
-    choice = server_llm_choice()
-    if reason == "llm_key_configured" or (reason == "llm_provider_configured" and choice):
+    if reason in ("llm_key_configured", "llm_provider_configured"):
         provider = (os.environ.get("LLM_PROVIDER") or "").strip() or "openai (default)"
         model = (os.environ.get("LLM_MODEL") or "").strip() or "Default"
         return f"Configured provider ({provider}, model {model})"
     if reason == "server_dotenv_configured":
         return f"Configured provider (in the server's {decision.get('dotenv') or '.env'})"
-    if choice == "provider":
-        provider = (os.environ.get("LLM_PROVIDER") or "").strip()
-        return f"Configured provider ({provider}, no key needed)"
-    if choice == "local_models":
-        return (
-            "Local models (the local models option): GLiNER and fastembed, no LLM key; "
-            "the first memory build downloads torch and GLiNER"
-        )
-    paused = (
-        "None — local memory is paused: the local server is not started until you choose "
-        "an LLM in the plugin's options (an LLM API key, or the local models option) or "
-        "set COGNEE_LLM_OBSERVER=true"
-    )
-    if reason == "llm_key_ignored":
-        return paused + ". The LLM_API_KEY in your shell or ~/.cognee/.env is no longer read"
     if reason == "claude_cli_missing":
-        return paused + ". No `claude` executable was found for the observer"
+        return "None — no LLM_API_KEY and no `claude` executable for the observer"
     if reason == "disabled":
-        return paused + ". The observer is off (COGNEE_LLM_OBSERVER=false)"
-    return paused
+        return "None — no LLM_API_KEY; observer disabled (COGNEE_LLM_OBSERVER=false)"
+    return "None — no LLM_API_KEY configured"
 
 
 def _resolve_env_file() -> str:
@@ -484,8 +473,4 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    from _relay import hand_over
-
-    # A shell has no key: when a hook's relay is up, it runs this script.
-    hand_over(__file__)
     main()

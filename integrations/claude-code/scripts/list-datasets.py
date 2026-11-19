@@ -88,8 +88,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    from _relay import hand_over
-
-    # A shell has no key: when a hook's relay is up, it runs this script.
-    hand_over(__file__)
     sys.exit(main())

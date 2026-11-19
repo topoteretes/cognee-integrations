@@ -258,7 +258,7 @@ def test_recent_check_by_another_session_does_not_throttle_us(run_check):
 
 
 def test_opt_out_env_skips_the_check(run_check):
-    writes, _ = run_check(env={"COGNEE_LLM_KEY_CHECK": "false", "COGNEE_LLM_CHECK": "false"})
+    writes, _ = run_check(env={"COGNEE_LLM_KEY_CHECK": "false"})
     assert writes == [], writes
 
 

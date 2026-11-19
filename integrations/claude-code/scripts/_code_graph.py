@@ -505,7 +505,7 @@ def do_index_repo(
         except Exception:
             pass
         if e.code in (401, 403):
-            msg = "unauthorized (HTTP %s) — check the Cognee API key option" % e.code
+            msg = "unauthorized (HTTP %s) — check COGNEE_API_KEY / credentials" % e.code
         elif e.code == 400 and "unsupported content_type" in detail.lower():
             # An older server rejects the content_type value outright, and says
             # so in those words. Matching on a bare "content_type" substring
@@ -954,11 +954,6 @@ def main(argv):
     """
     a = list(argv) + [""] * 7
     service_url, api_key, command, spec = a[0], a[1], a[2], a[3]
-    if api_key == "-":
-        # The caller holds no key: resolve it the way the hooks do.
-        import _plugin_common
-
-        api_key = _plugin_common.shell_api_key(service_url)
     dataset = a[4]
     index_vectors = str(a[5]).strip().lower() in ("1", "true", "yes", "on")
     try:
@@ -975,7 +970,7 @@ def main(argv):
         print(
             json.dumps(
                 {
-                    "error": "usage: _code_graph.py <service_url> - "
+                    "error": "usage: _code_graph.py <service_url> <api_key> "
                     "index <repo-path-or-url> [dataset] [index_vectors] "
                     "[wait_seconds] | dataset [path]",
                     "status": 2,

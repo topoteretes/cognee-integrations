@@ -74,11 +74,8 @@ def _stop_idle_watcher() -> None:
 def _spawn_detached_sync() -> bool:
     """Run the expensive sync outside a short hook window."""
     try:
-        from _proc import child_env
-
-        env = child_env()
-        if not os.environ.get("COGNEE_SYNC_START_DELAY", ""):
-            env["COGNEE_SYNC_START_DELAY"] = str(_SESSION_END_START_DELAY_DEFAULT)
+        env = os.environ.copy()
+        env.setdefault("COGNEE_SYNC_START_DELAY", str(_SESSION_END_START_DELAY_DEFAULT))
         env["COGNEE_UNREGISTER_ON_FINISH"] = "1"
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
@@ -107,10 +104,10 @@ def _final_sync_identity() -> tuple[str, str]:
     """
     from _plugin_common import get_session_key, read_stored_seq
 
-    session_key = str(os.environ.get("COGNEE_SESSION_REF", "") or "").strip()
+    session_key = str(os.environ.get("COGNEE_SESSION_KEY", "") or "").strip()
     session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
     if session_key:
-        token, source = session_key, "COGNEE_SESSION_REF"
+        token, source = session_key, "COGNEE_SESSION_KEY"
     elif session_id:
         token, source = session_id, "COGNEE_SYNC_SESSION_ID"
     else:
@@ -215,9 +212,10 @@ def _load_resolved() -> tuple:
     env_session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
     env_dataset = str(os.environ.get("COGNEE_SYNC_DATASET", "") or "").strip()
     env_agent_session_name = str(os.environ.get("COGNEE_AGENT_SESSION_NAME", "") or "").strip()
+    env_api_key = str(os.environ.get("COGNEE_API_KEY", "") or "").strip()
     env_service_url = str(os.environ.get("COGNEE_BASE_URL", "") or "").strip()
     resolved_service_url, resolved_api_key = resolved_http_endpoint_auth()
-    env_api_key = resolved_api_key
+    env_api_key = env_api_key or resolved_api_key
     env_service_url = env_service_url or resolved_service_url
 
     if not session_key:
@@ -585,8 +583,4 @@ def main():
 
 
 if __name__ == "__main__":
-    from _relay import hand_over
-
-    # A shell has no key: when a hook's relay is up, it runs this script.
-    hand_over(__file__)
     main()

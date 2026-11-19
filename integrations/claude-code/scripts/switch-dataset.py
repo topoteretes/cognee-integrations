@@ -32,7 +32,7 @@ pinned, ``reason``: ``dataset_picked``, ``configured_pin`` or
 non-JSON output prints.
 
 Runs under the host's shell tool (no hook payload), so it finds its own launch
-record via ``resolve_host_key_outside_hook``; give ``--session-key <host id>``
+record via ``resolve_host_key_outside_hook``; pass ``--session-key <host id>``
 to pin one when several launches share a directory.
 
 Exit codes:
@@ -268,10 +268,8 @@ def _sync_current(host_key: str, session_id: str, dataset: str) -> str:
                 {"session": session_id, "dataset": dataset, "via": "cloud_worker"},
             )
             return ""
-        from _proc import child_env
-
-        env = child_env()
-        env["COGNEE_SESSION_REF"] = host_key
+        env = os.environ.copy()
+        env["COGNEE_SESSION_KEY"] = host_key
         env["COGNEE_SYNC_SESSION_ID"] = session_id
         env["COGNEE_SYNC_DATASET"] = dataset
         proc = subprocess.Popen(
@@ -381,10 +379,8 @@ def _restart_idle_watcher(host_key: str, session_id: str, dataset: str, user_id:
     except Exception:
         log_fh = subprocess.DEVNULL
     try:
-        from _proc import child_env
-
-        env = child_env()
-        env["COGNEE_SESSION_REF"] = host_key
+        env = os.environ.copy()
+        env["COGNEE_SESSION_KEY"] = host_key
         subprocess.Popen(
             [sys.executable, str(_WATCHER_SCRIPT), json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
@@ -644,8 +640,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    from _relay import hand_over
-
-    # A shell has no key: when a hook's relay is up, it runs this script.
-    hand_over(__file__)
     sys.exit(main())

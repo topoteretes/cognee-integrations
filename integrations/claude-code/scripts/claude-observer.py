@@ -195,7 +195,7 @@ def forced_tool(body: dict) -> dict | None:
 
 
 def resolve_model(requested: str) -> str:
-    """Map cognee's alias to the configured Claude model; hand real names through."""
+    """Map cognee's alias to the configured Claude model; pass real names through."""
     name = str(requested or "").strip()
     if "/" in name:
         name = name.rsplit("/", 1)[-1]
@@ -248,23 +248,20 @@ def child_env() -> dict:
     """Environment for the ``claude`` child: no trace of the parent Claude session.
 
     Only the parent-session variables are dropped. Everything else Claude Code
-    needs to sign in stays: its config directory, a long-lived login made for
-    scripts, and the Bedrock/Vertex switches. A provider key exported in the
-    user's shell is dropped, so it cannot quietly move the bill off the
-    subscription.
+    needs to authenticate stays: ``CLAUDE_CONFIG_DIR`` (where the credentials
+    live), ``CLAUDE_CODE_OAUTH_TOKEN`` (``claude setup-token`` logins) and the
+    Bedrock/Vertex switches. ``ANTHROPIC_API_KEY`` is dropped so a key in the
+    user's shell cannot quietly move the bill off the subscription.
     """
-    from _proc import child_env
-
-    child = child_env()
-    for key in sorted(child):
-        if (
-            key in _PARENT_SESSION_ENV
-            or key in _BILLING_ENV
-            or key.startswith(_PARENT_SESSION_PREFIXES)
-        ):
-            del child[key]
-    child[_observer.CHILD_ENV_FLAG] = "1"
-    return child
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _PARENT_SESSION_ENV
+        and key not in _BILLING_ENV
+        and not key.startswith(_PARENT_SESSION_PREFIXES)
+    }
+    env[_observer.CHILD_ENV_FLAG] = "1"
+    return env
 
 
 # --- the CLI call ------------------------------------------------------------

@@ -112,7 +112,7 @@ def run(request):
         rows = json.loads(child.stdout)
         if not isinstance(rows, list):
             raise ValueError("recall did not return results")
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "claude-code" / "scripts"))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
         from _injection_budget import fit_sections
         from _recall_text import trim_recall_text
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 
 
 def injection_limit() -> int:
@@ -25,6 +26,8 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
     ``measure`` can account for the complete serialized hook envelope and notices.
     """
     kept = [[str(e) for e in s.get("entries", []) if str(e).strip()] for s in sections]
+    # Candidates as offered, to name the dropped entries for the receipt (SDK-1098).
+    offered = [list(values) for values in kept]
     total = sum(
         len(values)
         for section, values in zip(sections, kept)
@@ -131,10 +134,24 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
         for section, values in zip(sections, kept)
         if not section.get("required") and section.get("counted", True)
     )
+    # Every counted candidate that did not fit, in retrieval order: what the
+    # receipt marks over_budget, so it is recorded, not inferred. Like
+    # ``entries`` it holds memory text and must never be logged.
+    dropped_entries = []
+    for section, before, after in zip(sections, offered, kept):
+        if section.get("required") or not section.get("counted", True):
+            continue
+        remaining = Counter(after)
+        for entry in before:
+            if remaining[entry]:
+                remaining[entry] -= 1
+            else:
+                dropped_entries.append(entry)
     return text, {
         "context_chars": len(text),
         "entries_kept": entries_kept,
         "entries_dropped": total - entries_kept,
         "entries": entries,
+        "dropped_entries": dropped_entries,
         "source_hits": {source: len(ids) for source, ids in source_ids.items()},
     }

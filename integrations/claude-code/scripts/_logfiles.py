@@ -46,7 +46,7 @@ ROTATED_SUFFIX = ".1"
 def max_bytes(default: int | None = None) -> int:
     """The cap in bytes: ``COGNEE_PLUGIN_LOG_MAX_BYTES`` when set and numeric, else ``default``."""
     fallback = DEFAULT_MAX_BYTES if default is None else default
-    raw = os.environ.get("COGNEE_PLUGIN_LOG_MAX_BYTES", "").strip()
+    raw = os.environ.get(MAX_BYTES_ENV, "").strip()
     if not raw:
         return fallback
     try:

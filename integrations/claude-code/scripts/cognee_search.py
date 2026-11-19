@@ -5,7 +5,6 @@ Usage:
   cognee_search.py <query> [top_k] [--graph]
   cognee_search.py <query> [top_k] --code [--dataset <name>] [--code-query '<json>']
   cognee_search.py <query> [top_k] --graph --dataset-id <uuid>
-  cognee_search.py <query> [top_k] --category <user_context|project_docs|agent_actions>
 
 --graph:   search the permanent knowledge graph (the default; the flag is
            accepted for callers that spell it out)
@@ -27,9 +26,6 @@ Usage:
            dataset is searched only with --user-picked: the person named it
            or chose it in the picker. Without it the search refuses (exit 2).
 --user-picked: the --dataset/--dataset-id target is the person's own choice.
---category: keep only one category of graph memory: user_context,
-           project_docs or agent_actions. Graph searches only, and answered
-           by the server only (no cognee-cli fallback).
 No flag:   same as --graph. Memory is read from the graph and the code graph
            only; the session cache is written, never searched.
 
@@ -84,7 +80,7 @@ def _runtime() -> dict:
         or os.environ.get("COGNEE_LOCAL_API_URL")
         or "http://localhost:8011"
     ).strip()
-    api_key = ""
+    api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
     session_id = ""
     dataset = _configured_dataset()
     dataset_ids = ""
@@ -147,7 +143,7 @@ def _cached_api_key(service_url: str) -> str:
 def _connection_session_id(service_url: str, api_key: str, https_context) -> str:
     """The session id the server holds for this agent (GET /agents/connections/me)."""
     query = ""
-    session_key = (os.environ.get("COGNEE_SESSION_REF") or "").strip()
+    session_key = (os.environ.get("COGNEE_SESSION_KEY") or "").strip()
     if session_key:
         query = "?agent_session_name=" + urllib.parse.quote(session_key, safe="")
     req = urllib.request.Request(
@@ -176,18 +172,7 @@ def _code_dataset(cwd: str) -> str:
         return ""
 
 
-CATEGORIES = ("user_context", "project_docs", "agent_actions")
-
-
-def _recall(
-    rt: dict,
-    query: str,
-    scope: str,
-    top_k: str,
-    dataset: str,
-    code_query: str,
-    category: str = "",
-) -> str:
+def _recall(rt: dict, query: str, scope: str, top_k: str, dataset: str, code_query: str) -> str:
     """The server's answer as printed text, or "" when the client itself failed."""
     try:
         import _cognee_client
@@ -202,7 +187,6 @@ def _recall(
             dataset,
             code_query,
             rt["dataset_ids"],
-            node_name=[category] if category else None,
         )
     except Exception as exc:
         print(f"[cognee-search] recall client failed: {exc}", file=sys.stderr)
@@ -238,7 +222,6 @@ def main(argv: list[str]) -> int:
     dataset = rt["dataset"]
     dataset_explicit = False
     user_picked = False
-    category = ""
     recall_auto = bool(rt["recall_auto"])
 
     # Parse flags from any position (value flags consume the next argument).
@@ -258,20 +241,7 @@ def main(argv: list[str]) -> int:
             dataset_explicit = True
         elif arg == "--user-picked":
             user_picked = True
-        elif arg == "--category":
-            i += 1
-            category = (argv[i] if i < len(argv) else "").strip()
-            if category not in CATEGORIES:
-                print(
-                    "Error: --category takes one of " + ", ".join(CATEGORIES),
-                    file=sys.stderr,
-                )
-                return 1
         i += 1
-
-    if category and mode == "code":
-        print("Error: --category applies to graph searches, not --code", file=sys.stderr)
-        return 1
 
     # The resolved UUIDs belong to the launch's active dataset only: an
     # explicit --dataset or the code lane (the repo's own dataset) must search
@@ -366,15 +336,14 @@ def main(argv: list[str]) -> int:
     # found". The circuit breaker is the ONE at ~/.cognee-plugin/
     # recall-breaker.json that the per-prompt hooks, doctor and the status line
     # use (no COGNEE_PLUGIN_STATE_DIR override here).
-    recall_json = _recall(rt, query, scope, top_k, dataset, code_query, category)
+    recall_json = _recall(rt, query, scope, top_k, dataset, code_query)
 
     if recall_json and recall_json != UNREACHABLE:
         # Server answered — authoritative, even if the result is empty.
         print(recall_json)
         return 0
-    if mode == "code" or foreign or category:
-        # No CLI fallback for code searches, another dataset or a category
-        # filter (the CLI has no such filter): the code
+    if mode == "code" or foreign:
+        # No CLI fallback for code searches or for another dataset: the code
         # lane exists only on the server (>= 1.5.3), and a dataset addressed by
         # UUID resolves only there — a CLI recall would answer from a different
         # backend or identity and read as authoritative when it is not.
@@ -398,8 +367,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    from _relay import hand_over
-
-    # A shell has no key: when a hook's relay is up, it runs this script.
-    hand_over(__file__)
     sys.exit(main(sys.argv[1:]))

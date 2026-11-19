@@ -66,9 +66,9 @@ _TYPE_BULLET_RE = re.compile(r"^- .+? is an? [a-z]+(?:[ _-][a-z]+)?\.$")
 _SET_BULLET_RE = re.compile(r"^- .+ belongs to set \S+\.?$")
 
 
-def _int_env(raw: str, default: int) -> int:
-    """Non-negative int setting; ``0`` disables, junk means default."""
-    raw = str(raw or "").strip()
+def _int_env(name: str, default: int) -> int:
+    """Non-negative int from the environment; ``0`` disables, junk means default."""
+    raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     try:
@@ -79,11 +79,11 @@ def _int_env(raw: str, default: int) -> int:
 
 
 def passage_chars_limit() -> int:
-    return _int_env(os.environ.get("COGNEE_RECALL_PASSAGE_CHARS", ""), DEFAULT_PASSAGE_CHARS)
+    return _int_env(ENV_PASSAGE_CHARS, DEFAULT_PASSAGE_CHARS)
 
 
 def context_chars_limit() -> int:
-    return _int_env(os.environ.get("COGNEE_RECALL_CONTEXT_CHARS", ""), DEFAULT_CONTEXT_CHARS)
+    return _int_env(ENV_CONTEXT_CHARS, DEFAULT_CONTEXT_CHARS)
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +436,7 @@ def credit_enabled(default: bool = True) -> bool:
     ``COGNEE_PLUGIN_CITE_MEMORY`` decides when set; otherwise ``default``, which
     each host passes (Codex starts with it off).
     """
-    raw = os.environ.get("COGNEE_PLUGIN_CITE_MEMORY", "").strip().lower()
+    raw = os.environ.get(ENV_CITE_MEMORY, "").strip().lower()
     if not raw:
         return default
     return raw not in {"0", "false", "no", "off"}

@@ -105,10 +105,10 @@ def _check_llm_key(config: dict) -> None:
 
     Writes the shared llm-state marker: ``ok`` / ``auth_failed`` / ``not_set``.
     Local mode only (LLM_API_KEY is unused against a remote server). Throttled via
-    the marker's ``checked_at``. Honors COGNEE_LLM_CHECK=off.
+    the marker's ``checked_at``. Honors COGNEE_LLM_KEY_CHECK=off.
     """
     try:
-        if os.environ.get("COGNEE_LLM_CHECK", "").strip().lower() in (
+        if os.environ.get("COGNEE_LLM_KEY_CHECK", "").strip().lower() in (
             "0",
             "false",
             "no",
@@ -183,11 +183,7 @@ def _check_llm_key(config: dict) -> None:
         from cognee.infrastructure.llm.config import get_llm_config
 
         cfg = get_llm_config()
-        from _env_file import llm_key_option
-
-        # The LLM key option, as the server got it; else whatever cognee's own
-        # configuration holds (a ``.env`` the server loads by itself).
-        key = llm_key_option() or str(getattr(cfg, "llm_api_key", "") or "").strip()
+        key = str(getattr(cfg, "llm_api_key", "") or "").strip()
         if not key:
             # Logged, not silent: this write is what puts ✕ (incorrect_llm_api_key) on the bar,
             # and tracking down an unexplained one cost real time.
@@ -202,7 +198,7 @@ def _check_llm_key(config: dict) -> None:
                 model=cfg.llm_model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,
-                api_key=key,
+                api_key=cfg.llm_api_key,
                 api_base=getattr(cfg, "llm_endpoint", None) or None,
                 custom_llm_provider=(getattr(cfg, "llm_provider", None) or None),
                 timeout=15,
@@ -332,7 +328,7 @@ def main():
         os.environ["COGNEE_USER_ID"] = user_id
     if session_key:
         config["session_key"] = session_key
-        os.environ["COGNEE_SESSION_REF"] = session_key
+        os.environ["COGNEE_SESSION_KEY"] = session_key
 
     try:
         _PIDFILE.write_text(str(os.getpid()), encoding="utf-8")

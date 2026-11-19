@@ -12,10 +12,12 @@ file works both next to the plugin and under integrations/tests/tests/unit/.
 from __future__ import annotations
 
 import contextlib
+import email.message
 import io
 import json
 import pathlib
 import sys
+import urllib.error
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -666,7 +668,7 @@ def test_cli_json_report_exit_codes_and_markers(env):
     assert code == 0 and presets["last-update"]["recalls"] == 1 and presets["all"]["recalls"] == 2
 
 
-def test_reports_never_contain_prompt_or_memory_text(env):
+def test_reports_and_notion_payload_never_contain_prompt_or_memory_text(env, tmp_path):
     write_jsonl(
         env.plugin_dir / "recall-audit.log",
         *[recall(ts(14, 10, i), context_of(ITEM_A, SECRET + " " + SECRET)) for i in range(25)],
@@ -677,9 +679,218 @@ def test_reports_never_contain_prompt_or_memory_text(env):
         _assistant(ts(14, 9), "m", [{"type": "text", "text": SECRET}]),
     )
     base = ["--plugin-dir", str(env.plugin_dir), "--claude-dir", str(env.claude_dir)]
+    payload = tmp_path / "notion.json"
     for fmt in ("text", "markdown", "json"):
-        code, out, _ = _run(["report", "--format", fmt] + base)
+        code, out, _ = _run(["report", "--format", fmt, "--notion-dry-run", str(payload)] + base)
         assert code == 0 and "zebra-quartz" not in out and "staging database" not in out
+    assert "zebra-quartz" not in payload.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- Notion
+
+
+def test_parse_notion_id_from_urls_and_ids():
+    expected = "3d537007-fa82-80f9-8e4a-e65b44fae5e9"
+    assert (
+        pe.parse_notion_id(
+            "https://app.notion.com/p/acme/Onboarding-Checklist-3d537007fa8280f98e4ae65b44fae5e9?source=copy_link"
+        )
+        == expected
+    )
+    # a title ending in hex letters must not shift the id window
+    assert (
+        pe.parse_notion_id("https://www.notion.so/acme/Facade-3d537007fa8280f98e4ae65b44fae5e9")
+        == expected
+    )
+    assert (
+        pe.parse_notion_id(expected) == expected
+        and pe.parse_notion_id(expected.replace("-", "").upper()) == expected
+    )
+    assert pe.parse_notion_id("https://www.notion.so/acme/No-Id-Here") is None
+
+
+class _Response(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _http_error(code: int, message: str, retry_after: str = "") -> urllib.error.HTTPError:
+    headers = email.message.Message()
+    if retry_after:
+        headers["Retry-After"] = retry_after
+    return urllib.error.HTTPError(
+        "https://api.notion.com",
+        code,
+        "err",
+        headers,
+        io.BytesIO(json.dumps({"message": message}).encode()),
+    )
+
+
+def _big_card(env):
+    write_jsonl(env.plugin_dir / "recall-audit.log", recall(ts(14), context_of(ITEM_A)))
+    card = env.card()
+    card["advice"] = [
+        {
+            "id": "x%d" % i,
+            "kind": "pain",
+            "priority": "P1",
+            "title": "t%d" % i,
+            "evidence": "e",
+            "why": "w",
+            "action": "a" * 4500,
+            "impact": 1.0,
+        }
+        for i in range(40)
+    ]
+    return card
+
+
+def test_notion_export_chunks_blocks_splits_long_text_and_retries_rate_limits(env):
+    calls, sleeps, outcomes = [], [], [_http_error(429, "slow down", "2")]
+
+    def opener(request, timeout):
+        calls.append(
+            (
+                request.get_method(),
+                request.full_url,
+                json.loads(request.data),
+                dict(request.header_items()),
+            )
+        )
+        if outcomes:
+            raise outcomes.pop(0)
+        return _Response(json.dumps({"id": "page-1", "url": "https://notion.so/page-1"}).encode())
+
+    page = pe.export_to_notion(
+        _big_card(env),
+        "secret-token",
+        "3d537007fa8280f98e4ae65b44fae5e9",
+        opener=opener,
+        sleep=sleeps.append,
+    )
+    assert sleeps == [2.0] and page["url"] == "https://notion.so/page-1" and page["blocks"] > 100
+    methods = [(method, url.rsplit("/v1", 1)[1]) for method, url, _body, _headers in calls]
+    assert methods[:2] == [
+        ("POST", "/pages"),
+        ("POST", "/pages"),
+    ]  # the 429 is retried, then succeeds
+    assert all(m == ("PATCH", "/blocks/page-1/children") for m in methods[2:]) and len(methods) >= 3
+    create = calls[1][2]
+    assert (
+        create["parent"] == {"page_id": "3d537007-fa82-80f9-8e4a-e65b44fae5e9"}
+        and "title" in create["properties"]
+    )
+    for _method, _url, body, headers in calls:
+        assert len(body["children"]) <= pe.NOTION_MAX_CHILDREN
+        assert (
+            headers["Authorization"] == "Bearer secret-token"
+            and headers["Notion-version"] == pe.NOTION_DEFAULT_VERSION
+        )
+        for block in body["children"]:
+            for text in block[block["type"]].get("rich_text", []):
+                assert len(text["text"]["content"]) <= pe.NOTION_MAX_TEXT
+    assert sum(len(body["children"]) for _m, _u, body, _h in calls[1:]) == page["blocks"]
+
+
+def test_notion_errors_are_actionable_and_never_echo_the_token(env):
+    card = _big_card(env)
+
+    def not_shared(request, timeout):
+        raise _http_error(404, "Could not find page")
+
+    with pytest.raises(pe.NotionError) as raised:
+        pe.export_to_notion(
+            card,
+            "secret-token",
+            "3d537007fa8280f98e4ae65b44fae5e9",
+            opener=not_shared,
+            sleep=lambda s: None,
+        )
+    assert "share the parent page with your integration" in str(
+        raised.value
+    ) and "secret-token" not in str(raised.value)
+    with pytest.raises(pe.NotionError, match="NOTION_TOKEN is not set"):
+        pe.export_to_notion(card, "", "3d537007fa8280f98e4ae65b44fae5e9")
+    with pytest.raises(pe.NotionError, match="could not find a page id"):
+        pe.export_to_notion(card, "secret-token", "https://www.notion.so/acme/No-Id-Here")
+
+
+def test_server_join_dedupes_runs_and_does_not_double_count_child_tokens():
+    rows = [
+        {
+            "id": "a1",
+            "pipeline_run_id": "run-1",
+            "pipeline_name": "cognify_pipeline",
+            "status": "DATASET_PROCESSING_STARTED",
+            "created_at": "2026-09-14T10:00:00",
+            "tokens_in": None,
+            "tokens_out": None,
+        },
+        {
+            "id": "a2",
+            "pipeline_run_id": "run-1",
+            "pipeline_name": "cognify_pipeline",
+            "status": "DATASET_PROCESSING_COMPLETED",
+            "outcome": "succeeded",
+            "created_at": "2026-09-14T10:01:00",
+            "tokens_in": 700,
+            "tokens_out": 99,
+            "parent_operation_id": "op-1",
+        },
+        {
+            "id": "b1",
+            "pipeline_run_id": "op-1",
+            "pipeline_name": None,
+            "operation_name": "improve",
+            "outcome": "succeeded",
+            "created_at": "2026-09-14T10:01:01",
+            "tokens_in": 700,
+            "tokens_out": 99,
+        },
+        {
+            "id": "c1",
+            "pipeline_run_id": "op-2",
+            "pipeline_name": None,
+            "operation_name": "remember",
+            "outcome": "succeeded",
+            "background": True,
+            "created_at": "2026-09-14T10:02:00",
+            "tokens_in": 0,
+            "tokens_out": 0,
+        },
+        {
+            "id": "old",
+            "pipeline_run_id": "op-0",
+            "pipeline_name": None,
+            "operation_name": "recall",
+            "outcome": "succeeded",
+            "created_at": "2026-09-01T10:00:00",
+            "tokens_in": 5,
+            "tokens_out": 5,
+        },
+    ]
+    server = pe.analyze_server(
+        "https://tenant.example",
+        "key",
+        ts(10),
+        None,
+        opener=lambda request, timeout: _Response(json.dumps(rows).encode()),
+    )
+    assert server["available"] and server["runs"] == 3
+    assert server["pipelines"] == {"cognify_pipeline": {"completed": 1}}
+    assert server["operations"] == {
+        "improve": {"succeeded": 1},
+        "remember": {"accepted_in_background": 1},
+    }
+    assert (server["tokens_in"], server["tokens_out"]) == (
+        700,
+        99,
+    )  # the child's tokens are already in its parent
+    assert pe.analyze_server("", "key", None, None)["available"] is False
 
 
 def test_bash_capture_report_counts_all_decisions(env):
@@ -756,20 +967,44 @@ def test_delivery_segments_partition_recalls_and_receipts_are_body_free(env):
     write_jsonl(env.plugin_dir / "recall-audit.log", *rows)
     receipt_dir = env.plugin_dir / "sessions" / SESSION_UUID
     receipt_dir.mkdir(parents=True)
-    (receipt_dir / "injection-receipt.json").write_text(
-        json.dumps(
-            {
-                "recorded_at": iso(ts(10)),
-                "items": [{"reason": "injected", "hash": "a" * 64, "text": SECRET}],
-            }
-        )
+    write_jsonl(
+        receipt_dir / "recall-receipts.jsonl",
+        {
+            "recorded_at": iso(ts(10)),
+            "per_scope": {"graph": {"status": "ok"}, "session_context": {"status": "ok"}},
+            "items": [
+                {"reason": "injected", "hash": "a" * 16, "text": SECRET},
+                {"reason": "over_budget", "hash": "b" * 16},
+                {"reason": "unavailable"},
+            ],
+        },
+        {
+            "recorded_at": iso(ts(10, 12)),
+            "per_scope": {"graph": {"status": "timeout"}, "session_context": {"status": "ok"}},
+            "items": [{"reason": "already_in_context", "hash": "a" * 16}],
+        },
+        # Recorded after the window: never counted in it.
+        {"recorded_at": iso(ts(12)), "items": [{"reason": "injected", "hash": "c" * 16}]},
     )
     card = env.card(ts(10, 0), ts(11, 0))
     assert card["delivery"]["segments"] == dict.fromkeys(pe._DELIVERY_SEGMENTS, 1)
     assert sum(card["delivery"]["segments"].values()) == card["recall"]["recalls"]
     assert card["delivery"]["label"] == "delivery quality"
-    assert card["delivery"]["sessions"][0]["evidence_hashes"] == ["a" * 64]
+    session = card["delivery"]["sessions"][0]
+    assert session["evidence_hashes"] == ["a" * 16]
+    assert session["receipts"] == {
+        "injected": 1,
+        "already_in_context": 1,
+        "over_budget": 1,
+        "unavailable": 1,
+        "recalls": 2,
+        "scope_failures": {"graph": {"timeout": 1}},
+    }
     assert SECRET not in json.dumps(card["delivery"])
+    assert (
+        "receipts: 1 injected, 1 already in context, 1 over budget, 1 unavailable; "
+        "graph timed out on 1 of 2 recalls"
+    ) in pe.render_text(card)
     # A later receipt must not be projected back onto an earlier window.
     old = env.card(ts(9, 0), ts(10, 10))
     assert old["delivery"]["sessions"] == []

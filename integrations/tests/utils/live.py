@@ -320,7 +320,7 @@ def build_live_env(
         # the worker (reap_cloud_worker).
         env.pop("COGNEE_IDLE_DISABLED", None)
     if api_key:
-        env[suite.api_key_env] = api_key
+        env["COGNEE_API_KEY"] = api_key
     if extra:
         env.update(extra)
     return env

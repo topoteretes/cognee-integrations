@@ -2,7 +2,7 @@
 # Cognee forget helper — server access for the cognee-forget skill.
 #
 # Wraps the endpoints used to inspect and delete documents so every request
-# sends each request with the key resolved for it. A hand-written request breaks in local
+# carries resolved credentials. Raw curl with $COGNEE_API_KEY breaks in local
 # mode: the key is auto-minted at bootstrap into ~/.cognee-plugin/api_key.json
 # and is never exported to the user's shell.
 #
@@ -12,24 +12,15 @@
 #   cognee-forget.sh data <dataset_id>               List the data items in a dataset
 #   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
 #   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-#   cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory     Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
-#   cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset  Delete a whole dataset (IRREVERSIBLE)
-#   cognee-forget.sh forget-everything --confirm-delete-all   Delete ALL of the user's data (IRREVERSIBLE)
-#
-# The key never leaves this script: no command prints it, and the skills send
-# no request of their own.
-#
-# Every command takes exactly the arguments shown, and the broad deletions a
-# typed confirmation word, so a mistyped, truncated or overlong command line is
-# refused before anything is sent.
+#   cognee-forget.sh env                             Print eval-able COGNEE_BASE_URL/COGNEE_API_KEY exports
 #
 # Every API command prints the response body followed by a final
-# "HTTP <status>" line — callers must check it (an HTTP error still exits 0,
-# deliberately, so 404 "already deleted" stays inspectable).
+# "HTTP <status>" line — callers must check it (curl without -f exits 0 on
+# HTTP errors, deliberately, so 404 "already deleted" stays inspectable).
 #
 # Configuration:
 #   Resolves auth like cognee-search.sh / cognee-remember.sh:
-#   the plugin option (through the relay) > the cached key of the local server.
+#   shell env > ~/.cognee/.env > cached api_key.json (local auto-minted key).
 #   Exits 2 when no API key resolves: the server enforces auth even on
 #   localhost, so an unauthenticated request can only ever 401.
 
@@ -38,26 +29,65 @@ set -euo pipefail
 PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 
-# A shell has no key (the keys are plugin options, handed to hooks only). When a
-# hook's relay is up it runs this script; exit code 111 means there is none.
-if [ "${COGNEE_RELAYED:-}" != "1" ]; then
-    relay_code=0
-    python3 "${SELF_DIR}/_relay.py" run "$(basename "${BASH_SOURCE[0]:-$0}")" "$@" || relay_code=$?
-    if [ "$relay_code" -ne 111 ]; then exit "$relay_code"; fi
-fi
-
 # `sync` delegates to the plugin's session sync (it resolves its own auth and
 # session id): flushes the live session's cache into dataset documents so
 # content that hasn't been persisted yet becomes findable — and deletable —
 # by the listing steps below. Dispatched before credential resolution.
 if [ "${1:-}" = "sync" ]; then
-    if [ "$#" -ne 1 ]; then echo "Error: sync takes no arguments" >&2; exit 1; fi
     exec python3 "${SELF_DIR}/sync-session-to-graph.py"
 fi
-# The server address, resolved the way the hooks resolve it. The key never
-# enters this script: scripts/_authed_request.py sends each request.
-SERVICE_URL="$(python3 "${SELF_DIR}/_authed_request.py" url 2>/dev/null || true)"
+runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
+import json
+import pathlib
+import sys
+
+plugin_dir = pathlib.Path(sys.argv[1])
+import os
+# One-time config from ~/.cognee/.env (shell exports still win).
+sys.path.insert(0, sys.argv[2])
+try:
+    from _env_file import load_env_file
+    load_env_file()
+except Exception:
+    pass
+service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
+api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
+
+if not api_key:
+    cache_path = plugin_dir.parent / "api_key.json"
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text())
+            if isinstance(cache, dict):
+                key = str(cache.get("api_key") or "").strip()
+                cached_url = str(cache.get("base_url") or "").strip().rstrip("/")
+                if key and (not cached_url or cached_url == service_url.rstrip("/")):
+                    api_key = key
+        except Exception:
+            pass
+
+print(json.dumps({"service_url": service_url, "api_key": api_key}))
+PY
+)"
+
+SERVICE_URL="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print((json.loads(sys.argv[1] or "{}").get("service_url") or "").strip())
+except Exception:
+    pass
+PY
+)"
+API_KEY="$(python3 - <<'PY' "${runtime_json}" 2>/dev/null || true
+import json, sys
+try:
+    print((json.loads(sys.argv[1] or "{}").get("api_key") or "").strip())
+except Exception:
+    pass
+PY
+)"
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
+[ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 SERVICE_URL="${SERVICE_URL%/}"
 
 usage() {
@@ -68,9 +98,7 @@ Usage:
   cognee-forget.sh data <dataset_id>               List the data items in a dataset
   cognee-forget.sh raw <dataset_id> <data_id>      Print a data item's raw stored content
   cognee-forget.sh forget <dataset_id> <data_id>   Delete one data item (IRREVERSIBLE)
-  cognee-forget.sh forget-memory <dataset_id> --confirm-clear-memory     Clear a dataset's graph and vectors, keep its raw data (IRREVERSIBLE)
-  cognee-forget.sh forget-dataset <dataset_id> --confirm-delete-dataset  Delete a whole dataset (IRREVERSIBLE)
-  cognee-forget.sh forget-everything --confirm-delete-all   Delete ALL of the user's data (IRREVERSIBLE)
+  cognee-forget.sh env                             Print eval-able COGNEE_BASE_URL/COGNEE_API_KEY exports
 EOF
 }
 
@@ -85,87 +113,51 @@ validate_uuid() {
     fi
 }
 
-key_code=0
-python3 "${SELF_DIR}/_authed_request.py" has-key || key_code=$?
-# 3: the run was aimed at a server the key is not for; the helper said so.
-if [ "$key_code" -eq 3 ]; then exit 2; fi
-if [ "$key_code" -ne 0 ]; then
-    echo "Error: no API key resolved (checked the plugin option and ${PLUGIN_DIR%/*}/api_key.json)." >&2
-    echo "Cloud mode: set the Cognee API key option of this plugin (/plugin, Cognee Memory, Configure options) and start a session. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
+if [ -z "$API_KEY" ]; then
+    echo "Error: no API key resolved (checked COGNEE_API_KEY, ~/.cognee/.env, ${PLUGIN_DIR%/*}/api_key.json)." >&2
+    echo "Cloud mode: set COGNEE_API_KEY in ~/.cognee/.env. Local mode: the key is minted at session start — start a new session or run cognee-doctor.sh." >&2
     exit 2
 fi
 
 CMD="${1:-}"
-# Refuse any command line that does not have exactly the expected shape.
-expect() {
-    if [ "$1" -ne "$2" ]; then
-        echo "Error: ${CMD} requires exactly: $3" >&2
-        usage
-        exit 1
-    fi
-}
 api_get() {
-    python3 "${SELF_DIR}/_authed_request.py" GET "$1"
-}
-# POST one fixed JSON body to /api/v1/forget. Callers pass a body they built
-# from validated ids or from a literal; nothing free-form reaches it.
-api_forget() {
-    printf '%s' "$1" | python3 "${SELF_DIR}/_authed_request.py" POST "${SERVICE_URL}/api/v1/forget"
+    curl -sS "$1" -H "X-Api-Key: ${API_KEY}" -w '\nHTTP %{http_code}\n'
 }
 
 case "$CMD" in
     datasets)
-        expect "$#" 1 "datasets"
         api_get "${SERVICE_URL}/api/v1/datasets"
         ;;
     data)
-        expect "$#" 2 "data <dataset_id>"
+        [ -n "${2:-}" ] || { echo "Error: data requires <dataset_id>" >&2; usage; exit 1; }
         validate_uuid "$2"
         api_get "${SERVICE_URL}/api/v1/datasets/$2/data"
         ;;
     raw)
-        expect "$#" 3 "raw <dataset_id> <data_id>"
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "Error: raw requires <dataset_id> <data_id>" >&2; usage; exit 1; }
         validate_uuid "$2"
         validate_uuid "$3"
         api_get "${SERVICE_URL}/api/v1/datasets/$2/data/$3/raw"
         ;;
     forget)
-        expect "$#" 3 "forget <dataset_id> <data_id>"
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "Error: forget requires <dataset_id> <data_id>" >&2; usage; exit 1; }
         validate_uuid "$2"
         validate_uuid "$3"
-        # Body built with json.dumps, not string interpolation, from the two
-        # ids as arguments, so they never become part of the Python source.
-        # Belt and braces with validate_uuid above: this helper must only ever
-        # be able to express a single-document delete.
-        payload="$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1], "dataId": sys.argv[2]}))' "$2" "$3")"
-        api_forget "$payload"
+        # Body built with json.dumps, not string interpolation, and the values
+        # passed through the environment so they never touch argv or the
+        # Python source. Belt and braces with validate_uuid above: this helper
+        # must only ever be able to express a single-document delete.
+        payload="$(FORGET_DATASET_ID="$2" FORGET_DATA_ID="$3" python3 -c 'import json, os; print(json.dumps({"datasetId": os.environ["FORGET_DATASET_ID"], "dataId": os.environ["FORGET_DATA_ID"]}))')"
+        curl -sS -X POST "${SERVICE_URL}/api/v1/forget" \
+            -H "Content-Type: application/json" \
+            -H "X-Api-Key: ${API_KEY}" \
+            -d "$payload" \
+            -w '\nHTTP %{http_code}\n'
         ;;
-    forget-memory)
-        # A typed flag, like forget-everything: a mistyped or truncated
-        # single-document command can never clear a whole dataset.
-        if [ "$#" -ne 3 ] || [ "$3" != "--confirm-clear-memory" ]; then
-            echo "Error: forget-memory clears a whole dataset's memory and takes exactly: <dataset_id> --confirm-clear-memory" >&2
-            exit 1
-        fi
-        validate_uuid "$2"
-        api_forget "$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1], "memoryOnly": True}))' "$2")"
-        ;;
-    forget-dataset)
-        if [ "$#" -ne 3 ] || [ "$3" != "--confirm-delete-dataset" ]; then
-            echo "Error: forget-dataset deletes a whole dataset and takes exactly: <dataset_id> --confirm-delete-dataset" >&2
-            exit 1
-        fi
-        validate_uuid "$2"
-        api_forget "$(python3 -c 'import json, sys; print(json.dumps({"datasetId": sys.argv[1]}))' "$2")"
-        ;;
-    forget-everything)
-        # Deletes every dataset the user owns. The flag has to be typed out so
-        # this can never be reached by a mistyped or truncated command.
-        if [ "${2:-}" != "--confirm-delete-all" ] || [ -n "${3:-}" ]; then
-            echo "Error: forget-everything deletes ALL of the user's data and needs exactly: --confirm-delete-all" >&2
-            exit 1
-        fi
-        api_forget '{"everything": true}'
+    env)
+        # For manual/broader calls only (see SKILL.md) — eval in the same shell
+        # as the curl that uses it; exports do not persist across Bash calls.
+        printf 'export COGNEE_BASE_URL=%q\nexport COGNEE_API_KEY=%q\n' "$SERVICE_URL" "$API_KEY"
         ;;
     *)
         echo "Error: unknown command '${CMD}'" >&2

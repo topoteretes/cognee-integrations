@@ -7,12 +7,12 @@ from utils.switch import run_switch
 def test_cached_identity_rejects_new_principal_on_same_server(suite, isolated_modules, monkeypatch):
     pc = isolated_modules(suite, "_plugin_common")
     pc.save_cached_agent_key("https://same.test", "account-a-agent-key", "agent-a")
-    monkeypatch.setenv(suite.api_key_env, "account-b-principal-key")
+    monkeypatch.setenv("COGNEE_API_KEY", "account-b-principal-key")
     # ``auto``: the foreign identity is never used; the plugin runs as the
     # new principal instead.
     assert pc._api_key_with_source("https://same.test") == (
         "account-b-principal-key",
-        suite.api_key_source,
+        "env_api_key",
     )
     # Explicit identity: an error, never a silent switch of accounts.
     monkeypatch.setenv("COGNEE_PLUGIN_IDENTITY", "true")
@@ -161,7 +161,7 @@ def test_endpoint_resolution_preserves_explicit_parent(suite, isolated_modules, 
     pc = isolated_modules(suite, "_plugin_common")
     url = "https://explicit-account.test"
     monkeypatch.setenv("COGNEE_BASE_URL", url)
-    monkeypatch.setenv(suite.api_key_env, "explicit-parent")
+    monkeypatch.setenv("COGNEE_API_KEY", "explicit-parent")
     monkeypatch.delenv("COGNEE_PRINCIPAL_API_KEY", raising=False)
     pc.save_cached_agent_key(url, "agent", "agent-id", principal_key="explicit-parent")
     assert pc.resolved_http_endpoint_auth() == (url, "agent")

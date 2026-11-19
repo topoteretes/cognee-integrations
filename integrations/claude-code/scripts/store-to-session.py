@@ -25,7 +25,6 @@ import urllib.error
 sys.path.insert(0, os.path.dirname(__file__))
 from _cloud_worker import enabled as cloud_enabled
 from _plugin_common import (
-    _api_key,
     append_warmup_entry,
     bump_save_counter,
     bump_turn_counter,
@@ -559,7 +558,7 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
             # next Stop retries once the server is back.
             hook_log("code_reingest_skipped_server", {"base_url": service_url})
             return
-        outcome = reingest_if_changed(cwd, service_url, _api_key())
+        outcome = reingest_if_changed(cwd, service_url, os.environ.get("COGNEE_API_KEY", ""))
         if not outcome:
             return
         if outcome.get("changed") and outcome.get("submitted"):

@@ -60,8 +60,6 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:final_sync_once_released` | `sync.sync_once_released` |
 | `hook:hook_notice_failed` | `notice.failed` |
 | `hook:boot_refused_server_present` | `boot.refused_server_present` |
-| `hook:boot_refused_no_llm` | `boot.refused_no_llm` |
-| `hook:local_boot_skipped_no_llm` | `boot.skipped_no_llm` |
 | `hook:bootstrap_complete` | `bootstrap.complete` |
 | `hook:bootstrap_owns_ready` | `bootstrap.owns_ready` |
 | `hook:bootstrap_registered` | `bootstrap.registered` |
@@ -287,11 +285,6 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:switch_aborted_handle_cleanup_failed` | `switch.aborted_handle_cleanup_failed` |
 | `hook:switch_crashed` | `switch.crashed` |
 | `hook:switch_failed` | `switch.failed` |
-| `hook:mod_pick_applied` | `mod.pick_applied` |
-| `hook:mod_pick_failed` | `mod.pick_failed` |
-| `hook:mod_listing_start_failed` | `mod.listing_start_failed` |
-| `hook:key_options_notice` | `keys.options_notice` |
-| `hook:key_options_notice_failed` | `keys.options_notice_failed` |
 | `hook:switch_old_handle_released` | `switch.old_handle_released` |
 | `hook:switch_sync_forced_past_failure` | `switch.sync_forced_past_failure` |
 | `hook:switch_sync_not_started` | `switch.sync_not_started` |
@@ -422,7 +415,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 
-`recall.injection_receipt_failed`: writing the body-free last-turn injection receipt failed; recall output remains available.
+`recall.injection_receipt_failed`: appending the body-free recall receipt to the session's `recall-receipts.jsonl` failed; recall output remains available. `context_lookup_hit` / `context_lookup_empty` carry the prompt's `receipt_id` (empty when the write failed).
 
 Bash capture decisions contain only host session identity and `captured`,
 `skipped_self` or `skipped_low_signal`. Captured means retained for the write path,
