@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -2268,7 +2268,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.21.2"
+version = "1.30.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2286,9 +2286,9 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/15/bb/147bf5d47b8d6f3fb315204cd2f567b1ad85511acd8d59e85cccf7cce65c/mcp-1.21.2.tar.gz", hash = "sha256:b6497b7f7a77aabe263931a3335956dfd45fe8b1e2168931e455914ba1a7f4c9", size = 470799, upload-time = "2025-11-17T13:56:06.397Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ba/93/0142dc84a666daf8ad51a34268f34c12fd6fda4f3810c4be2504eecc8212/mcp-1.30.0.tar.gz", hash = "sha256:445414625fce5c295faa505bb11bacece661ab6f4028d57c935db57820b7a3e4", size = 680511, upload-time = "2026-09-07T14:34:15.845Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/0f/669ecbe78a0ba192afcc0b026ae62d1005779e91bad27ab9d703401510bf/mcp-1.21.2-py3-none-any.whl", hash = "sha256:59413ef15db757a785e3859548c1a7ffc7be57bf162c3c24afc0e04fd9f4181c", size = 174854, upload-time = "2025-11-17T13:56:04.987Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/f4/e58bc33317c92a0203664daaf00bf6f41166cc0149e5d6870a03f7cd004a/mcp-1.30.0-py3-none-any.whl", hash = "sha256:666edb5009503e1047c9d60346a756f94b261f05cc2625f23d41c728ffc484d0", size = 234581, upload-time = "2026-09-07T14:34:14.266Z" },
 ]
 
 [[package]]
