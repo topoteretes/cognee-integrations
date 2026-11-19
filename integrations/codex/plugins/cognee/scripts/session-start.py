@@ -2502,6 +2502,14 @@ def _apply_recall_mode_notice(output: dict, payload: dict | None = None) -> dict
     return result
 
 
+def _emit_session_start(output: dict) -> None:
+    # Codex accepts systemMessage only at the top level of SessionStart output.
+    specific = output.get("hookSpecificOutput")
+    if isinstance(specific, dict):
+        specific.pop("systemMessage", None)
+    print(json.dumps(output))
+
+
 def main():
     # First run: leave a commented ~/.cognee/.env template so one-time config
     # has a documented file to land in. Values (if any) were already loaded
@@ -2543,7 +2551,7 @@ def main():
             if candidate:
                 set_session_key(candidate)
             output = _coding_session_start({}, payload)
-        print(json.dumps(output))
+        _emit_session_start(output)
         return
 
     # Keep SessionStart output as a valid empty hook result. Recall context is
@@ -2561,7 +2569,7 @@ def main():
         output = _coding_session_start(output, payload)
     else:
         output = _apply_recall_mode_notice(output, payload)
-    print(json.dumps(output))
+    _emit_session_start(output)
 
 
 class _SkipAutoindex(Exception):

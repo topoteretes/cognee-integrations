@@ -24,8 +24,10 @@ Contract:
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import sys
 
 import pytest
 from utils.recall import drive_recall
@@ -795,6 +797,28 @@ def test_resume_shows_the_notice_once(start):
     assert out["hookSpecificOutput"]["additionalContext"] == out["systemMessage"]
     again = start._apply_sync_notice({}, RESUME)
     assert again == {}
+
+
+def test_codex_resume_emits_valid_session_start_output(suite, start, monkeypatch, capsys):
+    if suite.name != "codex":
+        pytest.skip("Codex SessionStart output contract")
+    import _plugin_common
+
+    async def start_without_server(payload):
+        return {}
+
+    _plugin_common.record_improve_success("claude_resumed", "agent_sessions", "final")
+    monkeypatch.setattr(start, "_start", start_without_server)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(RESUME)))
+
+    start.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert "sent to the agent_sessions dataset" in output["systemMessage"]
+    assert output["hookSpecificOutput"] == {
+        "hookEventName": "SessionStart",
+        "additionalContext": output["systemMessage"],
+    }
 
 
 @pytest.mark.parametrize("source", ["compact", "startup", "clear", ""])
