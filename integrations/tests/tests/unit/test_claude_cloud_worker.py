@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import os
 
 import pytest
 
@@ -708,29 +710,105 @@ def test_a_switch_to_a_local_server_still_needs_a_new_session(worker, monkeypatc
     assert worker.read(path)["target"]["base_url"] == "https://cloud.example"
 
 
+def _options(monkeypatch, **options):
+    """Hand this process plugin options, as Claude Code does a hook."""
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+    for name in [n for n in os.environ if n.startswith("CLAUDE_PLUGIN_OPTION_")]:
+        monkeypatch.delenv(name)
+    for name, value in options.items():
+        monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_" + name.upper(), value)
+
+
+def _running(worker, options, principal="k1"):
+    return {"pid": 4242, "principal": principal, "options": options}
+
+
+def test_a_reload_in_a_session_makes_its_options_the_workers(worker, monkeypatch):
+    """Any option, not only the key: the URL option, or a rotated key."""
+    _options(monkeypatch, cognee_api_key="old", cognee_base_url="https://cloud.example")
+    path = _launch(worker)
+    old = worker.options_fingerprint()
+    assert worker.read(path)["options"] == old
+
+    _options(monkeypatch, cognee_api_key="rotated", cognee_base_url="https://cloud.example")
+    worker.rebind_launch()
+
+    new = worker.options_fingerprint()
+    assert worker.read(path)["options"] == new
+    assert worker.read(worker.root() / "options-current.json")["options"] == new
+    assert worker._replacement_reason(_running(worker, old)) == "options_changed"
+    assert worker._replacement_reason(_running(worker, new)) == ""
+
+
+def test_a_session_not_reloaded_never_takes_the_worker_back(worker, monkeypatch):
+    """Its hooks keep the old options; claiming them would make two sessions
+    replace each other's worker on every prompt."""
+    _options(monkeypatch, cognee_api_key="old")
+    _launch(worker)
+    worker.atomic_json(worker.root() / "options-current.json", {"options": "newer"})
+
+    worker.rebind_launch()
+
+    assert worker.read(worker.root() / "options-current.json")["options"] == "newer"
+    # Its hook carries options other than the current ones: no replacement.
+    assert worker._replacement_reason(_running(worker, "newer")) == ""
+
+
+def test_a_worker_from_before_options_were_recorded_is_replaced(worker, monkeypatch):
+    _options(monkeypatch, cognee_api_key="key")
+    _launch(worker)  # a new session claims its options
+    assert worker._replacement_reason({"pid": 4242, "principal": "k1"}) == "options_changed"
+
+
+def test_a_resume_with_the_options_it_recorded_claims_nothing(worker, monkeypatch):
+    _options(monkeypatch, cognee_api_key="old")
+    _launch(worker)
+    worker.atomic_json(worker.root() / "options-current.json", {"options": "newer"})
+
+    _launch(worker)
+
+    assert worker.read(worker.root() / "options-current.json")["options"] == "newer"
+
+
 @pytest.mark.parametrize(
     ("running", "mine", "replaced"),
     [
-        ("keyless", "key", True),  # spawned before the key was set
-        ("key", "other-key", False),  # sessions may hold different keys
+        ("keyless", "key", True),  # started before the key was set
         ("keyless", "keyless", False),  # a keyless hook never replaces
-        (None, "key", False),  # a worker from before the principal was recorded
+        ("key", "other-key", False),  # without a reload, keys are not compared
     ],
 )
-def test_only_a_keyless_worker_is_replaced_by_a_hook_with_a_key(
+def test_a_keyless_worker_is_replaced_by_a_hook_with_a_key(
     worker, monkeypatch, running, mine, replaced
 ):
+    _options(monkeypatch, cognee_api_key=mine)
     principals = {"keyless": worker.KEYLESS_PRINCIPAL, "key": "k1", "other-key": "k2"}
     monkeypatch.setattr(
         worker,
         "target",
         lambda: {"base_url": "https://cloud.example", "principal": principals[mine]},
     )
-    killed = []
-    monkeypatch.setattr(worker.os, "kill", lambda pid, sig: killed.append(pid))
-    record = {"pid": 4242}
-    if running:
-        record["principal"] = principals[running]
+    record = _running(worker, worker.options_fingerprint(), principals[running])
 
-    assert worker._replace_keyless_worker(record) is replaced
-    assert killed == ([4242] if replaced else [])
+    assert (worker._replacement_reason(record) == "keyless") is replaced
+
+
+def test_a_replaced_worker_is_asked_to_stop_and_a_new_one_started(
+    suite, isolated_modules, monkeypatch
+):
+    if suite.name != "claude-code":
+        pytest.skip("Cloud worker")
+    worker = isolated_modules(suite, "_cloud_worker")
+    monkeypatch.delenv("COGNEE_IDLE_DISABLED", raising=False)
+    monkeypatch.setattr(worker, "log", lambda *a, **kw: None)
+    monkeypatch.setattr(worker, "_replacement_reason", lambda running: "options_changed")
+    worker.atomic_json(worker.root() / "cloud-worker-pid.json", {"pid": 4242})
+    proc = importlib.import_module("_proc")
+    monkeypatch.setattr(proc, "pid_alive", lambda pid: True)
+    spawned = []
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+
+    worker.ensure_worker()
+
+    assert worker.read(worker.root() / "cloud-worker-retire.json")["pid"] == 4242
+    assert len(spawned) == 1

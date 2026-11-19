@@ -35,8 +35,11 @@ IDLE_EXIT_SECONDS = 30 * 60
 MAX_IMPROVE_FAILURES = 3
 #: ``target()["principal"]`` of a process with no Cognee API key.
 KEYLESS_PRINCIPAL = hashlib.sha256(b"").hexdigest()
-#: How long a starting worker waits for a replaced one to release the lock.
-WORKER_LOCK_WAIT_SECONDS = 5
+#: How long a starting worker waits for a replaced one to finish its pass and
+#: release the lock. A worker that times out exits; the next hook starts one.
+WORKER_LOCK_WAIT_SECONDS = 120
+#: Environment prefix of the plugin options Claude Code hands each hook.
+OPTION_PREFIX = "CLAUDE_PLUGIN_OPTION_"
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -98,8 +101,12 @@ def ensure_worker() -> None:
     running = read(state / "cloud-worker-pid.json")
     pid = running.get("pid", 0)
     if pid and pid_alive(pid):
-        if not _replace_keyless_worker(running):
+        reason = _replacement_reason(running)
+        if not reason:
             return
+        # Stopped between passes, never mid-request; the new worker waits for it.
+        atomic_json(state / "cloud-worker-retire.json", {"pid": pid, "reason": reason})
+        log("cloud_worker_replaced", pid=pid, reason=reason)
     # The worker owns a lifetime file lock, so simultaneous spawns are harmless.
     from _logfiles import rotate_if_oversized
 
@@ -115,27 +122,50 @@ def ensure_worker() -> None:
         )
 
 
-def _replace_keyless_worker(running: dict) -> bool:
-    """Stop a running worker that has no API key when this process has one.
+def options_fingerprint() -> str:
+    """A hash of the plugin options this process was handed, "" outside a hook.
 
-    The key reaches hooks only as a plugin option in their environment, so a
-    worker spawned before the key was set never learns it, and it serves only
-    sessions whose key matches its own. A keyless worker can deliver nothing,
-    so stopping it loses no work. Returns True when the caller should spawn.
+    Claude Code hands the options (API key, server URL, ...) to each hook as
+    ``CLAUDE_PLUGIN_OPTION_*``; the worker inherits those of the hook that
+    started it and keeps them for its life. Only the hash is ever stored.
     """
-    if running.get("principal") != KEYLESS_PRINCIPAL:
-        return False
-    if target()["principal"] == KEYLESS_PRINCIPAL:
-        return False
-    import signal
+    from _env_file import _in_hook
 
-    try:
-        os.kill(running["pid"], signal.SIGTERM)
-    except OSError as exc:
-        log("cloud_worker_replace_failed", error=str(exc)[:200])
-        return False
-    log("cloud_worker_replaced", pid=running["pid"], reason="keyless")
-    return True
+    if not _in_hook():
+        return ""
+    options = sorted((k, v) for k, v in os.environ.items() if k.startswith(OPTION_PREFIX))
+    return hashlib.sha256(json.dumps(options).encode()).hexdigest()
+
+
+def _claim_current_options(fingerprint: str) -> None:
+    """Record ``fingerprint`` as the options the worker should run with.
+
+    Called only when a session's options change (a reload in that session) or
+    a new session starts, never merely because a hook's options differ from the
+    worker's: a session not reloaded yet keeps handing its hooks the old
+    options, and letting it claim them would replace the worker back and forth.
+    """
+    if fingerprint:
+        atomic_json(root() / "options-current.json", {"options": fingerprint})
+
+
+def _replacement_reason(running: dict) -> str:
+    """Why the running worker should be replaced by one with this hook's options.
+
+    A worker keeps the options of the hook that started it, so after a reload it
+    runs with the old key and server. It is replaced when this hook carries the
+    current options and the worker does not (a worker from before this check
+    recorded none), or when it has no API key and this hook has one.
+    """
+    mine = options_fingerprint()
+    if not mine:
+        return ""
+    current = read(root() / "options-current.json").get("options")
+    if mine == current and running.get("options") != mine:
+        return "options_changed"
+    if running.get("principal") == KEYLESS_PRINCIPAL and target()["principal"] != KEYLESS_PRINCIPAL:
+        return "keyless"
+    return ""
 
 
 def _refresh_console_log() -> None:
@@ -163,11 +193,13 @@ def register_session(bootstrap: dict) -> None:
             previous.get("target") == identity
             and previous.get("session_id") == bootstrap["session_id"]
         )
+        options = options_fingerprint()
         atomic_json(
             path,
             {
                 **bootstrap,
                 "target": identity,
+                "options": options,
                 "activity_at": time.time(),
                 "created_at": time.time(),
                 "registered": bool(
@@ -177,6 +209,10 @@ def register_session(bootstrap: dict) -> None:
                 "attempts": 0,
             },
         )
+    # A new launch loads the options fresh; a resume handing over the options
+    # it already recorded may be a process that has not reloaded them.
+    if previous.get("options") != options:
+        _claim_current_options(options)
     ensure_worker()
     from _session_stats import update
 
@@ -186,13 +222,14 @@ def register_session(bootstrap: dict) -> None:
 def rebind_launch() -> bool:
     """Regenerate this session's launch record when the plugin options changed.
 
-    ``/reload-plugins`` hands hooks the new options (key, server URL) but does
-    not rerun SessionStart, so the record kept the key and server the session
-    started with, and the worker, which skips records whose target differs from
-    its own, never served the session. The record is rebuilt for the current
-    target and its registration reset, so the worker registers it again.
-    A switch to a local server is left to a new session. Returns True when the
-    record was regenerated.
+    ``/reload-plugins`` hands hooks the new options (key, server URL, ...) but
+    does not rerun SessionStart, so the record kept the key and server the
+    session started with, and the worker, which skips records whose target
+    differs from its own, never served the session. The record is rebuilt for
+    the current target with its registration reset, so the worker registers it
+    again; a change of this session's options also makes them the ones the
+    worker runs with (``ensure_worker`` replaces it). A switch to a local server
+    is left to a new session. Returns True when the record was regenerated.
     """
     from _plugin_common import get_session_key, set_launch_base_url
 
@@ -200,28 +237,41 @@ def rebind_launch() -> bool:
     if not key:
         return False
     identity = target()
-    if not enabled(identity):
-        return False
+    options = options_fingerprint()
     path = session_dir(key) / "worker.json"
     with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
         if not acquired:
             return False
         state = read(path)
-        if not state or state.get("target") == identity:
+        if not state:
             return False
-        now = time.time()
-        for stale in ("unregistered", "last_error"):
-            state.pop(stale, None)
-        state.update(
-            base_url=identity["base_url"],
-            target=identity,
-            created_at=now,
-            activity_at=now,
-            registered=False,
-            next_attempt=0,
-            attempts=0,
-        )
+        recorded = state.get("options")
+        # A record from before options were recorded adopts them without a claim.
+        options_changed = bool(options) and recorded is not None and recorded != options
+        retarget = enabled(identity) and state.get("target") != identity
+        if not retarget and recorded == options:
+            return False
+        if options:
+            state["options"] = options
+        if retarget:
+            now = time.time()
+            for stale in ("unregistered", "last_error"):
+                state.pop(stale, None)
+            state.update(
+                base_url=identity["base_url"],
+                target=identity,
+                created_at=now,
+                activity_at=now,
+                registered=False,
+                next_attempt=0,
+                attempts=0,
+            )
         atomic_json(path, state)
+    if options_changed:
+        _claim_current_options(options)
+        log("cloud_options_changed", session=state.get("session_id", ""))
+    if not retarget:
+        return False
     # The launch's server, as base_url_change_notice reads it: the change is
     # applied, so it is not reported as one that needs a new session.
     set_launch_base_url(key, identity["base_url"])
@@ -935,7 +985,11 @@ def run() -> None:
             return
         atomic_json(
             state / "cloud-worker-pid.json",
-            {"pid": os.getpid(), "principal": target()["principal"]},
+            {
+                "pid": os.getpid(),
+                "principal": target()["principal"],
+                "options": options_fingerprint(),
+            },
         )
         from _plugin_common import sweep_stale_state
 
@@ -981,6 +1035,12 @@ def run() -> None:
             )
 
         while True:
+            if read(state / "cloud-worker-retire.json").get("pid") == os.getpid():
+                # A hook with newer options started our replacement; it waits
+                # for this lock. The pid file is already its to write.
+                log("cloud_worker_retired")
+                (state / "cloud-worker-retire.json").unlink(missing_ok=True)
+                return
             if not has_pending_work():
                 # Nothing queued and no session active for IDLE_EXIT_SECONDS.
                 log("cloud_worker_idle_exit")

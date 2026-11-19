@@ -22,18 +22,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   status row stayed on "connecting…" until a new session. The next prompt now
   regenerates the record for the current key and server, and the worker
   registers the session. A switch to a local server still needs a new session.
-- **A cloud worker started without an API key is replaced once a hook has
-  one.** The key reaches the plugin only through the options Claude Code hands
-  each hook, so a worker started by a session that had no key never learned it
-  and served none of the sessions that did. The worker now records its key's
-  hash (never the key) next to its pid; a hook with a key stops a keyless worker
-  and starts one with the key. A keyless worker delivers nothing, so no queued
-  capture is lost.
+- **The cloud worker follows changed plugin options.** The worker runs with the
+  options of the hook that started it, for as long as it lives, so after a
+  reload it kept the old API key or server, or none. A session whose options
+  change (or a new session) now makes its options the current ones, recorded as
+  a hash only; the next hook carrying them asks the worker to stop between
+  passes and starts one with them. A session that has not reloaded keeps its
+  old options and never replaces the worker. A worker with no API key is also
+  replaced by any hook that has one. No queued capture is cut off mid-request.
 
 ### Upgrade note
 
-- A worker started by an earlier version records no key hash and is not
-  replaced; it exits after 30 idle minutes, or stop it once by hand.
+- A worker started by an earlier version records no options and is replaced by
+  the first hook carrying the current ones.
 
 ## [1.8.10]
 

@@ -411,8 +411,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.capture_spooled`: capture spooled.
 - `cloud.cloud_session_retargeted`: the plugin options (Cognee API key or server URL) changed after session start, typically saved and then applied with `/reload-plugins`, which does not rerun SessionStart; the session's launch record was regenerated for the new key and server so the worker registers the session again. A switch to a local server still needs a new session.
 - `cloud.launch_rebind_failed`: regenerating the launch record for changed options failed; the prompt goes on with the old record.
-- `cloud.cloud_worker_replaced`: a hook with an API key found the running worker started without one (spawned before the key was set) and stopped it so a worker with the key starts in its place.
-- `cloud.cloud_worker_replace_failed`: stopping that keyless worker failed; it keeps running.
+- `cloud.cloud_options_changed`: this session's plugin options changed since its last prompt (saved, then applied with `/reload-plugins`); they become the options the cloud worker runs with. Only the options' hash is recorded.
+- `cloud.cloud_worker_replaced`: a hook found the running worker on other options than the current ones (`reason: options_changed`; a worker from an earlier version records none) or without an API key while the hook has one (`reason: keyless`). It asked the worker to stop between passes and started one with its own options, which waits for the old one's lock.
+- `cloud.cloud_worker_retired`: a worker stopped because a replacement with newer options was started.
 - `cloud.cloud_work_expired`: cloud work expired.
 - `cloud.cloud_work_retry`: cloud work retry.
 - `cloud.cloud_capture_delivered`: cloud capture delivered.
