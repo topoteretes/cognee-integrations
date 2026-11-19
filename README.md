@@ -49,6 +49,7 @@ Install these from their public registries — you do **not** need to clone this
 | Google ADK | `cognee-integration-google-adk` | `pip install cognee-integration-google-adk` |
 | Claude Agent SDK | `cognee-integration-claude` | `pip install cognee-integration-claude` |
 | Hermes Agent | `cognee-integration-hermes-agent` | `pip install cognee-integration-hermes-agent` |
+| Browser Use | `cognee-integration-browser-use` | `pip install cognee-integration-browser-use` |
 | OpenClaw | `@cognee/cognee-openclaw` | `npm install @cognee/cognee-openclaw` or install from clawhub.ai|
 | n8n | `n8n-nodes-cognee` | install via n8n community nodes |
 | Dify (Cloud) | `cognee` | install from the Dify marketplace |

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cognee-integration-browser-use"
+version = "0.1.0"
+description = "Cognee memory adapter for Browser Use agents: bounded recall before a run, scoped memory actions during it, and a compact outcome written to a Cognee server afterwards."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Cognee team" }]
+dependencies = [
+    # 0.13.11 is the latest published wheel at pin time; the public surfaces
+    # this adapter composes around (Tools.action, ActionResult, Agent
+    # extend_system_message, run(on_step_start, on_step_end), AgentHistoryList)
+    # were verified against it. The upper bound is a tested range, not a guess.
+    "browser-use>=0.13.11,<0.14",
+    "httpx>=0.27,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/browser-use"
+Repository = "https://github.com/topoteretes/cognee-integrations"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognee_integration_browser_use*"]
+exclude = ["examples*", "tests*", "evals*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
