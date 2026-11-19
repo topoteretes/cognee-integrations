@@ -16,6 +16,8 @@ EVENT_NAMES = {
     "hook:launch_rebind_failed": "cloud.launch_rebind_failed",
     "hook:cloud_worker_replaced": "cloud.cloud_worker_replaced",
     "hook:cloud_options_changed": "cloud.cloud_options_changed",
+    "hook:cloud_options_stale": "cloud.cloud_options_stale",
+    "hook:stale_options_notice_failed": "cloud.stale_options_notice_failed",
     "hook:cloud_worker_retired": "cloud.cloud_worker_retired",
     "hook:cloud_worker_replace_failed": "cloud.cloud_worker_replace_failed",
     "hook:cloud_work_expired": "cloud.cloud_work_expired",

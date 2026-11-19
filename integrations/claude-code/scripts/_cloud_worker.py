@@ -174,17 +174,111 @@ def _options_match_saved() -> bool:
     return True
 
 
-def _claim_current_options(fingerprint: str) -> None:
+def _claim_current_options(fingerprint: str) -> bool:
     """Record ``fingerprint`` as the options the worker should run with.
 
-    Called when a session's options change (a reload in that session), a new
-    session starts, or no options are current, never merely because a hook's
-    options differ from the worker's: a session not reloaded yet keeps handing
-    its hooks the old options, and letting it claim them would replace the
-    worker back and forth. Options that differ from the saved ones never claim.
+    Called when a Claude Code process starts or reloads (``check_process_options``)
+    or no options are current, never merely because a hook's options differ from
+    the worker's: a process not reloaded yet keeps handing its hooks the old
+    options, and letting it claim them would replace the worker back and forth.
+    Options that differ from the saved ones never claim. True when claimed.
     """
-    if fingerprint and _options_match_saved():
-        atomic_json(root() / "options-current.json", {"options": fingerprint})
+    if not fingerprint or not _options_match_saved():
+        return False
+    atomic_json(
+        root() / "options-current.json", {"options": fingerprint, "claimed_at": time.time()}
+    )
+    return True
+
+
+def _host_pid() -> int:
+    """The pid of the Claude Code process this hook runs for, 0 when unknown.
+
+    Claude Code exports it to every hook as ``CLAUDE_PID``.
+    """
+    from _proc import pid_alive
+
+    try:
+        pid = int(str(os.environ.get("CLAUDE_PID", "") or "0").strip() or 0)
+    except ValueError:
+        return 0
+    return pid if pid > 1 and pid_alive(pid) else 0
+
+
+def _seen_dir() -> Path:
+    return root() / "options-seen"
+
+
+def _forget_dead_processes() -> None:
+    from _proc import pid_alive
+
+    for path in _seen_dir().glob("*.json"):
+        try:
+            if not pid_alive(int(path.stem)):
+                path.unlink(missing_ok=True)
+        except (ValueError, OSError):
+            continue
+
+
+def check_process_options() -> str:
+    """Claim this hook's options when its Claude Code process just loaded them.
+
+    A process hands its hooks the options it loaded at start or at its last
+    ``/reload-plugins``; ``/clear``, ``/compact`` and an in-process resume keep
+    them. So freshness is decided per process, by the hash of the options its
+    hooks last carried (``options-seen/<CLAUDE_PID>.json``, never a value): no
+    record means a new process, a different hash a reload, and either claims.
+    The same hash claims nothing, whatever the session. Returns "claimed",
+    "stale" (another process claimed newer options, or this one's differ from
+    the saved ones: it needs ``/reload-plugins``), or "".
+    """
+    mine = options_fingerprint()
+    pid = _host_pid()
+    if not mine or not pid:
+        return ""
+    path = _seen_dir() / f"{pid}.json"
+    seen = read(path)
+    if seen.get("options") != mine:
+        if not seen:
+            _forget_dead_processes()
+        atomic_json(path, {"options": mine, "seen_at": time.time()})
+        if _claim_current_options(mine):
+            return "claimed"
+        seen = read(path)
+    current = read(root() / "options-current.json")
+    if not current.get("options") or current["options"] == mine:
+        return ""
+    newer = float(current.get("claimed_at") or 0) > float(seen.get("seen_at") or 0)
+    return "stale" if newer or not _options_match_saved() else ""
+
+
+def stale_options_notice() -> str:
+    """A one-time notice for a session whose process has stale plugin options.
+
+    Hooks cannot load new options; only ``/reload-plugins`` or a restart hands
+    them over. Shown once per current options, per session.
+    """
+    from _plugin_common import get_session_key
+
+    key = get_session_key()
+    if not key or check_process_options() != "stale":
+        return ""
+    current = read(root() / "options-current.json").get("options")
+    path = session_dir(key) / "worker.json"
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        if not acquired:
+            return ""
+        state = read(path)
+        if not state or state.get("stale_options_notice") == current:
+            return ""
+        state["stale_options_notice"] = current
+        atomic_json(path, state)
+    log("cloud_options_stale", session=state.get("session_id", ""))
+    return (
+        "Cognee plugin settings were changed in another Claude Code window. "
+        "Run /reload-plugins here to apply them; this session keeps its old "
+        "settings until then."
+    )
 
 
 def _replacement_reason(running: dict) -> str:
@@ -193,7 +287,9 @@ def _replacement_reason(running: dict) -> str:
     A worker keeps the options of the hook that started it, so after a reload it
     runs with the old key and server. It is replaced when this hook carries the
     current options and the worker does not (a worker from before this check
-    recorded none), or when it has no API key and this hook has one.
+    recorded none), or when it has no API key and this hook, carrying the
+    current options, has one. A hook with stale options replaces nothing, or a
+    keyless current process and a keyed stale one would take turns.
     """
     mine = options_fingerprint()
     if not mine:
@@ -202,7 +298,9 @@ def _replacement_reason(running: dict) -> str:
     if not current:
         _claim_current_options(mine)
         current = read(root() / "options-current.json").get("options")
-    if mine == current and running.get("options") != mine:
+    if mine != current:
+        return ""
+    if running.get("options") != mine:
         return "options_changed"
     if running.get("principal") == KEYLESS_PRINCIPAL and target()["principal"] != KEYLESS_PRINCIPAL:
         return "keyless"
@@ -258,13 +356,11 @@ def register_session(bootstrap: dict) -> None:
             previous.get("target") == identity
             and previous.get("session_id") == bootstrap["session_id"]
         )
-        options = options_fingerprint()
         atomic_json(
             path,
             {
                 **bootstrap,
                 "target": identity,
-                "options": options,
                 "activity_at": time.time(),
                 "created_at": time.time(),
                 "registered": bool(
@@ -274,10 +370,9 @@ def register_session(bootstrap: dict) -> None:
                 "attempts": 0,
             },
         )
-    # A new launch loads the options fresh; a resume handing over the options
-    # it already recorded may be a process that has not reloaded them.
-    if previous.get("options") != options:
-        _claim_current_options(options)
+    # A new process loaded the options fresh; /clear or a resume in a running
+    # one hands over the options it already had, which may be stale.
+    check_process_options()
     ensure_worker()
     from _session_stats import update
 
@@ -292,51 +387,41 @@ def rebind_launch() -> bool:
     session started with, and the worker, which skips records whose target
     differs from its own, never served the session. The record is rebuilt for
     the current target with its registration reset, so the worker registers it
-    again; a change of this session's options also makes them the ones the
-    worker runs with (``ensure_worker`` replaces it). A switch to a local server
-    is left to a new session. Returns True when the record was regenerated.
+    again; a reload in this process also makes its options the ones the worker
+    runs with (``check_process_options``; ``ensure_worker`` replaces it). A
+    switch to a local server is left to a new session. Returns True when the
+    record was regenerated.
     """
     from _plugin_common import get_session_key, set_launch_base_url
 
     key = get_session_key()
     if not key:
         return False
-    identity = target()
-    options = options_fingerprint()
     path = session_dir(key) / "worker.json"
+    if not path.exists():
+        return False
+    if check_process_options() == "claimed":
+        log("cloud_options_changed", session=read(path).get("session_id", ""))
+    identity = target()
     with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
         if not acquired:
             return False
         state = read(path)
-        if not state:
+        if not state or not enabled(identity) or state.get("target") == identity:
             return False
-        recorded = state.get("options")
-        # A record from before options were recorded adopts them without a claim.
-        options_changed = bool(options) and recorded is not None and recorded != options
-        retarget = enabled(identity) and state.get("target") != identity
-        if not retarget and recorded == options:
-            return False
-        if options:
-            state["options"] = options
-        if retarget:
-            now = time.time()
-            for stale in ("unregistered", "last_error"):
-                state.pop(stale, None)
-            state.update(
-                base_url=identity["base_url"],
-                target=identity,
-                created_at=now,
-                activity_at=now,
-                registered=False,
-                next_attempt=0,
-                attempts=0,
-            )
+        now = time.time()
+        for stale in ("unregistered", "last_error"):
+            state.pop(stale, None)
+        state.update(
+            base_url=identity["base_url"],
+            target=identity,
+            created_at=now,
+            activity_at=now,
+            registered=False,
+            next_attempt=0,
+            attempts=0,
+        )
         atomic_json(path, state)
-    if options_changed:
-        _claim_current_options(options)
-        log("cloud_options_changed", session=state.get("session_id", ""))
-    if not retarget:
-        return False
     # The launch's server, as base_url_change_notice reads it: the change is
     # applied, so it is not reported as one that needs a new session.
     set_launch_base_url(key, identity["base_url"])

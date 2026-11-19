@@ -710,9 +710,11 @@ def test_a_switch_to_a_local_server_still_needs_a_new_session(worker, monkeypatc
     assert worker.read(path)["target"]["base_url"] == "https://cloud.example"
 
 
-def _options(monkeypatch, **options):
-    """Hand this process plugin options, as Claude Code does a hook."""
+def _options(monkeypatch, host_pid=None, **options):
+    """Hand this process plugin options, as Claude Code does a hook, from the
+    Claude Code process ``host_pid`` (a live pid; this test process by default)."""
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+    monkeypatch.setenv("CLAUDE_PID", str(host_pid or os.getpid()))
     for name in [n for n in os.environ if n.startswith("CLAUDE_PLUGIN_OPTION_")]:
         monkeypatch.delenv(name)
     for name, value in options.items():
@@ -726,15 +728,13 @@ def _running(worker, options, principal="k1"):
 def test_a_reload_in_a_session_makes_its_options_the_workers(worker, monkeypatch):
     """Any option, not only the key: the URL option, or a rotated key."""
     _options(monkeypatch, cognee_api_key="old", cognee_base_url="https://cloud.example")
-    path = _launch(worker)
+    _launch(worker)
     old = worker.options_fingerprint()
-    assert worker.read(path)["options"] == old
 
     _options(monkeypatch, cognee_api_key="rotated", cognee_base_url="https://cloud.example")
     worker.rebind_launch()
 
     new = worker.options_fingerprint()
-    assert worker.read(path)["options"] == new
     assert worker.read(worker.root() / "options-current.json")["options"] == new
     assert worker._replacement_reason(_running(worker, old)) == "options_changed"
     assert worker._replacement_reason(_running(worker, new)) == ""
@@ -870,3 +870,123 @@ def test_with_no_current_options_a_hook_claims_its_own(worker, monkeypatch):
     assert worker.read(worker.root() / "options-current.json")["options"] == (
         worker.options_fingerprint()
     )
+
+
+def _start(worker, key):
+    """A SessionStart for session ``key`` (a launch, a resume or a /clear)."""
+    worker.register_session(
+        {
+            "cwd": "/repo",
+            "session_id": "claude_" + key,
+            "session_key": key,
+            "dataset": "ds",
+            "agent_session_name": "conn_" + key,
+            "base_url": "https://cloud.example",
+        }
+    )
+
+
+def _current(worker):
+    return worker.read(worker.root() / "options-current.json").get("options")
+
+
+def test_clear_keeps_the_options_its_process_had_and_claims_nothing(worker, monkeypatch):
+    """/clear mints a new session id in a process that has not reloaded: its
+    options may be stale, so a new session key alone must not claim them."""
+    window_a, window_b = os.getpid(), os.getppid()
+    _options(monkeypatch, host_pid=window_b)
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "https://cloud.example")
+    _start(worker, "host-b")
+    stale = worker.options_fingerprint()
+
+    # Window A reloads with a key: its process hands over new options.
+    _options(monkeypatch, host_pid=window_a, cognee_api_key="key")
+    _start(worker, "host-a")
+    keyed = worker.options_fingerprint()
+    assert _current(worker) == keyed
+
+    # Window B runs /clear: a new session, the same process and options.
+    _options(monkeypatch, host_pid=window_b)
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_BASE_URL", "https://cloud.example")
+    _start(worker, "host-b-cleared")
+
+    assert worker.options_fingerprint() == stale
+    assert _current(worker) == keyed
+    assert worker.check_process_options() == "stale"
+
+
+def test_a_keyless_stale_window_and_a_keyed_current_one_do_not_take_turns(worker, monkeypatch):
+    window_a, window_b = os.getpid(), os.getppid()
+    keyed_target = {"base_url": "https://cloud.example", "principal": "k1"}
+    keyless_target = {"base_url": "https://cloud.example", "principal": worker.KEYLESS_PRINCIPAL}
+
+    def window(pid, **options):
+        _options(monkeypatch, host_pid=pid, **options)
+        monkeypatch.setattr(worker, "target", lambda: keyed_target if options else keyless_target)
+
+    window(window_b, cognee_base_url="https://cloud.example")
+    _start(worker, "host-b")
+    keyless = worker.options_fingerprint()
+    window(window_a, cognee_api_key="key", cognee_base_url="https://cloud.example")
+    _start(worker, "host-a")
+    keyed = worker.options_fingerprint()
+
+    running = _running(worker, keyed, "k1")
+    for _ in range(3):
+        window(window_b, cognee_base_url="https://cloud.example")
+        monkeypatch.setattr(worker, "target", lambda: keyless_target)
+        _start(worker, "host-b-cleared")  # /clear in the stale window
+        assert worker._replacement_reason(running) == ""
+        window(window_a, cognee_api_key="key", cognee_base_url="https://cloud.example")
+        assert worker._replacement_reason(running) == ""
+    # A keyless worker on stale options is replaced by the current window only.
+    old_worker = _running(worker, keyless, worker.KEYLESS_PRINCIPAL)
+    assert worker._replacement_reason(old_worker) == "options_changed"
+    window(window_b, cognee_base_url="https://cloud.example")
+    assert worker._replacement_reason(_running(worker, keyed, "k1")) == ""
+
+
+def test_a_reload_in_the_same_process_claims(worker, monkeypatch):
+    _options(monkeypatch, cognee_api_key="old")
+    _launch(worker)
+    worker.atomic_json(
+        worker.root() / "options-current.json", {"options": "other", "claimed_at": 0}
+    )
+
+    _options(monkeypatch, cognee_api_key="new")
+    assert worker.check_process_options() == "claimed"
+    assert _current(worker) == worker.options_fingerprint()
+
+
+def test_a_new_process_claims_its_options(worker, monkeypatch):
+    _options(monkeypatch, host_pid=os.getppid(), cognee_api_key="old")
+    _launch(worker)
+    _options(monkeypatch, host_pid=os.getpid(), cognee_api_key="new")
+
+    assert worker.check_process_options() == "claimed"
+    assert _current(worker) == worker.options_fingerprint()
+
+
+def test_without_a_host_pid_nothing_is_claimed(worker, monkeypatch):
+    _options(monkeypatch, cognee_api_key="key")
+    monkeypatch.delenv("CLAUDE_PID")
+    worker.atomic_json(worker.root() / "options-current.json", {"options": "other"})
+
+    assert worker.check_process_options() == ""
+    assert _current(worker) == "other"
+
+
+def test_a_stale_window_is_told_once_to_reload(worker, monkeypatch):
+    _options(monkeypatch, host_pid=os.getppid(), cognee_api_key="old")
+    _launch(worker)
+    _options(monkeypatch, host_pid=os.getpid(), cognee_api_key="new")
+    worker.check_process_options()  # another window reloads
+
+    _options(monkeypatch, host_pid=os.getppid(), cognee_api_key="old")
+    notice = worker.stale_options_notice()
+    assert "/reload-plugins" in notice
+    assert worker.stale_options_notice() == ""
+
+    # After its own reload the window is current again: no notice.
+    _options(monkeypatch, host_pid=os.getppid(), cognee_api_key="new")
+    assert worker.stale_options_notice() == ""

@@ -24,12 +24,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   registers the session. A switch to a local server still needs a new session.
 - **The cloud worker follows changed plugin options.** The worker runs with the
   options of the hook that started it, for as long as it lives, so after a
-  reload it kept the old API key or server, or none. A session whose options
-  change (or a new session) now makes its options the current ones, recorded as
-  a hash only; the next hook carrying them asks the worker to stop between
-  passes and starts one with them. A session that has not reloaded keeps its
-  old options and never replaces the worker. A worker with no API key is also
-  replaced by any hook that has one. No queued capture is cut off mid-request.
+  reload it kept the old API key or server, or none. A Claude Code window that
+  starts, or reloads with changed options, now makes its options the current
+  ones, recorded as a hash only; the next hook carrying them asks the worker to
+  stop between passes and starts one with them. This is decided per window, not
+  per session: `/clear` or `/compact` in a window that has not reloaded keeps
+  its old options and never takes the worker back. A worker with no API key is
+  also replaced by a hook that has one and carries the current options. No
+  queued capture is cut off mid-request.
+- **A window with outdated plugin options is told to reload.** When another
+  window applied newer options, the next prompt here shows a one-time notice to
+  run `/reload-plugins`; until then this window leaves the worker alone.
 
 ### Upgrade note
 

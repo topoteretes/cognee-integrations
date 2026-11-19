@@ -1344,6 +1344,15 @@ def main():
         hook_log("launch_rebind_failed", {"error": str(exc)[:200]})
     notice_output = with_base_url_notice(None, "UserPromptSubmit") or {}
     notice = str(notice_output.get("hookSpecificOutput", {}).get("additionalContext") or "")
+    try:
+        from _cloud_worker import stale_options_notice
+
+        stale = stale_options_notice()
+    except Exception as exc:
+        stale = ""
+        hook_log("stale_options_notice_failed", {"error": str(exc)[:200]})
+    if stale:
+        notice = stale + ("\n" + notice if notice else "")
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
