@@ -112,7 +112,6 @@ def test_auto_does_not_apply(pc, sent, monkeypatch, kwargs, read_set, expected):
 
 def test_an_env_dataset_of_auto_means_the_default_dataset(pc, monkeypatch):
     monkeypatch.delenv("COGNEE_SESSION_KEY", raising=False)
-    monkeypatch.delenv("COGNEE_SESSION_REF", raising=False)
     monkeypatch.setenv("COGNEE_PLUGIN_DATASET", " AUTO ")
     assert pc.resolve_active_dataset("") == "agent_sessions"
     assert pc.configured_dataset_name(" AUTO ") == "agent_sessions"
@@ -134,7 +133,6 @@ def test_an_env_dataset_of_auto_never_reaches_the_launch_record(
     assert cfg["dataset"] == "agent_sessions"
     pc.ensure_launch_record("host-auto", "/w", dataset=cfg["dataset"])
     monkeypatch.setenv("COGNEE_SESSION_KEY", "host-auto")
-    monkeypatch.setenv("COGNEE_SESSION_REF", "host-auto")
     assert pc.resolve_active_dataset("host-auto") == "agent_sessions"
     assert config.get_dataset(cfg) == "agent_sessions"
 
@@ -180,7 +178,6 @@ def test_the_shell_skills_follow_the_configured_mode_without_a_launch(
     # COGNEE_PLUGIN_RECALL_MODE instead of falling back to a pinned search.
     for var in (
         "COGNEE_SESSION_KEY",
-        "COGNEE_SESSION_REF",
         "CLAUDE_CODE_SESSION_ID",
         "CODEX_SESSION_ID",
         "CODEX_THREAD_ID",

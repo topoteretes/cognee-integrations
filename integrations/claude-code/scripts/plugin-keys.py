@@ -16,9 +16,8 @@ key this machine holds is marked — revoke it only on purpose (``--force``):
 the next session start then provisions a new one.
 
 Authenticates as the user principal (the plugin's agent cannot manage its own
-keys): the Cognee API key option, which this script has when it runs through
-the relay a hook started, else the key cached for the plugin's own local server
-(``~/.cognee-plugin/api_key.json``).
+keys): COGNEE_PRINCIPAL_API_KEY, else COGNEE_API_KEY unless that is the cached
+agent key, else the cached principal key (``~/.cognee-plugin/api_key.json``).
 
 Exit codes:
     0  done                         3  no such key (already revoked, or another plugin's)
@@ -47,7 +46,7 @@ from _plugin_common import (  # noqa: E402
     _row_str,
     clear_cached_agent_key,
     load_cached_agent_key,
-    principal_key_for_control_plane,
+    load_cached_api_key,
 )
 
 #: Plugins whose agents are listed under ``--all`` when the server's own
@@ -56,7 +55,13 @@ FALLBACK_PLUGIN_KEYS = ("claude-code", "codex", "opencode", "openclaw", "mcp", "
 
 
 def principal_key(service_url: str) -> str:
-    return principal_key_for_control_plane(service_url)
+    env_principal = str(os.environ.get("COGNEE_PRINCIPAL_API_KEY") or "").strip()
+    if env_principal:
+        return env_principal
+    env_key = str(os.environ.get("COGNEE_API_KEY") or "").strip()
+    if env_key and env_key != load_cached_agent_key(service_url):
+        return env_key
+    return load_cached_api_key(service_url)
 
 
 def this_machine_key_id(service_url: str) -> str:
@@ -248,8 +253,8 @@ def main(argv: list[str] | None = None) -> int:
             args,
             2,
             "no_principal_key",
-            "No user API key resolved. Set the Cognee API key option of this plugin "
-            "(/plugin, Cognee Memory, Configure options) and start a session first.",
+            "No principal API key resolved (COGNEE_PRINCIPAL_API_KEY, COGNEE_API_KEY, "
+            "~/.cognee-plugin/api_key.json). Start a session first, or set COGNEE_API_KEY.",
         )
     try:
         if args.command == "list":
@@ -262,8 +267,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    from _relay import hand_over
-
-    # A shell has no key: when a hook's relay is up, it runs this script.
-    hand_over(__file__)
     sys.exit(main())

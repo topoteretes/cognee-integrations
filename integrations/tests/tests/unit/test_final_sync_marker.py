@@ -30,7 +30,6 @@ def sync(suite, hook_module, monkeypatch):
         pytest.skip(f"{suite.name}: no detached final sync")
     module = hook_module(suite, "sync-session-to-graph.py")
     monkeypatch.setenv("COGNEE_SESSION_KEY", SESSION_KEY)
-    monkeypatch.setenv("COGNEE_SESSION_REF", SESSION_KEY)
     monkeypatch.setattr(
         module, "_load_resolved", lambda: (SESSION_ID, "", "", "", False, True, SESSION_KEY)
     )
@@ -112,7 +111,6 @@ def test_distinct_sessions_never_share_a_marker(sync, monkeypatch):
     _store(3)
     assert sync._claim_final_sync_once() is True
     monkeypatch.setenv("COGNEE_SESSION_KEY", "another-session")
-    monkeypatch.setenv("COGNEE_SESSION_REF", "another-session")
     monkeypatch.setattr(sync, "_load_resolved", lambda: ("claude_another-session",) + ("",) * 6)
     assert sync._claim_final_sync_once() is True
 
@@ -137,7 +135,6 @@ def test_one_session_cannot_reset_another(sync, monkeypatch):
 
     _store(3)
     monkeypatch.setenv("COGNEE_SESSION_KEY", "another-session")
-    monkeypatch.setenv("COGNEE_SESSION_REF", "another-session")
     _plugin_common.bump_save_counter("claude_another-session", "answer")
     assert _plugin_common.read_stored_seq(SESSION_KEY) == 3
     assert _plugin_common.read_stored_seq("another-session") == 1

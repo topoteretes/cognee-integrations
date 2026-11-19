@@ -17,24 +17,22 @@ from pathlib import PurePosixPath
 
 _FALSE = {"0", "false", "no", "off"}
 _PATH_KEYS = {"file_path", "filepath", "path", "paths", "notebook_path", "filename", "move_path"}
-_DENY_PATHS_FILE = "capture_deny_paths.txt"
-
-
-def _load_deny_paths() -> tuple:
-    """The file patterns never captured, one per line in the data file beside
-    this module. If the file cannot be read, every path is refused: losing the
-    list must not turn the protection off."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _DENY_PATHS_FILE)
-    try:
-        with open(path, encoding="utf-8") as stream:
-            lines = [line.strip() for line in stream]
-    except OSError:
-        return ("*",)
-    found = tuple(line for line in lines if line and not line.startswith("#"))
-    return found or ("*",)
-
-
-_DENY_PATHS = _load_deny_paths()
+_DENY_PATHS = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    ".npmrc",
+    ".netrc",
+    "*/.aws/credentials",
+    "*/.ssh/*",
+    "*.p12",
+    "*.pfx",
+    "secrets.*",
+    "credentials.*",
+)
 # The last word of a secret-bearing name. ``secret`` may carry a ``_key`` /
 # ``_access_key`` suffix (``SECRET_KEY``, ``aws_secret_access_key``), and the
 # AWS / npm names a plain suffix test misses are spelled out: ``access_key_id``,
@@ -81,8 +79,8 @@ def capture_enabled() -> bool:
     return os.environ.get("COGNEE_CAPTURE", "true").strip().lower() not in _FALSE
 
 
-def _list_env(raw: str, name: str, *, separator: str = ",") -> list[str]:
-    raw = str(raw or "").strip()
+def _list_env(name: str, *, separator: str = ",") -> list[str]:
+    raw = os.environ.get(name, "").strip()
     if not raw:
         return []
     if raw.startswith("["):
@@ -119,12 +117,7 @@ def _sensitive_path(value) -> bool:
     return any(
         _glob_match(name, pattern.lower())
         or _glob_match("/" + normalized.lstrip("/"), pattern.lower())
-        for pattern in (
-            *_DENY_PATHS,
-            *_list_env(
-                os.environ.get("COGNEE_CAPTURE_DENY_PATHS", ""), "COGNEE_CAPTURE_DENY_PATHS"
-            ),
-        )
+        for pattern in (*_DENY_PATHS, *_list_env("COGNEE_CAPTURE_DENY_PATHS"))
     )
 
 
@@ -151,11 +144,10 @@ def _shell_words(command: str) -> list[str]:
 def _command_reads_secret(params) -> bool:
     """Whether a shell command names a deny-listed path as one of its words.
 
-    A word-level check, not a shell interpreter. A command that names a
-    deny-listed file as one of its words is caught: printing a cloud provider's
-    credentials file, paging a private SSH key, sourcing a local env file. A
-    path built at run time (from a variable, or with a wildcard) is not caught,
-    and neither is a file read by a program without naming it.
+    A word-level check, not a shell interpreter: ``cat ~/.aws/credentials``,
+    ``less "$HOME/.ssh/id_rsa"`` and ``source .env.local`` are caught, but a
+    path built at run time (``cat $AWS_DIR/credentials``, ``cat ~/.aws/cred*``)
+    is not, and neither is a file read by a program without naming it.
     """
     command = params.get("command") if isinstance(params, dict) else None
     if not isinstance(command, str):
@@ -190,10 +182,10 @@ def _parse_pattern(pattern: str) -> tuple[str, str | None]:
     return match.group("tool"), prefix
 
 
-def _tool_patterns(raw: str, env_name: str, default: list[str]) -> list[tuple[str, str | None]]:
+def _tool_patterns(env_name: str, default: list[str]) -> list[tuple[str, str | None]]:
     """Parse every entry up front so a bad one fails whether or not it is reached."""
     try:
-        entries = _list_env(raw, env_name, separator="|") or default
+        entries = _list_env(env_name, separator="|") or default
     except ValueError as exc:  # a JSON array that does not parse, or holds non-strings
         raise CapturePatternError(f"{env_name} is not a valid JSON array: {exc}") from exc
     try:
@@ -210,10 +202,9 @@ def _matches(tool: str, prefix: str | None, name: str, params) -> bool:
     command = params.get("command") if isinstance(params, dict) else None
     if not isinstance(command, str):
         return False
-    # The prefix has to end on a word boundary: a rule for one program keeps that
-    # program's commands and drops those of another whose name merely starts the
-    # same. A compound command is matched on its first word only; this is a
-    # prefix test, not a shell parser.
+    # The prefix has to end on a word boundary: ``Bash(git:*)`` keeps ``git status``
+    # and drops ``gitx weird``. Compound commands (``cd x && git status``) are
+    # matched on their first word only; this is a prefix test, not a shell parser.
     command = command.lstrip()
     if not command.startswith(prefix):
         return False
@@ -228,12 +219,8 @@ def allow_tool(name: str, params) -> bool:
     """
     if not capture_enabled():
         return False
-    allowed = _tool_patterns(
-        os.environ.get("COGNEE_CAPTURE_TOOLS", ""), "COGNEE_CAPTURE_TOOLS", ["*"]
-    )
-    denied = _tool_patterns(
-        os.environ.get("COGNEE_CAPTURE_DENY_TOOLS", ""), "COGNEE_CAPTURE_DENY_TOOLS", []
-    )
+    allowed = _tool_patterns("COGNEE_CAPTURE_TOOLS", ["*"])
+    denied = _tool_patterns("COGNEE_CAPTURE_DENY_TOOLS", [])
     if not any(_matches(tool, prefix, name, params) for tool, prefix in allowed):
         return False
     if any(_matches(tool, prefix, name, params) for tool, prefix in denied):
@@ -248,10 +235,8 @@ def capture_pattern_error() -> str:
     report a problem that only surfaces inside the silent PostToolUse path.
     """
     try:
-        _tool_patterns(os.environ.get("COGNEE_CAPTURE_TOOLS", ""), "COGNEE_CAPTURE_TOOLS", ["*"])
-        _tool_patterns(
-            os.environ.get("COGNEE_CAPTURE_DENY_TOOLS", ""), "COGNEE_CAPTURE_DENY_TOOLS", []
-        )
+        _tool_patterns("COGNEE_CAPTURE_TOOLS", ["*"])
+        _tool_patterns("COGNEE_CAPTURE_DENY_TOOLS", [])
     except CapturePatternError as exc:
         return str(exc)
     return ""
@@ -267,11 +252,7 @@ def redact(value):
         # User-supplied regexes are JSON strings; commas are valid regex syntax.
         raw = os.environ.get("COGNEE_CAPTURE_REDACT_PATTERNS", "").strip()
         if raw:
-            patterns = _list_env(
-                os.environ.get("COGNEE_CAPTURE_REDACT_PATTERNS", ""),
-                "COGNEE_CAPTURE_REDACT_PATTERNS",
-                separator="\n",
-            )
+            patterns = _list_env("COGNEE_CAPTURE_REDACT_PATTERNS", separator="\n")
             for pattern in patterns:
                 value = re.sub(pattern, "[redacted:custom]", value)
         return value

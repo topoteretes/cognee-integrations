@@ -64,11 +64,19 @@ def _semver_gt(a: str, b: str) -> bool:
 
 
 def _installed_plugin_version() -> str:
-    try:
-        from _version import PLUGIN_VERSION
-    except Exception:
-        return ""
-    return str(PLUGIN_VERSION or "").strip()
+    candidates = []
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if root:
+        candidates.append(Path(root) / ".claude-plugin" / "plugin.json")
+    candidates.append(Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json")
+    for path in candidates:
+        try:
+            version = str(json.loads(path.read_text(encoding="utf-8")).get("version") or "").strip()
+            if version:
+                return version
+        except Exception:
+            continue
+    return ""
 
 
 def _recorded_install_version() -> str:
@@ -197,9 +205,7 @@ def maybe_check_for_update() -> None:
         if not _update_check_enabled():
             return
         marker = _pc._load_json_file(_UPDATE_CHECK_FILE)
-        interval = _pc._float_env(
-            os.environ.get("COGNEE_UPDATE_CHECK_INTERVAL", ""), _UPDATE_CHECK_INTERVAL_DEFAULT
-        )
+        interval = _pc._float_env("COGNEE_UPDATE_CHECK_INTERVAL", _UPDATE_CHECK_INTERVAL_DEFAULT)
         now = datetime.now(timezone.utc).timestamp()
         if now - float(marker.get("last_checked_at", 0) or 0) < interval:
             return  # checked recently
@@ -273,7 +279,7 @@ def read_update_status() -> dict:
     ):
         return {}
     # An undeterminable running version falls back to trusting the marker, so a
-    # missing version constant degrades to the previous behaviour.
+    # missing/unreadable plugin.json degrades to the previous behaviour.
     running = _pc._installed_plugin_version()
     if running and running != marker.get("installed_version"):
         return {}

@@ -21,7 +21,7 @@ def keys(suite, hook_module, isolated_modules, mock_server, monkeypatch):
     """The script's module, pointed at the mock server as the principal."""
     module = hook_module(suite, "plugin-keys.py")
     monkeypatch.setenv("COGNEE_BASE_URL", mock_server.url)
-    monkeypatch.setenv(suite.api_key_env, PRINCIPAL_KEY)
+    monkeypatch.setenv("COGNEE_API_KEY", PRINCIPAL_KEY)
     return module
 
 
@@ -153,12 +153,9 @@ def test_authenticates_as_the_principal_even_when_the_env_key_is_the_agents(
         principal_key=PRINCIPAL_KEY,
         key_id=mine["key_id"],
     )
-    # The user's key is cached (claude-code never caches the one in its option,
-    # so the option is emptied first), and the AGENT key is what the process
-    # was handed: the listing must not use it.
-    monkeypatch.delenv(suite.api_key_env, raising=False)
     pc.save_cached_api_key(mock_server.url, PRINCIPAL_KEY)
-    monkeypatch.setenv(suite.api_key_env, mine["api_key"])
+    # Inside a session the hooks export the AGENT key; the listing must not use it.
+    monkeypatch.setenv("COGNEE_API_KEY", mine["api_key"])
     assert keys.main(["list", "--json"]) == 0
     entry = mock_server.assert_called("GET", f"/api/v1/integrations/plugins/{suite.name}/keys")
     assert entry["headers"].get("X-Api-Key") == PRINCIPAL_KEY
@@ -166,6 +163,6 @@ def test_authenticates_as_the_principal_even_when_the_env_key_is_the_agents(
 
 
 def test_no_principal_key_is_an_error(suite, keys, monkeypatch, capsys):
-    monkeypatch.delenv(suite.api_key_env, raising=False)
+    monkeypatch.delenv("COGNEE_API_KEY", raising=False)
     assert keys.main(["list", "--json"]) == 2
     assert json.loads(_out(capsys))["error"] == "no_principal_key"

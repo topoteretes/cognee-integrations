@@ -32,7 +32,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 import _plugin_common
 from _cloud_worker import enabled as cloud_enabled
-from _evidence import evidence_items, render_item, write_receipt
+from _evidence import append_receipt, evidence_items, render_item
 from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
@@ -281,6 +281,8 @@ def _injection_sections(
                 "entries": [],
                 "priority": priority,
                 "source": source,
+                # Named per entry in the receipt (SDK-1098).
+                "kind": kind,
                 "entry_ids": {},
                 "separator": separator,
             },
@@ -466,6 +468,29 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         phase_end("recalling", count=total or 0, ok=total is not None)
 
 
+#: Scopes every prompt dispatches; a skipped recall reports them (SDK-1098).
+_BASE_SCOPES = ("graph", "session_context")
+
+
+def _skipped_receipt(prompt: str, service_url: str, skipped: str) -> None:
+    """Receipt for a prompt whose recall never reached the server, so the
+    history shows the gap instead of missing the prompt (SDK-1098)."""
+    key = get_session_key()
+    if not key:
+        return
+    try:
+        append_receipt(
+            key,
+            cognee_session_id=_load_session_id() or "",
+            prompt=prompt,
+            server_url=service_url,
+            per_scope={s: {"hits": 0, "elapsed_ms": 0, "skipped": True} for s in _BASE_SCOPES},
+            skipped=skipped,
+        )
+    except (OSError, ValueError) as exc:
+        hook_log("injection_receipt_failed", {"error": str(exc)[:200]})
+
+
 async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | None, int | None]:
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         # First, so a recall that returns early is not an injected turn and
@@ -496,7 +521,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # so a confirmed-bad backend costs one bounded probe per prompt instead of
     # the full budget.
     service_url = runtime.get("base_url", "")
-    probe_timeout = _float_env(os.environ.get("COGNEE_READY_PROBE_TIMEOUT", ""), 3.0)
+    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 3.0)
     prior = read_connection_state()
     # Permissive on purpose: "same target" unless the two URLs provably differ,
     # so a recorded state still applies when a URL is unknown. Mirrors the
@@ -512,6 +537,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     )
     if known_bad and cloud_enabled(runtime):
         hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
+        _skipped_receipt(prompt, service_url, "skipped_outage")
         # The notice is one-shot (already consumed by main); never drop it here.
         return _outage_output(prior_state, notice), None
     if known_bad:
@@ -535,6 +561,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             # "slow"/"unknown" from the probe is NO verdict — keep the recorded
             # state untouched rather than promote a timeout to a failure.
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
+            _skipped_receipt(prompt, service_url, "skipped_outage")
             # Report the outage instead of going quiet: the recorded failure
             # names it when the probe itself was inconclusive.
             return (
@@ -625,18 +652,14 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env(
-        os.environ.get("COGNEE_RECALL_BUDGET", ""), 45.0 if cloud_enabled(runtime) else 20.0
-    )
+    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
     # After slow_streak_threshold() timeout-only prompts the server is treated as
     # slow: recall gets a few seconds until a recall answers or the window ends,
     # so a hung server cannot cost the full budget on every prompt.
     slow_until = recall_slow_until(service_url)
     recall_slow = time.time() < slow_until
     if recall_slow:
-        recall_budget = min(
-            recall_budget, _float_env(os.environ.get("COGNEE_RECALL_SLOW_BUDGET", ""), 5.0)
-        )
+        recall_budget = min(recall_budget, _float_env("COGNEE_RECALL_SLOW_BUDGET", 5.0))
         hook_log("recall_budget_reduced", {"budget_s": recall_budget})
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
@@ -649,9 +672,14 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         _bopen, _bretry = breaker_open(service_url)
     except Exception:
         _bopen, _bretry = False, 0
+    # What became of each scope, for the receipt (SDK-1098): ok, timeout or
+    # error per dispatched scope; why none ran when recall was skipped.
+    scope_status: dict[str, str] = {}
+    skip_reason = ""
     if _bopen:
         hook_log("recall_breaker_open", {"retry_in": _bretry})
         scope_specs = []
+        skip_reason = "skipped_breaker"
     # Health accounting for this prompt's recall attempts (the attempt IS the
     # probe): a scope that returns is proof of life; a refused connection is
     # proof of death; timeouts alone are no verdict and only feed the streak.
@@ -669,6 +697,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     if scope_specs and remaining < MIN_SCOPE_TIMEOUT:
         hook_log("recall_budget_exceeded", {"collected": 0})
         scope_specs = []
+        skip_reason = "skipped_budget"
     # Clamped into [0, budget]: on a coarse clock (Windows) ``remaining`` can
     # read a few ULPs above the budget when no tick has passed since the start.
     scope_timeout = min(recall_budget, max(remaining, 0.0))
@@ -753,6 +782,8 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     ):
         # hits = raw count from this scope's call (pre-bucketing/filtering).
         per_scope[scope_list[0]] = {"hits": len(part or []), "elapsed_ms": elapsed}
+        # An answered 404 (no guidance, no graph yet) stays ok below.
+        scope_status[scope_list[0]] = "ok"
         if exc is None:
             if part:
                 results.extend(part)
@@ -784,7 +815,9 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
             scopes_ok += 1
             continue
+        scope_status[scope_list[0]] = "timeout" if verdict == SLOW else "error"
         if isinstance(exc, _urlerr.HTTPError):
+            scope_status[scope_list[0]] = "error"
             scopes_answered_err += 1
             if exc.code in (401, 403):
                 auth_rejected = True
@@ -1043,16 +1076,30 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             )
     else:
         full_context, injection_stats = fit_sections(sections, injection_limit(), measure=measure)
+    receipt_id = ""
+    unavailable = [
+        item
+        for entries in by_source.values()
+        for entry in entries
+        for item in evidence_items(entry) or []
+        if item.get("status") != "available"
+    ]
     if _key_safe:
         try:
-            unavailable = [
-                item
-                for entries in by_source.values()
-                for entry in entries
-                for item in evidence_items(entry) or []
-                if item.get("status") != "available"
-            ]
-            write_receipt(_key, memory_sections, injection_stats, unavailable)
+            receipt_id = append_receipt(
+                _key,
+                cognee_session_id=session_id,
+                prompt=prompt,
+                server_url=service_url,
+                per_scope={
+                    scope: {**record, "status": scope_status.get(scope, "ok")}
+                    for scope, record in per_scope.items()
+                },
+                sections=memory_sections,
+                stats=injection_stats,
+                unavailable=unavailable,
+                skipped=skip_reason,
+            )
         except (OSError, ValueError) as exc:
             hook_log("injection_receipt_failed", {"error": str(exc)[:200]})
     retrieved_counts = counts
@@ -1134,10 +1181,12 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             "per_scope": per_scope,
             "saves_last_turn": saves_last_turn,
             "elapsed_ms": elapsed_ms(recall_start),
+            "receipt_id": receipt_id,
+            # The entry lists hold recalled text: counts only in the log.
             **{
                 k: v
                 for k, v in injection_stats.items()
-                if k not in {"entries", "source_hits", "deduped_entries"}
+                if k not in {"entries", "source_hits", "deduped_entries", "dropped_entries"}
             },
         },
     )
@@ -1160,6 +1209,8 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         hits=int(total > 0),
         entries_injected=injection_stats["entries_kept"],
         entries_deduped=injection_stats.get("entries_deduped", 0),
+        entries_over_budget=dropped,
+        entries_unavailable=len(unavailable),
         chars_injected=len(full_context),
         dedup_chars_saved=injection_stats.get("dedup_chars_saved", 0),
         dedup_measurements=int("dedup_chars_saved" in injection_stats),
@@ -1188,6 +1239,8 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 {
                     "ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
                     "session_id": session_id,
+                    # Joins this line to its receipt (SDK-1098).
+                    "receipt_id": receipt_id,
                     "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
                     "hits": counts,
                     "retrieved_hits": retrieved_counts,
@@ -1196,12 +1249,12 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                     # puts it in the injected context (SDK-1071).
                     "header": header,
                     "context": _audit_clip(_sanitize(full_context), _AUDIT_CONTEXT_CHARS),
-                    # deduped_entries holds whole recalled entries; the
-                    # hook.log line leaves it out for the same reason.
+                    # deduped_entries and dropped_entries hold whole recalled
+                    # entries; the hook.log line leaves them out too.
                     **{
                         k: v
                         for k, v in injection_stats.items()
-                        if k not in {"entries", "deduped_entries"}
+                        if k not in {"entries", "deduped_entries", "dropped_entries"}
                     },
                 }
             ),
@@ -1255,36 +1308,6 @@ def _recall_min_prompt_chars() -> int:
         return 5
 
 
-def _apply_mod_pick() -> None:
-    """Carry out a dataset picked in the hooks module's picker, before recalling.
-
-    The module starts no program: it saves the pick in its store and this hook
-    switches the session, so the message that follows a pick is answered from
-    the new dataset. The picker's listing is refreshed here when it is old.
-    The relay the skills' scripts use is kept up from here as well.
-    """
-    try:
-        import _relay
-
-        _relay.ensure_relay()
-    except Exception:
-        pass
-    try:
-        import _mod_bridge
-
-        key = get_session_key()
-        result = _mod_bridge.apply_pick(key)
-        if result:
-            hook_log(
-                "mod_pick_applied",
-                {"target": result.get("target"), "state": result.get("state")},
-            )
-        if _mod_bridge.listing_is_stale(key):
-            _mod_bridge.refresh_listing_in_background(key)
-    except Exception as exc:
-        hook_log("mod_pick_failed", {"error": str(exc)[:200]})
-
-
 def main():
     if is_observer_child():
         return
@@ -1306,8 +1329,6 @@ def main():
     if not get_session_key():
         hook_log("context_lookup_missing_session_key")
         return
-
-    _apply_mod_pick()
 
     if coding_memory_enabled():
         output = _coding_prompt(payload)

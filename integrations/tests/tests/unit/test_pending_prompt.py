@@ -18,7 +18,6 @@ def pc(suite, isolated_modules, monkeypatch):
     module = isolated_modules(suite, "_plugin_common")
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
     monkeypatch.setenv("COGNEE_SESSION_KEY", "host-abc")
-    monkeypatch.setenv("COGNEE_SESSION_REF", "host-abc")
     return module
 
 

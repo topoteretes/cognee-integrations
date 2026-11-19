@@ -91,17 +91,12 @@ _SEEN_MAX_ENTRIES = 2000
 
 
 def enabled() -> bool:
-    return os.environ.get("COGNEE_FILE_CONTEXT", "true").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+    return os.environ.get(ENV_ENABLED, "true").strip().lower() not in ("0", "false", "no", "off")
 
 
 def scopes() -> list[str]:
     """The lanes to run: a subset of {"code", "graph"}, ``["code"]`` by default."""
-    raw = os.environ.get("COGNEE_FILE_CONTEXT_SCOPES", "code")
+    raw = os.environ.get(ENV_SCOPES, "code")
     wanted = [p.strip().lower() for p in raw.split(",") if p.strip()]
     out = [s for s in ("code", "graph") if s in wanted]
     return out or ["code"]
@@ -299,7 +294,7 @@ def format_code_facts(facts: list[dict], rel: str, max_symbols: int = DEFAULT_MA
     """
     symbols: list[dict] = []
     deps: list[str] = []
-    calls_out: dict[str, set[str]] = {}
+    calls_out: dict[str, set] = {}
     stem = rel.rsplit(".", 1)[0]
     for fact in facts:
         kind = str(fact.get("kind") or "")
@@ -447,11 +442,7 @@ def build_context(file_path: str, lane: dict, resolved: dict, deadline: float) -
                 facts = facts_from(results)
                 stats["code"] = len(facts)
                 block = format_code_facts(
-                    facts,
-                    lane["rel"],
-                    _int_env(
-                        os.environ.get("COGNEE_FILE_CONTEXT_MAX_SYMBOLS", ""), DEFAULT_MAX_SYMBOLS
-                    ),
+                    facts, lane["rel"], _int_env(ENV_MAX_SYMBOLS, DEFAULT_MAX_SYMBOLS)
                 )
                 if block:
                     if edited_since_index(file_path, lane.get("last_index_at")):
@@ -519,9 +510,9 @@ def build_context(file_path: str, lane: dict, resolved: dict, deadline: float) -
     return fitted if budget_stats["entries_kept"] else "", stats
 
 
-def _int_env(raw: str, default: int) -> int:
+def _int_env(name: str, default: int) -> int:
     try:
-        return max(1, int(str(raw or "").strip() or default))
+        return max(1, int(os.environ.get(name, "") or default))
     except ValueError:
         return default
 
@@ -561,7 +552,7 @@ def run(payload: dict) -> str:
         hook_log("file_context_skipped", {"reason": "no_session_key"})
         return ""
 
-    ttl = _float_env(os.environ.get("COGNEE_FILE_CONTEXT_TTL", ""), DEFAULT_TTL)
+    ttl = _float_env(ENV_TTL, DEFAULT_TTL)
     if recently_seen(session_key, file_path, ttl):
         hook_log("file_context_skipped", {"reason": "seen"})
         return ""
@@ -580,9 +571,7 @@ def run(payload: dict) -> str:
         return ""
 
     resolved = load_resolved(session_key, identity=False)
-    deadline = started + _float_env(
-        os.environ.get("COGNEE_FILE_CONTEXT_BUDGET", ""), DEFAULT_BUDGET
-    )
+    deadline = started + _float_env(ENV_BUDGET, DEFAULT_BUDGET)
     context, stats = build_context(file_path, lane, resolved, deadline)
     # Mark only when the server answered: an empty answer is still an answer
     # (no point asking again within the TTL), but a timeout or error is not —

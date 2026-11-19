@@ -83,10 +83,6 @@ ISOLATED_MODULES = (
 #:   - COGNEE_LLM_OBSERVER=false keeps SessionStart from starting the Claude
 #:     observer shim (a detached process) on a machine with `claude` on PATH;
 #:     the observer tests opt back in.
-#:   - CLAUDE_PLUGIN_OPTION_LOCAL_MODELS=true is Claude Code's local models
-#:     option: with no LLM chosen its SessionStart starts no local server, so
-#:     the tests that boot one choose this (the mock server has no LLM). The
-#:     tests of the no-LLM pause remove it.
 DETERMINISTIC_ENV = {
     "COGNEE_PLUGIN_IN_VENV": "1",
     "COGNEE_IDLE_DISABLED": "1",
@@ -94,7 +90,6 @@ DETERMINISTIC_ENV = {
     "COGNEE_LAZY_BOOTSTRAP": "0",
     "PYTHONIOENCODING": "utf-8",
     "COGNEE_LLM_OBSERVER": "false",
-    "CLAUDE_PLUGIN_OPTION_LOCAL_MODELS": "true",
 }
 
 #: Env-var prefixes scrubbed from the inherited environment so a developer's
@@ -142,7 +137,7 @@ def build_env(
         env["COGNEE_BASE_URL"] = service_url
         env.setdefault("COGNEE_PLATFORM_API_URL", service_url)
     if api_key is not None:
-        env[suite.api_key_env] = api_key
+        env["COGNEE_API_KEY"] = api_key
     if extra:
         env.update(extra)
     return env

@@ -10,6 +10,50 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.11]
+
+**This release takes back versions 1.8.2 to 1.8.10.** The plugin is the code on `dev`
+again: 1.8.0 with the registration fixes released as 1.8.1 (SDK-1513, #594) and the
+recall receipts below. It ships under a new version number so that installed clients
+are offered it. The shared capture policy in the Codex, Cursor and Antigravity plugins
+goes back with it.
+
+### Restored
+
+- **Credentials and connection settings come from the shell and `~/.cognee/.env`**,
+  as in 1.8.1: `COGNEE_BASE_URL`, `COGNEE_API_KEY`, `COGNEE_PRINCIPAL_API_KEY`,
+  `COGNEE_USER_EMAIL`, `COGNEE_USER_PASSWORD`, `LLM_API_KEY` and `EMBEDDING_API_KEY`.
+  A value exported in the shell wins over the file.
+- **Everything 1.8.2 to 1.8.10 changed or removed:** the hooks module as it was in
+  1.8.1 (it can run the doctor and save a pasted value), its `search` and `remember`
+  tools, `cognee-forget.sh env`, the `cognee-report` Notion export, `--server` check and
+  outcome-trial harness, and the variable names `COGNEE_SESSION_KEY` and
+  `COGNEE_LLM_KEY_CHECK`.
+
+### Added
+
+- **A recall receipt for every prompt** (SDK-1098). Each prompt that reaches recall
+  appends one receipt to `sessions/<host id>/recall-receipts.jsonl`, with the status of
+  each scope (ok, timeout, error, or skipped) and which entries were injected, already
+  in context, over budget or unavailable. `cognee-evidence explain` prints the newest
+  receipt, and `cognee-report` prints a `receipts:` line per session.
+  `injection-receipt.json` is no longer written.
+
+### Removed
+
+- What 1.8.2 to 1.8.10 added: the server URL, API key, LLM and embedding key and login
+  plugin options, the relay for the skills' scripts, `scripts/_version.py`,
+  `scripts/_authed_request.py`, `scripts/_env_names.py`, `capture_deny_paths.txt`, and
+  the `cognee-search.sh --category` and `cognee-forget.sh forget-*` commands.
+
+### Upgrade note
+
+- **If you set up on 1.8.2 or later,** you entered the Cloud URL and the keys as plugin
+  options. This version does not read them. Put them back in `~/.cognee/.env`
+  (`COGNEE_BASE_URL=…`, `COGNEE_API_KEY=…`, `LLM_API_KEY=…`), then start a new session.
+
+The entries for 1.8.2 to 1.8.10 below are kept as a record of what those versions did.
+
 ## [1.8.10]
 
 ### Changed

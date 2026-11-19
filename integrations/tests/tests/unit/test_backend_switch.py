@@ -59,18 +59,11 @@ def env_file(suite, isolated_modules, tmp_path, monkeypatch):
 # ── environment layer (_env_file) ──────────────────────────────────────────
 
 
-def _file_key(ef, name: str, value: str) -> str:
-    """What a key set in the env file becomes in the environment: its value,
-    or nothing for a plugin that takes its keys from options only (claude-code,
-    whose ``_env_file`` lists those names in ``OPTION_ONLY``)."""
-    return "" if name in getattr(ef, "OPTION_ONLY", ()) else value
-
-
 def test_no_switch_cloud_vars_win(env_file):
     ef, load = env_file
     load(CLOUD_ENV_FILE)
     assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL
-    assert os.environ.get("COGNEE_API_KEY", "") == _file_key(ef, "COGNEE_API_KEY", "ck_from_file")
+    assert os.environ["COGNEE_API_KEY"] == "ck_from_file"
 
 
 def test_forced_local_scrubs_cloud_vars_from_environ(env_file, monkeypatch):
@@ -78,9 +71,9 @@ def test_forced_local_scrubs_cloud_vars_from_environ(env_file, monkeypatch):
     monkeypatch.setenv("COGNEE_BACKEND", "local")
     load(CLOUD_ENV_FILE)
     assert os.environ["COGNEE_BASE_URL"] == ""
-    assert os.environ.get("COGNEE_API_KEY", "") == ""
+    assert os.environ["COGNEE_API_KEY"] == ""
     # Local-mode vars from the same file are untouched.
-    assert os.environ.get("LLM_API_KEY", "") == _file_key(ef, "LLM_API_KEY", "sk_from_file")
+    assert os.environ["LLM_API_KEY"] == "sk_from_file"
 
 
 def test_forced_local_beats_a_real_shell_export(env_file, monkeypatch):
@@ -104,7 +97,7 @@ def test_scrub_survives_a_child_rerunning_the_loader(env_file, monkeypatch):
     monkeypatch.setattr(ef, "_loaded", False)
     ef.load_env_file()
     assert os.environ["COGNEE_BASE_URL"] == ""
-    assert os.environ.get("COGNEE_API_KEY", "") == ""
+    assert os.environ["COGNEE_API_KEY"] == ""
 
 
 def test_forced_cloud_scrubs_nothing(env_file, monkeypatch):
@@ -112,7 +105,7 @@ def test_forced_cloud_scrubs_nothing(env_file, monkeypatch):
     monkeypatch.setenv("COGNEE_BACKEND", "cloud")
     load(CLOUD_ENV_FILE)
     assert os.environ["COGNEE_BASE_URL"] == CLOUD_URL
-    assert os.environ.get("COGNEE_API_KEY", "") == _file_key(ef, "COGNEE_API_KEY", "ck_from_file")
+    assert os.environ["COGNEE_API_KEY"] == "ck_from_file"
 
 
 def test_plugin_var_beats_the_shared_var(env_file, suite, monkeypatch):
@@ -176,9 +169,6 @@ def test_config_forced_local_despite_cloud_vars(config_mod, monkeypatch):
     monkeypatch.setenv("COGNEE_BASE_URL", CLOUD_URL)
     monkeypatch.setenv("COGNEE_API_KEY", "ck")
     monkeypatch.setenv("LLM_API_KEY", "sk")
-    # claude-code reads its keys from the plugin options instead.
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_COGNEE_API_KEY", "ck")
-    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_LLM_API_KEY", "sk")
     monkeypatch.setenv("COGNEE_BACKEND", "local")
     cfg = config_mod.load_config()
     assert not config_mod.is_cloud_mode(cfg)

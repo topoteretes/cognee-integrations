@@ -77,7 +77,7 @@ mentioned it, oldest first.
 - `--json` returns `{topic, events[]}` with `time`, `kind` (`learning`,
   `context` or `prompt`), `session_id`, `project`, `agent`, `text`.
 - The wrapper exits 1 with one stderr line when the server is unreachable,
-  answers with an HTTP status (401/403: check the Cognee API key option / the plugin
+  answers with an HTTP status (401/403: check `COGNEE_API_KEY` / the plugin
   identity) or refuses the identity; point at
   `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh"`.
 - Several Claude Code sessions in the same directory? Add

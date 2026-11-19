@@ -22,7 +22,6 @@ _IDENTITY_PATHS = ("/api/v1/agents/connections/me", "/api/v1/users/me")
 def store(suite, hook_module, monkeypatch, closed_port_url):
     monkeypatch.setenv("COGNEE_BASE_URL", closed_port_url)
     monkeypatch.setenv("COGNEE_SESSION_KEY", "host-1")
-    monkeypatch.setenv("COGNEE_SESSION_REF", "host-1")
     module = hook_module(suite, "store-to-session.py")
     pc = sys.modules["_plugin_common"]
     requests: list[str] = []

@@ -33,9 +33,6 @@ from pathlib import Path
 from .isolation import scrub_env_dict
 from .suites import Suite
 
-#: The key the mock server accepts (``utils.fixtures.DEFAULT_TEST_API_KEY``).
-_DEFAULT_TEST_API_KEY = "test-api-key"
-
 RUNNER = "hook_runner.py"
 
 #: The plugin-root placeholder each host substitutes into hook commands.
@@ -186,10 +183,6 @@ def host_env(
         )
     else:
         env.update(CLAUDE_PLUGIN_ROOT=str(plugin_root), CLAUDE_PLUGIN_DATA=str(data))
-    if suite.api_key_env != "COGNEE_API_KEY":
-        # claude-code's keys are plugin options: the host hands the hooks the
-        # key the user entered there, whatever ~/.cognee/.env says.
-        env[suite.api_key_env] = _DEFAULT_TEST_API_KEY
     if extra:
         env.update(extra)
     return env

@@ -16,12 +16,6 @@ import sys
 _IS_WINDOWS = sys.platform == "win32"
 
 
-def child_env() -> dict:
-    """The environment for a process this plugin starts: a copy of this
-    process's own, which the caller may add to before it starts the process."""
-    return os.environ.copy()
-
-
 def pid_alive(pid: int) -> bool:
     """Return ``True`` if a process with ``pid`` is currently running.
 
