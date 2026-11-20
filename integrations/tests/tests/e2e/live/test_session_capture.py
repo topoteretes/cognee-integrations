@@ -83,6 +83,7 @@ def _assert_trimmed_to_context(suite, home, injected: str, own_term: str, seed_t
     )
 
 
+@pytest.mark.usefixtures("pinned_recall")
 def test_prompt_and_answer_are_captured_and_recall_stays_graph_context(
     synced_turn, started_session, live_suite, live_home, nonce
 ):
@@ -113,6 +114,7 @@ def test_prompt_and_answer_are_captured_and_recall_stays_graph_context(
     session.end()
 
 
+@pytest.mark.usefixtures("pinned_recall")
 def test_tool_trace_is_captured_and_recall_stays_graph_context(
     synced_turn, started_session, live_suite, live_home, nonce
 ):
