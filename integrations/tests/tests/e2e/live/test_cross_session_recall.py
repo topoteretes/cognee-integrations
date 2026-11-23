@@ -30,6 +30,7 @@ import pytest
 pytestmark = pytest.mark.live
 
 
+@pytest.mark.usefixtures("pinned_recall")
 def test_paxos_then_byzantine_recalled_in_a_fresh_session(
     started_session, graph, nonce, live_dataset
 ):

@@ -414,6 +414,21 @@ def graph(live_base_url: str, live_dataset: str, live_home: Path) -> GraphClient
 
 
 @pytest.fixture
+def pinned_recall(live_env: dict[str, str]) -> None:
+    """Pin the plugin's recall to this test's own dataset.
+
+    Auto recall (the default) names no dataset and lets the server route the
+    query. On the shared cloud tenant every earlier test's ``live_`` dataset is
+    still there until the post-run cleanup, so routing can pick another test's
+    dataset and this test's memory never reaches the prompt. A test that asserts
+    recall returns *its own* seeded memory pins, so it tests that, not routing.
+    ``live_env`` is the dict the sessions start with, so the pin must be set
+    before the first ``started_session`` call; a fixture always is.
+    """
+    live_env["COGNEE_PLUGIN_RECALL_MODE"] = "pinned"
+
+
+@pytest.fixture
 def synced_turn(started_session, graph: GraphClient):
     """Write one turn into the graph, then keep the server up for the test.
 
