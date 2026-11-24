@@ -48,6 +48,7 @@ describe("HttpCogneeClient.recall", () => {
     expect(call.url).toBe("http://localhost:8011/api/v1/recall");
     expect(call.init.method).toBe("POST");
     expect(headerValue(call.init, "X-Api-Key")).toBe("secret");
+    expect(headerValue(call.init, "X-Cognee-Origin")).toBe("vscode");
     expect(headerValue(call.init, "Content-Type")).toBe("application/json");
 
     const body = JSON.parse(call.init.body as string);
@@ -122,5 +123,25 @@ describe("HttpCogneeClient.forget", () => {
 
     const body = JSON.parse(calls[0].init.body as string);
     expect(body).toEqual({ dataset: "vscode_abc", memory_only: true });
+  });
+});
+
+
+describe("HttpCogneeClient.verifyConnection", () => {
+  it("authenticates and identifies VS Code without writing a memory", async () => {
+    const { fetch, calls } = stubFetch(() => new Response("[]", { status: 200 }));
+    const client = new HttpCogneeClient({ endpoint: "https://tenant.cognee.ai", apiKey: "test-key", fetch });
+    await client.verifyConnection();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://tenant.cognee.ai/api/v1/datasets");
+    expect(calls[0].init.method).toBe("GET");
+    expect(headerValue(calls[0].init, "X-Api-Key")).toBe("test-key");
+    expect(headerValue(calls[0].init, "X-Cognee-Origin")).toBe("vscode");
+  });
+
+  it.each([401, 403, 503])("does not report connected on HTTP %i", async (status) => {
+    const { fetch } = stubFetch(() => new Response("{}", { status }));
+    const client = new HttpCogneeClient({ endpoint: "https://tenant.cognee.ai", fetch });
+    await expect(client.verifyConnection()).rejects.toBeInstanceOf(CogneeApiError);
   });
 });

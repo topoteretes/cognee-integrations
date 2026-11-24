@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import { HttpCogneeClient, validateConfig } from "../../core";
+import { describeError } from "../../core/errors";
 import type { Logger } from "../logger";
 import { SECRET_API_KEY } from "../runtime";
 import { readConfig } from "../settings";
@@ -8,10 +9,10 @@ import { getWorkspaceRoot } from "../workspace";
 
 /**
  * Guided onboarding: capture the endpoint and (optionally) an API key, store the
- * key in the OS keychain via secret storage, then run a health check so the user
+ * key in the OS keychain via secret storage, then verify authentication so the user
  * knows their connection works.
  *
- * The health check does not require an open folder — only Remember/Ask do — so
+ * Connection verification does not require an open folder — only Remember/Ask do — so
  * Set Up is useful even on an empty window.
  */
 export async function setup(context: vscode.ExtensionContext, logger: Logger): Promise<void> {
@@ -55,19 +56,17 @@ export async function setup(context: vscode.ExtensionContext, logger: Logger): P
   const client = new HttpCogneeClient({
     endpoint: saved.endpoint,
     apiKey: storedKey || saved.apiKey,
-    timeoutMs: saved.requestTimeoutMs,
+    timeoutMs: Math.min(saved.requestTimeoutMs, 15_000),
   });
 
-  const reachable = await client.health();
-  logger.info(`setup: health check ${reachable ? "ok" : "unreachable"} for ${saved.endpoint}`);
-
-  if (!reachable) {
-    void vscode.window.showWarningMessage(
-      `Cognee: settings saved, but ${saved.endpoint} isn't reachable yet. ` +
-        "Start the Cognee server or re-check the endpoint/key.",
-    );
+  try {
+    await client.verifyConnection();
+  } catch (error: unknown) {
+    logger.info("setup: connection verification failed");
+    void vscode.window.showWarningMessage(`Cognee: settings saved. ${describeError(error)}`);
     return;
   }
+  logger.info("setup: authenticated connection verified");
 
   const hasFolder = getWorkspaceRoot() !== undefined;
   void vscode.window.showInformationMessage(
