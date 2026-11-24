@@ -694,6 +694,21 @@ def _health_ok(url: str = _HEALTH_URL, timeout: float = 2.0) -> bool:
         return False
 
 
+def _record_server_capabilities(health_url: str) -> None:
+    """Cache what the serving local server lists on /health, so the recall hook
+    knows whether it may ask for cited recall (SDK-1099). Best effort: a failure
+    only keeps the hook on today's request."""
+    try:
+        with urllib.request.urlopen(health_url, timeout=2.0, context=_https_context()) as response:
+            health = json.loads(response.read().decode("utf-8") or "{}")
+        if isinstance(health, dict):
+            from _cited_recall import record_capabilities
+
+            record_capabilities(health)
+    except Exception as exc:
+        hook_log("server_capabilities_record_failed", {"error": str(exc)[:200]})
+
+
 def _wait_for_health(deadline_seconds: float, health_url: str = _HEALTH_URL) -> bool:
     """Poll /health until the server is serving or the deadline elapses.
 
@@ -722,6 +737,7 @@ def _ensure_local_server_running(
     def _ready() -> None:
         config["base_url"] = service_url
         os.environ["COGNEE_BASE_URL"] = service_url
+        _record_server_capabilities(health_url)
 
     if _health_ok(health_url):
         _ready()

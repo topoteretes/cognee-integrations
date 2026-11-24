@@ -26,6 +26,15 @@ Usage:
            dataset is searched only with --user-picked: the person named it
            or chose it in the picker. Without it the search refuses (exit 2).
 --user-picked: the --dataset/--dataset-id target is the person's own choice.
+--expand:  cognee_search.py [<query>] --expand <tag>[,<tag>...]
+           read cited memories back by their tags (SDK-1099), 1 to 20 per
+           call, each exactly as recall showed it:
+           [mem:<kind>/<dataset_id>/<record_id>@<version>]. Prints each body
+           with its current version (a different version means the memory
+           changed since it was cited) and lists missing and forbidden tags.
+           The query, when given, ranks an entity's bullets as the original
+           recall did; pass the question that recall answered. Needs a server
+           that lists recall_cited_v1 on /health.
 No flag:   same as --graph. Memory is read from the graph and the code graph
            only; the session cache is written, never searched.
 
@@ -207,8 +216,110 @@ def _cli_recall(*args: str) -> str:
     return ran.stdout
 
 
+#: Records one expand call reads (cognee's expand_items bound).
+MAX_EXPAND_TAGS = 20
+
+
+def _http_json(rt: dict, path: str, payload: dict | None = None):
+    """``path`` on the server as JSON (GET without a payload, POST with one)."""
+    headers = {"Content-Type": "application/json"}
+    if rt["api_key"]:
+        headers["X-Api-Key"] = rt["api_key"]
+    req = urllib.request.Request(
+        rt["service_url"].rstrip("/") + path,
+        data=None if payload is None else json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="GET" if payload is None else "POST",
+    )
+    try:
+        import _plugin_common
+
+        context = _plugin_common._https_context()
+    except Exception:
+        context = None
+    with urllib.request.urlopen(req, timeout=45.0, context=context) as resp:
+        return json.loads(resp.read().decode("utf-8") or "null")
+
+
+def _expand(rt: dict, argv: list[str]) -> int:
+    """Read cited memories back by tag: bodies, then missing and forbidden tags."""
+    from _cited_recall import CAPABILITY
+    from _recall_text import is_memory_tag
+
+    at = argv.index("--expand")
+    value = argv[at + 1] if at + 1 < len(argv) else ""
+    tags = list(dict.fromkeys(t.strip() for t in value.split(",") if t.strip()))
+    query = next((a for i, a in enumerate(argv) if i not in (at, at + 1) and a[:2] != "--"), "")
+    bad = [tag for tag in tags if not is_memory_tag(tag)]
+    if bad or not 1 <= len(tags) <= MAX_EXPAND_TAGS:
+        print(
+            json.dumps(
+                {
+                    "error": f"--expand takes 1 to {MAX_EXPAND_TAGS} tags, comma-separated, "
+                    "each exactly as recall showed it: "
+                    "[mem:<kind>/<dataset_id>/<record_id>@<version>]",
+                    "not_tags": bad,
+                }
+            )
+        )
+        return 2
+    try:
+        from _capture_policy import sanitize
+
+        query = sanitize(query or " ".join(tags))
+        health = _http_json(rt, "/health")
+        if CAPABILITY not in ((health or {}).get("capabilities") or []):
+            print(
+                json.dumps(
+                    {
+                        "status": "unsupported",
+                        "message": "This Cognee server cannot read memories by tag "
+                        f"(its /health does not list {CAPABILITY}).",
+                    }
+                )
+            )
+            return 1
+        rows = _http_json(rt, "/api/v1/recall", {"query": query, "expand_items": tags})
+    except urllib.error.HTTPError as exc:
+        print(json.dumps({"status": "error", "http_status": exc.code}))
+        return 1
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        print(f"[cognee-search] expand failed: {exc}", file=sys.stderr)
+        print(UNREACHABLE)
+        return 1
+    # One row per requested tag, in request order (the server dedupes; so did we).
+    records, missing, forbidden = [], [], []
+    for tag, row in zip(tags, rows if isinstance(rows, list) else []):
+        meta = (row or {}).get("metadata") or {}
+        status = meta.get("status")
+        if status == "available":
+            records.append(
+                {
+                    "tag": tag,
+                    "current_tag": meta.get("tag"),
+                    "changed": meta.get("tag") != tag,
+                    "sources": meta.get("sources"),
+                    "conflicts": meta.get("conflicts") or [],
+                    "text": row.get("text", ""),
+                }
+            )
+        elif status == "forbidden":
+            forbidden.append(tag)
+        else:
+            missing.append(tag)
+    print(
+        json.dumps(
+            {"records": records, "missing": missing, "forbidden": forbidden},
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     rt = _runtime()
+    if "--expand" in argv:
+        return _expand(rt, argv)
     # The launch's active dataset, by name and by every UUID graph recall spans
     # (the canonical write id is always first among them), so an explicit
     # target can be told apart from "the active dataset, by hand".

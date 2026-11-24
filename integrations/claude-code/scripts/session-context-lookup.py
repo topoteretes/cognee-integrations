@@ -31,8 +31,10 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 import _plugin_common
+from _cited_recall import refused as cited_refused
+from _cited_recall import supported as cited_supported
 from _cloud_worker import enabled as cloud_enabled
-from _evidence import append_receipt, evidence_items, render_item
+from _evidence import append_receipt
 from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
@@ -77,6 +79,7 @@ from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
     PASSAGE_SEPARATOR,
     begin_turn,
+    cited_tags,
     code_facts,
     credit_enabled,
     credit_instruction,
@@ -177,8 +180,35 @@ def _format_entry(entry: dict) -> str:
     return "\n".join(lines)
 
 
-def _line_entries(text: str) -> list[str]:
-    """Split fact/prose lines while keeping fenced code and entity records whole."""
+def _line_entries(text: str, tags: frozenset = frozenset()) -> list[str]:
+    """Split fact/prose lines while keeping fenced code and entity records whole.
+
+    With ``tags`` (a cited recall, SDK-1099) every record is one entry: its tag
+    line and the lines after it, up to the next tag or blank line. Lines outside
+    a record (the conflict block) are split as before.
+    """
+    if tags and any(line.strip() in tags for line in text.splitlines()):
+        entries, record, rest = [], [], []
+
+        def close_record():
+            if record:
+                entries.append("\n".join(record))
+                record.clear()
+
+        for line in text.strip().splitlines():
+            if line.strip() in tags:
+                close_record()
+                entries.extend(_line_entries("\n".join(rest)))
+                rest.clear()
+                record.append(line)
+            elif record and line.strip():
+                record.append(line)
+            else:
+                close_record()
+                rest.append(line)
+        close_record()
+        entries.extend(_line_entries("\n".join(rest)))
+        return entries
     if len(json.dumps(text)) <= 1024:
         return [text.strip()] if text.strip() else []
     entries, pending = [], []
@@ -230,7 +260,7 @@ def _injection_sections(
     """Expose bare records; shared labels belong to one section heading.
 
     With ``marks``, every item carries a mark saying where it came from
-    (SDK-1071): an evidence item, passage, session turn or trace on its own
+    (SDK-1071): a passage, session turn or trace on its own
     first line, a block of entities, facts or other lines on its heading. A
     graph item names the dataset the server says it came from, ``[dataset
     <name>]`` (SDK-1393); any other item, or a graph item from a server that
@@ -259,7 +289,7 @@ def _injection_sections(
         remember(marked)
         return marked
 
-    def add_block(source, kind, title, priority, entries, result_id, mark):
+    def add_block(source, kind, title, priority, entries, result_id, mark, tags=frozenset()):
         """One mark for a block of entries: on the heading, or on the block's first
         entry when an earlier result already gave the section its heading."""
         if mark and entries:
@@ -271,9 +301,9 @@ def _injection_sections(
                 # ``fit_sections`` renders a section as its title, a newline and
                 # its entries: the block opens the section.
                 remember(f"{title}\n{entries[0]}")
-        add(source, kind, title, priority, entries, result_id)
+        add(source, kind, title, priority, entries, result_id, tags=tags)
 
-    def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
+    def add(source, kind, title, priority, entries, result_id, separator="\n\n", tags=frozenset()):
         section = grouped.setdefault(
             (source, kind),
             {
@@ -287,6 +317,10 @@ def _injection_sections(
                 "separator": separator,
             },
         )
+        if tags:
+            # The record tags this section's entries may open with, for the
+            # receipt's references (SDK-1099).
+            section["cited_tags"] = sorted(set(section.get("cited_tags", [])) | tags)
         for entry in entries:
             if entry.strip():
                 section["entries"].append(entry)
@@ -302,22 +336,12 @@ def _injection_sections(
         for result_id, entry in enumerate(by_source.get(source, [])):
             dataset_name = str(entry.get("dataset_name") or "").strip()
             result_dataset[0] = dataset_name if source == "graph_context" else ""
-            items = evidence_items(entry)
-            available = [(render_item(item), item) for item in items or []]
-            available = [(text, item) for text, item in available if text]
-            # Evidence replaces the legacy text only when something can be shown;
-            # a result whose items are all unavailable keeps its plain text.
-            if source == "graph_context" and available:
-                for text, item in available:
-                    derived = (item.get("source") or {}).get("derived")
-                    origin = "derived graph evidence" if derived else "source evidence"
-                    text = tagged(text, origin)
-                    add(source, "evidence", title, priority, [text], result_id)
-                    grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
-                continue
             if source == "graph_context":
                 text = str(entry.get("text") or entry.get("content") or "")
                 parts = split_sections(text)
+                # A cited recall's record tags (SDK-1099): each opens its record's
+                # entry, so the budget keeps or drops tag and record together.
+                tags = cited_tags(entry)
                 if any(parts.get(k) is not None for k in ("passages", "entities", "facts")):
                     for kind, heading, rank in (
                         ("preamble", "", 40),
@@ -330,18 +354,20 @@ def _injection_sections(
                             if heading:
                                 label_ += "\n" + heading
                             if kind != "passages":
-                                entries = _line_entries(parts[kind])
+                                entries = _line_entries(parts[kind], tags)
                                 origin = {
                                     "preamble": "Cognee memory",
                                     "entities": "knowledge graph entities",
                                     "facts": "knowledge graph facts",
                                 }[kind]
                                 mark = label(origin)
-                                add_block(source, kind, label_, rank, entries, result_id, mark)
+                                add_block(
+                                    source, kind, label_, rank, entries, result_id, mark, tags
+                                )
                                 continue
                             passages = [
                                 (tagged(p, passage_origin(p)), is_session_transcript(p))
-                                for p in split_passages(parts[kind])
+                                for p in split_passages(parts[kind], tags)
                             ]
                             # Raw turns bridged from other sessions are the bulk and
                             # the least distilled: across every dataset they go before
@@ -354,6 +380,7 @@ def _injection_sections(
                                 [p for p, transcript in passages if not transcript],
                                 result_id,
                                 PASSAGE_SEPARATOR,
+                                tags,
                             )
                             add(
                                 source,
@@ -364,6 +391,7 @@ def _injection_sections(
                                 [p for p, transcript in passages if transcript],
                                 result_id,
                                 PASSAGE_SEPARATOR,
+                                tags,
                             )
                     continue
             formatted = _format_entry(entry)
@@ -430,8 +458,6 @@ def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
     if source == "graph_context":
-        if evidence_items(entry):
-            return True
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
@@ -723,6 +749,14 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             auto_route = auto_recall_active()
         except Exception as exc:
             hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
+    # Cited recall (SDK-1099): a server whose cached /health lists
+    # recall_cited_v1 tags every passage, entity and fact of the graph item with
+    # its record id. Any other server gets today's request. Local state only.
+    cite_graph = False
+    try:
+        cite_graph = cited_supported(service_url)
+    except Exception as exc:
+        hook_log("recall_cited_check_failed", {"error": str(exc)[:200]})
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.
@@ -745,30 +779,48 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         # guidance request needs the session.
         scope_session_id = "" if scope_list == ["graph"] else session_id
         part, exc = None, None
+        request = {
+            "session_id": scope_session_id,
+            "top_k": TOP_K,
+            "scope": scope_list,
+            "only_context": True,
+            "search_type": qtype,
+            "context_profile": context_profile,
+            "dataset": scope_dataset,
+            "dataset_ids": scope_dataset_ids,
+            "code_query": scope_code_query,
+            "timeout": scope_timeout,
+            "auto_route": auto_route and scope_list == ["graph"],
+        }
+        cited = cite_graph and scope_list == ["graph"]
         t0 = time.monotonic()
         try:
             # recall_via_http blocks on urllib (and bounds itself with a
             # daemon thread), so it runs in a worker; the name is resolved at
             # call time so the module attribute stays the seam.
-            part = await asyncio.to_thread(
-                recall_via_http,
-                prompt,
-                session_id=scope_session_id,
-                top_k=TOP_K,
-                scope=scope_list,
-                only_context=True,
-                search_type=qtype,
-                context_profile=context_profile,
-                dataset=scope_dataset,
-                dataset_ids=scope_dataset_ids,
-                code_query=scope_code_query,
-                timeout=scope_timeout,
-                # Only this hook renders evidence items; other graph callers skip the cost.
-                evidence_mode="context" if "graph" in scope_list else None,
-                auto_route=auto_route and scope_list == ["graph"],
-            )
+            if cited:
+                part = await asyncio.to_thread(
+                    recall_via_http, prompt, **request, result_mode="cited"
+                )
+            else:
+                part = await asyncio.to_thread(recall_via_http, prompt, **request)
         except Exception as caught:
             exc = caught
+        if cited and exc is not None and cited_refused(exc):
+            # The server refused the cited recall by name (e.g. a searched
+            # dataset has no passages): the regular recall answers instead,
+            # untagged, within what is left of this scope's time.
+            left = scope_timeout - (time.monotonic() - t0)
+            hook_log("recall_cited_refused", {"left_ms": round(left * 1000, 1)})
+            part, exc = None, None
+            try:
+                if left <= 0:
+                    raise TimeoutError("no time left for the regular recall")
+                part = await asyncio.to_thread(
+                    recall_via_http, prompt, **{**request, "timeout": left}
+                )
+            except Exception as caught:
+                exc = caught
         return scope_dataset, part, exc, round((time.monotonic() - t0) * 1000, 1)
 
     outcomes = await asyncio.gather(
@@ -942,20 +994,14 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
-            # Preserve the own-session exclusion for structured source passages too.
-            for item in evidence_items(r) or []:
-                if (
-                    session_id
-                    and f"Session ID: {session_id}\n" in str(item.get("text") or "") + "\n"
-                ):
-                    item["status"] = "own_session"
             # Keep the retrieved context only (SDK-904): the question template
             # goes, own-session passages go, the rest is capped and pruned.
             # Unparsed text (a pre-1.6.0 bare context, an unknown template)
-            # is injected whole — fail-open, logged.
-            if r.get("text") and not any(render_item(i) for i in evidence_items(r) or []):
+            # is injected whole — fail-open, logged. A cited item's tags stay
+            # with their records through all of it (SDK-1099).
+            if r.get("text"):
                 trimmed, guidance, stats = trim_recall_text(
-                    str(r.get("text") or ""), prompt, session_id
+                    str(r.get("text") or ""), prompt, session_id, tags=cited_tags(r)
                 )
                 r["text"] = trimmed
                 if guidance and not item_guidance:
@@ -1077,13 +1123,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     else:
         full_context, injection_stats = fit_sections(sections, injection_limit(), measure=measure)
     receipt_id = ""
-    unavailable = [
-        item
-        for entries in by_source.values()
-        for entry in entries
-        for item in evidence_items(entry) or []
-        if item.get("status") != "available"
-    ]
     if _key_safe:
         try:
             receipt_id = append_receipt(
@@ -1097,7 +1136,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 },
                 sections=memory_sections,
                 stats=injection_stats,
-                unavailable=unavailable,
                 skipped=skip_reason,
             )
         except (OSError, ValueError) as exc:
@@ -1210,7 +1248,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         entries_injected=injection_stats["entries_kept"],
         entries_deduped=injection_stats.get("entries_deduped", 0),
         entries_over_budget=dropped,
-        entries_unavailable=len(unavailable),
         chars_injected=len(full_context),
         dedup_chars_saved=injection_stats.get("dedup_chars_saved", 0),
         dedup_measurements=int("dedup_chars_saved" in injection_stats),

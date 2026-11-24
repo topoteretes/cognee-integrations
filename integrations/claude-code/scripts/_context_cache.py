@@ -142,15 +142,9 @@ def build(
         if isinstance(health, dict):
             version = str(health.get("version") or version)
             capabilities = health.get("capabilities") or []
-            atomic_json(
-                root() / "server-capabilities.json",
-                {
-                    "version": version,
-                    "capabilities": capabilities,
-                    "target": target(),
-                    "checked_at": time.time(),
-                },
-            )
+            from _cited_recall import record_capabilities
+
+            record_capabilities({"version": version, "capabilities": capabilities})
     except Exception:
         pass
     base = {"query": QUERY, **fields, "top_k": 5, "only_context": True}

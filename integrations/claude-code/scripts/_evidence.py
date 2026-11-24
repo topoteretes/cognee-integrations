@@ -1,4 +1,10 @@
-"""Versioned evidence rendering and body-free injection receipts (stdlib only)."""
+"""Body-free injection receipts (stdlib only).
+
+One receipt per prompt records which recalled entries were injected, already in
+context or over budget (SDK-1098). An entry from a cited recall (SDK-1099) opens
+with its record's tag, ``[mem:<kind>/<dataset_id>/<record_id>@<version>]``, so
+its receipt item names that record, keyed ``record_id@version``.
+"""
 
 from __future__ import annotations
 
@@ -9,64 +15,30 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlparse
 
 from _injection_ledger import entry_hash, session_dir
+from _recall_text import MEMORY_TAG_RE
 
 
-def parse_citation(value: str) -> dict:
-    uri = urlparse(value)
-    parts = uri.path.strip("/").split("/")
-    if uri.scheme != "cognee" or uri.netloc != "datasets" or len(parts) != 4:
-        raise ValueError("Expected a cognee evidence citation")
-    dataset, marker, kind, identity = parts
-    if marker != "evidence" or "@" not in identity:
-        raise ValueError("Citation must include its version")
-    artifact, version = identity.split("@", 1)
-    ref = {"dataset_id": dataset, "kind": kind, "artifact_id": artifact, "version": version}
-    for key, values in parse_qs(uri.query).items():
-        if key in {"source_node_id", "target_node_id", "relationship_name"}:
-            ref[key] = values[0]
-    return ref
+def entry_reference(entry: str, tags) -> dict | None:
+    """The cited record an injected entry opens with, or None.
 
-
-def evidence_items(entry: dict) -> list | None:
-    meta = entry.get("metadata")
-    if not isinstance(meta, dict) or meta.get("evidence_contract") != "recall_evidence_v1":
-        return None
-    items = meta.get("evidence_items")
-    return items if isinstance(items, list) else None
-
-
-def render_item(item: dict) -> str:
-    if item.get("status") != "available" or not item.get("text") or not item.get("citation"):
-        return ""
-    source = item.get("source") or {}
-    label = "Derived graph evidence" if source.get("derived") else "Source evidence"
-    suffix = " [excerpt; expand for detail]" if item.get("truncated") else ""
-    return (
-        f"{label}: {item.get('title') or 'Evidence'}{suffix}\n{item['text']}\n[{item['citation']}]"
-    )
-
-
-def citation_for(reference) -> str:
-    """The ``cognee://`` citation for a reference; the inverse of ``parse_citation``.
-
-    Receipts keep only the reference (SDK-1098); this rebuilds the string form.
+    An entry opens with the tag, or with its ``[dataset …]`` mark and then the
+    tag. Only ``tags`` (the ones the server listed) count: a captured answer
+    can carry tag-shaped lines of its own.
     """
-    if not isinstance(reference, dict):
-        return ""
-    parts = [reference.get(k) for k in ("dataset_id", "kind", "artifact_id", "version")]
-    if not all(isinstance(p, str) and p for p in parts):
-        return ""
-    dataset, kind, artifact, version = parts
-    uri = f"cognee://datasets/{dataset}/evidence/{kind}/{artifact}@{version}"
-    edge = {
-        k: reference[k]
-        for k in ("source_node_id", "target_node_id", "relationship_name")
-        if reference.get(k)
-    }
-    return f"{uri}?{urlencode(edge)}" if edge else uri
+    for line in str(entry).lstrip().split("\n", 2)[:2]:
+        if line.strip() in tags:
+            match = MEMORY_TAG_RE.fullmatch(line.strip())
+            return {
+                "dataset_id": match["dataset_id"],
+                "kind": match["kind"],
+                "record_id": match["record_id"],
+                "version": match["version"],
+                "tag": match.group(0),
+            }
+    return None
 
 
 #: One receipt per prompt, appended to the session's history (SDK-1098).
@@ -119,7 +91,7 @@ def receipt_scopes(per_scope: dict, skipped: str = "") -> dict:
     return scopes
 
 
-def receipt_items(sections: list, stats: dict, unavailable=()) -> list:
+def receipt_items(sections: list, stats: dict) -> list:
     """One item per candidate with the decision the pipeline recorded for it."""
     kept = Counter(stats.get("entries", []))
     duplicate = Counter(stats.get("deduped_entries", []))
@@ -131,7 +103,7 @@ def receipt_items(sections: list, stats: dict, unavailable=()) -> list:
         for text in section.get("entries", []):
             if not str(text).strip():
                 continue
-            meta = section.get("evidence", {}).get(text) or {}
+            reference = entry_reference(text, set(section.get("cited_tags", ())))
             if kept[text]:
                 reason = "injected"
                 kept[text] -= 1
@@ -148,20 +120,18 @@ def receipt_items(sections: list, stats: dict, unavailable=()) -> list:
             items.append(
                 {
                     "hash": entry_hash(text),
-                    "reference": meta.get("reference"),
+                    "reference": reference,
                     "source": section.get("source"),
                     "section": section.get("kind"),
                     "chars": len(text),
-                    "rank": meta.get("rank"),
+                    # Kept for receipt readers; the cited record's own rank is in
+                    # the recall response, not in the injected text.
+                    "rank": None,
                     "priority": section.get("priority", 0),
                     "reason": reason,
-                    "addressable": bool(meta.get("reference")),
+                    "addressable": reference is not None,
                 }
             )
-    for item in unavailable:
-        items.append(
-            {"reference": item.get("reference"), "reason": item.get("status", "unavailable")}
-        )
     return items
 
 
@@ -174,7 +144,6 @@ def append_receipt(
     per_scope: dict | None = None,
     sections: list = (),
     stats: dict | None = None,
-    unavailable=(),
     skipped: str = "",
 ) -> str:
     """Append this prompt's receipt and return its id.
@@ -182,7 +151,7 @@ def append_receipt(
     Never persists source text or the user's prompt: entries are hashes and
     references, the prompt a hash. The file is created 0600.
     """
-    items = receipt_items(list(sections), stats or {}, unavailable)
+    items = receipt_items(list(sections), stats or {})
     receipt_id = uuid.uuid4().hex
     receipt = {
         "version": 2,
@@ -230,23 +199,3 @@ def read_receipts(session_id: str) -> list:
 def last_receipt(session_id: str) -> dict:
     receipts = read_receipts(session_id)
     return receipts[-1] if receipts else {}
-
-
-def merge_indexes(first: dict, second) -> dict:
-    """Bound a project-companion + primary index without losing scope or versions."""
-    if not isinstance(second, dict) or not isinstance(second.get("items"), list):
-        return {**first, "partial": True}
-    items, seen = [], set()
-    for item in first.get("items", []) + second["items"]:
-        ref = item.get("reference") or {}
-        key = tuple(ref.get(k) for k in ("dataset_id", "kind", "artifact_id", "version"))
-        if key not in seen:
-            items.append(item)
-            seen.add(key)
-    return {
-        "items": items[:20],
-        "omitted": first.get("omitted", 0) + second.get("omitted", 0) + max(0, len(items) - 20),
-        "unaddressable_results": first.get("unaddressable_results", 0)
-        + second.get("unaddressable_results", 0),
-        "partial": bool(first.get("partial") or second.get("partial")),
-    }

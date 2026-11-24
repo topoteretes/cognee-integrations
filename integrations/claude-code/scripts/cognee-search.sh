@@ -5,6 +5,7 @@
 #   cognee-search.sh <query> [top_k] [--graph]
 #   cognee-search.sh <query> [top_k] --code [--dataset <name>] [--code-query '<json>']
 #   cognee-search.sh <query> [top_k] --graph --dataset-id <uuid>
+#   cognee-search.sh [<query>] --expand <tag>[,<tag>...]
 #
 # The search itself is cognee_search.py (its docstring has the flags); this
 # wrapper keeps the path the skills and the docs use.
