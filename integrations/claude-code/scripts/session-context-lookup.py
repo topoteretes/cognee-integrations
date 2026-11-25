@@ -723,6 +723,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             auto_route = auto_recall_active()
         except Exception as exc:
             hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
+    answer_mode = _recall_answer_enabled()
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.
@@ -744,6 +745,9 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         # history it would add is the agent's own conversation. Only the
         # guidance request needs the session.
         scope_session_id = "" if scope_list == ["graph"] else session_id
+        # Answer mode (COGNEE_RECALL_ANSWER): the graph request asks the server
+        # for its completion with sources instead of the retrieved context.
+        scope_answer = answer_mode and scope_list == ["graph"]
         part, exc = None, None
         t0 = time.monotonic()
         try:
@@ -756,7 +760,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 session_id=scope_session_id,
                 top_k=TOP_K,
                 scope=scope_list,
-                only_context=True,
+                only_context=not scope_answer,
                 search_type=qtype,
                 context_profile=context_profile,
                 dataset=scope_dataset,
@@ -764,8 +768,10 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 code_query=scope_code_query,
                 timeout=scope_timeout,
                 # Only this hook renders evidence items; other graph callers skip the cost.
-                evidence_mode="context" if "graph" in scope_list else None,
+                # An answer carries its own sources, and evidence items would replace it.
+                evidence_mode="context" if "graph" in scope_list and not scope_answer else None,
                 auto_route=auto_route and scope_list == ["graph"],
+                include_references=scope_answer,
             )
         except Exception as caught:
             exc = caught
@@ -952,8 +958,13 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             # Keep the retrieved context only (SDK-904): the question template
             # goes, own-session passages go, the rest is capped and pruned.
             # Unparsed text (a pre-1.6.0 bare context, an unknown template)
-            # is injected whole — fail-open, logged.
-            if r.get("text") and not any(render_item(i) for i in evidence_items(r) or []):
+            # is injected whole — fail-open, logged. In answer mode the text is
+            # the server's answer, not a context: the trimmer does not run.
+            if (
+                not answer_mode
+                and r.get("text")
+                and not any(render_item(i) for i in evidence_items(r) or [])
+            ):
                 trimmed, guidance, stats = trim_recall_text(
                     str(r.get("text") or ""), prompt, session_id
                 )
@@ -1292,6 +1303,18 @@ def _coding_prompt(payload: dict) -> dict | None:
             "additionalContext": block,
         }
     }
+
+
+def _recall_answer_enabled() -> bool:
+    """Whether the per-prompt graph recall asks the server for its answer.
+
+    Off by default: the hook asks for the retrieved context and the agent writes
+    the answer. COGNEE_RECALL_ANSWER=true asks the server for its completion
+    with sources instead, for a deployment whose retrieved context is far larger
+    than the injection limit. Every prompt that reaches recall then costs one
+    server-side completion.
+    """
+    return os.environ.get("COGNEE_RECALL_ANSWER", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _recall_min_prompt_chars() -> int:
