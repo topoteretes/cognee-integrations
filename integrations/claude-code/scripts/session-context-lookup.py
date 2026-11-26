@@ -1294,6 +1294,42 @@ def _coding_prompt(payload: dict) -> dict | None:
     }
 
 
+def _with_review_notice(output: dict | None, cwd: str) -> dict | None:
+    """Put a stored code review's regression in front of this prompt's context.
+
+    Shown once per stored verdict, and only after ``cognee-review.sh`` ran for
+    this repository: with no review pending this is one file read. The block
+    is left for the next prompt when it would not fit the injection budget.
+    """
+    try:
+        import _code_review
+        from _plugin_common import _api_key, _local_api_url
+
+        text, mark_shown = _code_review.prompt_notice(
+            cwd, lambda: {"service_url": _local_api_url(), "api_key": _api_key()}
+        )
+    except Exception as exc:
+        hook_log("code_review_notice_failed", {"error": str(exc)[:200]})
+        return output
+    if not text:
+        return output
+    merged = dict(output or {})
+    hso = dict(merged.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "UserPromptSubmit")
+    context = str(hso.get("additionalContext") or "")
+    hso["additionalContext"] = text + ("\n\n" + context if context else "")
+    merged["hookSpecificOutput"] = hso
+    first = text.split("\n", 1)[0]
+    top = str(merged.get("systemMessage") or "")
+    merged["systemMessage"] = first + ("\n" + top if top else "")
+    if len(json.dumps(merged)) + 1 > injection_limit():
+        hook_log("code_review_notice_deferred", {"chars": len(text)})
+        return output
+    mark_shown()
+    hook_log("code_review_notice_shown", {"chars": len(text)})
+    return merged
+
+
 def _recall_min_prompt_chars() -> int:
     """Prompts shorter than this skip recall (capture keeps its own 5-char floor).
 
@@ -1331,7 +1367,9 @@ def main():
         return
 
     if coding_memory_enabled():
-        output = _coding_prompt(payload)
+        output = _with_review_notice(
+            _coding_prompt(payload), str(payload.get("cwd") or "") or os.getcwd()
+        )
         if output:
             print(json.dumps(output))
         return
@@ -1367,6 +1405,7 @@ def main():
     if output is None and notice:
         header = "Cognee memory: recall unavailable"
         output = _recall_output(header, _bounded_notice(header, notice))
+    output = _with_review_notice(output, cwd)
     if output:
         print(json.dumps(output))
 

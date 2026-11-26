@@ -373,6 +373,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:stopfile_unlink_failed` | `idle_watcher.stopfile_unlink_failed` |
 | `idle-watcher:throttle_check_failed` | `idle_watcher.throttle_check_failed` |
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
+| `hook:code_review_notice_deferred` | `code_review.notice_deferred` |
+| `hook:code_review_notice_failed` | `code_review.notice_failed` |
+| `hook:code_review_notice_shown` | `code_review.notice_shown` |
+| `hook:symbol_marks_skipped` | `coding.symbol_marks_skipped` |
+| `hook:symbol_stamps_skipped` | `coding.symbol_stamps_skipped` |
 | `hook:coding_block_delivered` | `coding.block_delivered` |
 | `hook:coding_capture_failed` | `coding.capture_failed` |
 | `hook:coding_capture_no_session_key` | `coding.capture_no_session_key` |

@@ -447,6 +447,26 @@ def test_enola_snapshot_dir_does_not_change_the_fingerprint(cg, git_repo):
     assert cg.git_fingerprint(str(git_repo)) == before
 
 
+def test_cluster_snapshot_dirs_do_not_change_the_fingerprint(suite, cg, git_repo):
+    """A repository that shares its dataset with others gets the cluster
+    snapshot in ``.enola-<dataset id>/`` (cognee writes ``extractor_cache.json``
+    there). Left visible, it re-indexed the repository after every turn, as
+    ``.enola/`` once did. A directory of that name below the root is source."""
+    if suite.name != "claude-code":
+        pytest.skip("the Claude Code plugin excludes .enola-<dataset id>")
+    before = cg.git_fingerprint(str(git_repo))
+    cluster = git_repo / ".enola-10d70858-43cf-5f39-919b-5aa182eda938"
+    cluster.mkdir()
+    (cluster / "extractor_cache.json").write_text("{}", encoding="utf-8")
+    assert cg.git_fingerprint(str(git_repo)) == before
+    (cluster / "extractor_cache.json").write_text('{"run": 2}', encoding="utf-8")
+    assert cg.git_fingerprint(str(git_repo)) == before
+    nested = git_repo / "pkg" / ".enola-notes"
+    nested.mkdir(parents=True)
+    (nested / "a.py").write_text("a = 1\n", encoding="utf-8")
+    assert cg.git_fingerprint(str(git_repo)) != before
+
+
 def test_enola_snapshot_dir_does_not_trigger_a_reindex(cg, mock_server, git_repo):
     cg.index_repo(mock_server.url, "", str(git_repo))
     mock_server.calls.clear()

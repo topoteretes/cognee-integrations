@@ -40,7 +40,7 @@ OVERLAP_GROUPS = {
     "search-or-switch": ("cognee-search", "cognee-switch-datasets"),
     "memory-writers": ("cognee-remember", "cognee-handoff", "cognee-sync"),
     "evaluation-or-recaps": ("cognee-report", "cognee-standup", "cognee-digest", "cognee-timeline"),
-    "code-graph": ("cognee-code", "cognee-architecture"),
+    "code-graph": ("cognee-code", "cognee-architecture", "cognee-rules"),
     "forget-or-switch": ("cognee-forget", "cognee-switch-datasets"),
     "plugin-or-performance": ("cognee-how-it-works", "cognee-report"),
 }

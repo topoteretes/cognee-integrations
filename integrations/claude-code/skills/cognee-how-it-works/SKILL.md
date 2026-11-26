@@ -30,6 +30,12 @@ Explain the paths relevant to the question:
   still sees the span in the live turn; a `--file` upload is sent unchanged.
 - Cloud calls go to `COGNEE_BASE_URL` using `COGNEE_API_KEY`; local mode uses a local
   server. Cloud credit status comes from the Cognee platform API.
+- The local server the plugin starts gets `ACCEPT_LOCAL_FILE_PATH=true` unless the user
+  set the variable: it lets that loopback-only server read a repository by its path for
+  indexing, reviews and rule proposals. A server the user started, and Cognee Cloud,
+  are never given it.
+- Code reviews and rule proposals are run by the server (enola) only when asked for; the
+  plugin never runs enola. A stored review's regression is shown once at the next prompt.
 - Recall injects selected memory into Claude's context. The injection budget drops
   whole entries and the session ledger avoids repeating cloud memory until context
   is cleared or compacted.

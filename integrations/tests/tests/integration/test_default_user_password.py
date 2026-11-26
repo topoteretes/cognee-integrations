@@ -82,6 +82,57 @@ def test_operator_default_user_export_wins(session_start, closed_port_url, monke
     assert env["DEFAULT_USER_PASSWORD"] == "ops-secret"
 
 
+def test_the_plugins_own_server_accepts_local_paths(
+    suite, session_start, closed_port_url, monkeypatch
+):
+    """cognee >= 1.6.10 refuses a server path named by an API caller unless
+    ACCEPT_LOCAL_FILE_PATH is set, and the plugin is an API caller: indexing a
+    local repository and analysing it would answer 403. Only the server the
+    plugin starts itself gets it (loopback: no --host on the spawn), and a
+    value the user set wins."""
+    if suite.name != "claude-code":
+        pytest.skip("the Claude Code plugin sets it for its own server")
+    monkeypatch.delenv("ACCEPT_LOCAL_FILE_PATH", raising=False)
+
+    def spawn():
+        return _spawn_capturing_env(session_start, closed_port_url, monkeypatch)
+
+    env = spawn()
+    assert env["ACCEPT_LOCAL_FILE_PATH"] == "true"
+    monkeypatch.setenv("ACCEPT_LOCAL_FILE_PATH", "false")
+    assert spawn()["ACCEPT_LOCAL_FILE_PATH"] == "false"
+
+
+def test_the_spawned_server_binds_loopback(suite, session_start, closed_port_url, monkeypatch):
+    """What the ACCEPT_LOCAL_FILE_PATH default relies on: the spawn names no
+    host, so uvicorn binds 127.0.0.1."""
+    captured = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(argv, **kwargs):
+        if "uvicorn" not in [str(a) for a in argv]:
+            return real_popen(argv, **kwargs)
+        captured["argv"] = [str(a) for a in argv]
+
+        class _FakeProc:
+            pid = 4242
+
+            def poll(self):
+                return None
+
+        return _FakeProc()
+
+    monkeypatch.setattr(session_start, "ensure_cognee_installed", lambda *a, **k: True)
+    monkeypatch.setattr(session_start.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: "argv" in captured)
+    monkeypatch.setattr(session_start, "write_server_pidfile", lambda *a, **k: None)
+    monkeypatch.setattr(
+        session_start, "server_presence", lambda *a, **k: (session_start.PRESENCE_ABSENT, {})
+    )
+    session_start._ensure_local_server_running({"base_url": closed_port_url}, health_timeout=2.0)
+    assert "--host" not in captured["argv"]
+
+
 def test_server_default_matches_the_login_default(suite, session_start, isolated_modules):
     """The credentials handed to the server and the ones config.py logs in with
     must be the same pair, or a fresh install cannot bootstrap."""

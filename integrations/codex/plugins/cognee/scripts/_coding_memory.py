@@ -15,7 +15,9 @@ SDK-1335). With it on, the plugin does nothing while the agent works:
   one after a compaction) gets one short block of lessons: the newest
   ``test-baseline``, the two newest pitfalls and the lessons recalled for the
   request, each tagged with what changed in git since its session, plus the last
-  three commits.
+  three commits. Where the plugin ships ``_symbol_stamps``, a turn's context also
+  names the symbols its edits changed, and a lesson that carries such stamps is
+  tagged by them: a stamped symbol whose body changed, or that is gone.
 
 The module is shared verbatim by the Claude Code and Codex plugins; ``AGENT``
 selects the transcript format. It never raises into a hook: every entry point
@@ -1092,6 +1094,52 @@ def _keep_call(call: dict) -> str:
     return ""
 
 
+# -- Symbol stamps ------------------------------------------------------------------------
+
+
+def _stamps():
+    """The symbol-stamp module, where the plugin ships one; else None."""
+    try:
+        import _symbol_stamps
+    except ImportError:
+        return None
+    return _symbol_stamps
+
+
+def _turn_symbols(parsed: dict, data: dict, root: str) -> dict:
+    """``{unit id: stamps}`` of the symbols each unsent request's edits changed.
+
+    Runs before the session lock is taken: it may wait for the server (a graph
+    refresh, then ``locate``), and the next prompt must not wait behind it.
+    """
+    stamps = _stamps()
+    if stamps is None:
+        return {}
+    sent = {str(i) for i in data.get("qa_sent_ids") or []}
+    units = [u for u in parsed.get("units") or [] if isinstance(u, dict) and u.get("id")]
+    groups = {
+        str(unit["id"]): _unit_calls(parsed.get("calls") or [], units, index)
+        for index, unit in enumerate(units)
+        if str(unit["id"]) not in sent
+    }
+    return stamps.stamp_turns(groups, root)
+
+
+def _unit_calls(calls: list, units: list, index: int) -> list:
+    """The calls that ran from this request's start to the next request's."""
+    start = _parse_time(str(units[index].get("request_time") or ""))
+    later = units[index + 1 :]
+    end = _parse_time(str(later[0].get("request_time") or "")) if later else None
+    if start is None:
+        return []
+    out = []
+    for call in calls or []:
+        at = _parse_time(str(call.get("time") or ""))
+        if at is not None and at >= start and (end is None or at < end):
+            out.append(call)
+    return out
+
+
 # -- QA entries ---------------------------------------------------------------------------
 
 
@@ -1106,7 +1154,9 @@ def _stop_answer(payload: dict) -> str:
     return "" if answer == "null" else answer
 
 
-def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, final: bool) -> list:
+def _qa_entries(
+    payload: dict, parsed: dict, data: dict, cwd: str, sanitize, final: bool, symbols=None
+) -> list:
     """One QA entry per answered request not sent yet, paired by transcript unit.
 
     Requests are tracked by unit id (``qa_sent_ids``), so a Stop that runs after
@@ -1208,6 +1258,9 @@ def _qa_entries(payload: dict, parsed: dict, data: dict, cwd: str, sanitize, fin
             context["continuation"] = True
         if unit.get("interrupted"):
             context["interrupted"] = True
+        if (symbols or {}).get(unit_id):
+            # The symbols this request's edits changed (body hashes as of now).
+            context["symbols"] = symbols[unit_id]
         qa["context"] = json.dumps(context, ensure_ascii=False)
         out.append(qa)
         if not continuation:
@@ -1249,6 +1302,7 @@ def capture(payload: dict, *, final: bool = False) -> dict:
         return {"skipped": "no_session"}
     parsed = parse_transcript(str(payload.get("transcript_path") or ""))
     cwd = str(payload.get("cwd") or "") or os.getcwd()
+    symbols = _turn_symbols(parsed, read_state(session_key), git_root(cwd) or cwd)
 
     entries: list = []
     summary = {"traces": 0, "dropped": 0, "qa": False, "continuation": False}
@@ -1280,7 +1334,7 @@ def capture(payload: dict, *, final: bool = False) -> dict:
             entries, handled = [], []
         summary["traces"] = len(entries)
 
-        qa_entries = _qa_entries(payload, parsed, data, cwd, sanitize, final)
+        qa_entries = _qa_entries(payload, parsed, data, cwd, sanitize, final, symbols)
         entries.extend(qa_entries)
         summary["qa"] = len(qa_entries)
         summary["continuation"] = sum(
@@ -1603,6 +1657,7 @@ def list_lessons(
                 "session_date": str(metadata.get("session_date") or ""),
                 "git_commit": str(metadata.get("git_commit") or ""),
                 "files": [str(f) for f in metadata.get("files") or [] if f],
+                "symbols": [s for s in metadata.get("symbols") or [] if isinstance(s, dict)],
                 "created_at": str(row.get("createdAt") or row.get("created_at") or ""),
                 "body": parsed["body"],
             }
@@ -1819,11 +1874,16 @@ def lesson_tag(lesson: dict, cwd: str, view: _GitView | None = None) -> str:
     if not short:
         return ""
     changed_paths, then_paths, now_paths = [], [], []
-    if lesson.get("files"):
+    if lesson.get("files") and not isinstance(lesson.get("symbol_state"), dict):
         changed_paths, then_paths = view.changes(commit)
         now_paths = view.now_paths()
     changed, gone = [], []
-    for name in lesson.get("files") or []:
+    state = lesson.get("symbol_state")
+    if isinstance(state, dict):
+        # Stamped symbols were compared with the code graph: they say what
+        # changed, the lesson's files do not.
+        changed, gone = list(state.get("changed") or []), list(state.get("gone") or [])
+    for name in [] if isinstance(state, dict) else lesson.get("files") or []:
         in_now = _match(name, now_paths)
         in_then = _match(name, then_paths)
         if not in_now and not in_then:
@@ -1967,6 +2027,16 @@ def build_block(query: str, cwd: str) -> str:
         line_for=line_for,
         max_candidates=MAX_TAGGED_CANDIDATES if in_git else None,
     )
+    stamps = _stamps()
+    if in_git and stamps is not None and stamps.mark_changed(chosen, root, _remaining(deadline)):
+        # One locate call for the lessons shown: their tags now name the stamped
+        # symbols that changed. Lines that no longer fit keep the file-level tags.
+        precise = _line_maker(root, in_git)
+        if sum(len(precise(lesson)) + 1 for lesson in chosen) <= LESSON_LINES_CAP:
+            line_for = precise
+        else:
+            for lesson in chosen:
+                lesson.pop("symbol_state", None)
     sessions = len(
         {
             item["session_id"]

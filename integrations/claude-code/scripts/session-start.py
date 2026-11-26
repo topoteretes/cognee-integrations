@@ -838,6 +838,14 @@ def _ensure_local_server_running(
         # pick the user the plugin logs in as; a non-default user must already exist.
         server_env.setdefault("DEFAULT_USER_EMAIL", _LOCAL_DEFAULT_USER_EMAIL)
         server_env.setdefault("DEFAULT_USER_PASSWORD", _LOCAL_DEFAULT_USER_PASSWORD)
+        # cognee >= 1.6.10 refuses a server-side path named by an API caller
+        # unless ACCEPT_LOCAL_FILE_PATH is set, and the plugin is an API caller:
+        # without it, indexing a local repository and analysing it answer 403.
+        # This server is the plugin's own, bound to loopback (uvicorn's default
+        # host; no --host below), reading files of the machine its only callers
+        # run on. setdefault: a value from the shell or ~/.cognee/.env wins, and
+        # a server the plugin did not start is never given it.
+        server_env.setdefault("ACCEPT_LOCAL_FILE_PATH", "true")
         # The server's console output must not inherit this worker's stdio
         # (bootstrap.log — that is how it reached gigabytes: every line the
         # server printed for as long as it ran), but it must not vanish either:

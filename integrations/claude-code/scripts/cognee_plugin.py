@@ -1,9 +1,15 @@
-"""cognee-plugin - offline usage-metrics CLI for the cognee Claude Code plugin.
+"""cognee-plugin - usage metrics and session trace for the cognee Claude Code plugin.
 
 Usage:
     cognee-plugin metrics [--json]
+    cognee-plugin trace [--follow] [--session <id>]
 
-Computes a usage rollup purely from this plugin's local state files - no
+``trace`` prints one session's hook events (from hook.log) and the server's
+pipeline runs for it, improve stages included, one line per event in time
+order; ``--follow`` keeps polling until interrupted (see ``_trace.py``). It is
+the one command here that calls the server.
+
+``metrics`` computes a usage rollup purely from this plugin's local state files - no
 network, no import of the cognee package:
     ~/.cognee-plugin/claude-code/hook.log
     ~/.cognee-plugin/claude-code/save_counter.json
@@ -248,6 +254,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Output metrics as a JSON object instead of a human-readable rollup.",
     )
+    trace_p = sub.add_parser(
+        "trace",
+        help="Print one session's hook events and server pipeline runs in time order.",
+    )
+    trace_p.add_argument("--follow", action="store_true", help="Keep polling until interrupted.")
+    trace_p.add_argument(
+        "--session",
+        default="",
+        help="Host session id or Cognee session id (default: this launch, else the newest).",
+    )
     return parser
 
 
@@ -266,6 +282,14 @@ def main(argv=None):
         else:
             _print_rollup(metrics, _PLUGIN_DIR.name)
         return 0
+
+    if args.command == "trace":
+        import _trace
+
+        try:
+            return _trace.main(_PLUGIN_DIR, args.session, args.follow)
+        except KeyboardInterrupt:
+            return 0
 
     parser.print_help(sys.stderr)
     return 1

@@ -262,8 +262,24 @@ def git_repo_root(cwd: str) -> str:
 # turn, forever, for every locally indexed repo (verified: two enola runs with
 # no source edit produce two different fingerprints). Excluded at the git level
 # so neither the dirty-path set nor the untracked stats can see it.
+#
+# A repository that shares its dataset with others gets the cluster snapshot in
+# <repo>/.enola-<dataset id>/ instead (cognee writes extractor_cache.json
+# there), which changes the fingerprint the same way: excluded as well.
 _ENOLA_SNAPSHOT_DIR = ".enola"
-_FINGERPRINT_PATHSPEC = ["--", ".", f":(exclude){_ENOLA_SNAPSHOT_DIR}"]
+_ENOLA_CLUSTER_PREFIX = _ENOLA_SNAPSHOT_DIR + "-"
+_FINGERPRINT_PATHSPEC = [
+    "--",
+    ".",
+    f":(exclude){_ENOLA_SNAPSHOT_DIR}",
+    f":(exclude){_ENOLA_CLUSTER_PREFIX}*",
+]
+
+
+def _is_enola_output(rel: str) -> bool:
+    """True for a path inside ``.enola/`` or a ``.enola-<dataset id>/`` directory."""
+    top = rel.split("/", 1)[0]
+    return top == _ENOLA_SNAPSHOT_DIR or top.startswith(_ENOLA_CLUSTER_PREFIX)
 
 
 def git_fingerprint(root: str) -> str:
@@ -271,8 +287,9 @@ def git_fingerprint(root: str) -> str:
 
     Covers HEAD, the dirty-path set, tracked content changes (``git diff
     HEAD``), and untracked files by (path, size, mtime) — porcelain alone
-    would miss a re-edit of an already-dirty file. The enola snapshot dir the
-    indexer itself writes is excluded (see ``_FINGERPRINT_PATHSPEC``). Returns
+    would miss a re-edit of an already-dirty file. The enola snapshot dirs the
+    indexer itself writes (``.enola``, ``.enola-<dataset id>``) are excluded
+    (see ``_FINGERPRINT_PATHSPEC``). Returns
     "" when the root is not a usable git repo; callers treat "" as "cannot
     fingerprint" and skip the freshness gate (the server-side hashes still
     dedupe).
@@ -295,7 +312,7 @@ def git_fingerprint(root: str) -> str:
         rel = line[3:].strip().strip('"')
         # Belt and braces: an older git that ignores the exclude pathspec must
         # still never let the snapshot dir drive the fingerprint.
-        if rel.rstrip("/") == _ENOLA_SNAPSHOT_DIR or rel.startswith(_ENOLA_SNAPSHOT_DIR + "/"):
+        if _is_enola_output(rel):
             continue
         path = os.path.join(root, rel)
         try:
@@ -748,12 +765,22 @@ def _clear_retry_failure(state: dict) -> None:
         state.pop(field, None)
 
 
-def reingest_if_changed(cwd, service_url, api_key, *, opener=urllib.request.urlopen) -> dict:
+def reingest_if_changed(
+    cwd,
+    service_url,
+    api_key,
+    *,
+    opener=urllib.request.urlopen,
+    run_in_background=True,
+    timeout=120.0,
+) -> dict:
     """Stop-hook freshness pass: re-submit the cwd's indexed repo if it changed.
 
     Returns a small outcome dict for logging; {} when there is nothing to do
     (no indexed repo for this cwd, URL-indexed repo, or unchanged tree).
-    Never raises — this runs on the (async) Stop hook.
+    Never raises — this runs on the (async) Stop hook. With
+    ``run_in_background=False`` the server answers once the graph is loaded
+    (the symbol stamps need the turn's edits in the graph before they read it).
 
     URL-indexed repos are skipped by design, not by omission: the server built
     that graph from its own clone, which only ever holds pushed commits, so
@@ -785,7 +812,9 @@ def reingest_if_changed(cwd, service_url, api_key, *, opener=urllib.request.urlo
             state.get("spec") or root,
             str(state.get("dataset") or default_code_dataset(root)),
             index_vectors=bool(state.get("index_vectors")),
+            run_in_background=run_in_background,
             opener=opener,
+            timeout=timeout,
         )
         outcome = {"changed": True, "repo_root": root, "dataset": state.get("dataset")}
         if isinstance(result, dict) and result.get("ok"):

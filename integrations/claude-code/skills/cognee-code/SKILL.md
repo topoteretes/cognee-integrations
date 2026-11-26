@@ -7,9 +7,9 @@ description: >-
 when_to_use: >-
   E.g. "index this repo", "what calls or uses X?", "what breaks if I change X?", "how
   does A reach B?", "list all API endpoints", "what did the last re-index change?". Not
-  for overviews, hotspots, diagrams or a whole change's impact (cognee-architecture),
-  conceptual questions naming no symbol (cognee-search), storing one file
-  (cognee-remember), or ordinary edits or debugging.
+  for overviews, hotspots, diagrams or reviewing a change (cognee-architecture),
+  proposing rules (cognee-rules), questions naming no symbol (cognee-search),
+  storing a file (cognee-remember), or ordinary edits.
 ---
 
 # Cognee Code Graph

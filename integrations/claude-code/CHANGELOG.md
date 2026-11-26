@@ -10,6 +10,52 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0]
+
+### Added
+
+- **Review a change's effect on the architecture** (`cognee-review.sh`, the
+  `cognee-architecture` skill). The server runs enola's `check` on the repository the
+  checkout was indexed from, against a base ref (default: the remote default branch),
+  and the script prints the status, new findings by explainer, edges added and removed
+  by kind, what was reached outside the expected scope, and a prominent line when the
+  change touches its own rule files. `--stored` prints the stored verdict and says when
+  the graph was reloaded since.
+- **A stored regression at the next prompt.** After a review, the next prompt in that
+  repository reads the stored verdict and shows a short block once per verdict when it
+  reports a regression or changed rule files. No review runs on its own, and a
+  repository with no pending review costs no request.
+- **Rule proposals** (`cognee-rules.sh`, the new `cognee-rules` skill). The server mines
+  candidate rules and lints each one as a draft; candidates are shown with their
+  support, exceptions and lint result, those matching stored `constraint` or
+  `convention` lessons first. `accept` writes `enola/constraints/<name>.yaml` in the
+  working tree and commits nothing; `reject` keeps a candidate from being proposed again.
+- **Symbol stamps in coding memory.** A request's context names the symbols its edits
+  changed, with their body hashes, and a lesson that carries stamps is tagged by the
+  stamped symbols that changed or are gone instead of by its files. Needs a server with
+  the `locate` code operation and a repository indexed by path; otherwise nothing changes.
+- **`cognee-plugin trace [--follow] [--session <id>]`** prints a session's hook events
+  and the server's pipeline runs for it in time order, with one line per improve stage
+  when the server reports them.
+
+### Changed
+
+- **The plugin's own local server is started with `ACCEPT_LOCAL_FILE_PATH=true`** unless
+  you set the variable. cognee 1.6.10 and later refuse a local repository path named
+  over the API without it. A server the plugin did not start is not affected.
+- **Change detection ignores `.enola-<dataset id>/`** as it ignores `.enola/`. cognee
+  writes its cluster snapshot there for a repository that shares its dataset, which
+  re-indexed that repository after every turn.
+- In coding mode, a request that edited files in a repository indexed by path re-indexes
+  it at the end of the request (the symbol stamps read the edited code). Coding mode ran
+  no code-graph indexing before.
+
+### Requirements
+
+- Reviews and rule proposals need a local Cognee server with `POST /api/v1/code/analyze`
+  (cognee 1.6.11 or later) and a repository indexed by path. An older server, Cognee
+  Cloud and a repository indexed from a git URL get one line saying so.
+
 ## [1.8.11]
 
 **This release takes back versions 1.8.2 to 1.8.10.** The plugin is the code on `dev`

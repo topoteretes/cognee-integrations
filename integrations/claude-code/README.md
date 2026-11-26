@@ -37,6 +37,13 @@ capture off; recall and explicit remember keep working.
   to `localhost:8011`. Memory is stored on this machine. To build the graph, that
   server sends captured text to the LLM and embedding provider you configured
   (`LLM_API_KEY`, `LLM_PROVIDER`), or to Claude Code through the observer below.
+  The plugin starts that server with `ACCEPT_LOCAL_FILE_PATH=true` unless you set the
+  variable yourself (shell or `~/.cognee/.env`): cognee 1.6.10 and later refuse a path
+  on the server's disk named over the API without it, and the plugin names one when it
+  indexes or reviews a local repository. The setting lets a caller of that server have
+  it read any file this user can read, so it is given only to the server the plugin
+  starts, which listens on loopback only. A server you start yourself, and Cognee
+  Cloud, are never given it.
 - *Cloud mode*: your Cognee Cloud instance at `COGNEE_BASE_URL`, over HTTPS,
   authenticated with your `COGNEE_API_KEY`. The status line's credit balance comes
   from the Cognee platform API (`api.aws.cognee.ai`).
@@ -541,10 +548,25 @@ It holds the newest `test-baseline`, the two newest pitfalls, then the lessons r
 request: 1,500 characters of whole lessons not counting their git tags (at most 1,800 with them), newest per state key,
 without duplicates. Each lesson
 is tagged with its session's date and commit and the files it names that changed or no longer
-exist since (read-only git; no tag for an unknown commit or outside git). Lessons are read from the
+exist since (read-only git; no tag for an unknown commit or outside git). A lesson that carries
+symbol stamps (below) is tagged by them instead: it names the stamped symbols whose body changed
+or that are gone, and a change elsewhere in the same file leaves it untagged. Lessons are read from the
 dataset listing's metadata, so only this repository's lessons are used (`project_node_sets`), and
 their bodies are cached in `~/.cognee-plugin/claude-code/coding/lessons/`, filled in the background at
 session start. A session without lessons gets no block.
+
+**Symbol stamps.** In a repository indexed by path, the QA entry's context also carries
+`symbols`: the functions, methods and classes the request's `Edit`, `MultiEdit` and `Write`
+calls changed, each with the hash of its body, from the server's `locate` code operation. The
+line ranges come from the calls' own inputs (where the new text sits in the file when the
+request ends), so a deletion, an edit a later edit replaced and a change made through the shell
+add none. Before asking, the plugin re-indexes the repository if the working tree changed and
+waits for it, so the hashes are those of the edited code; the whole step has 20 seconds. The
+server stores the stamps on the request's lessons, and the memory block compares the stamps of
+the lessons it shows with the code graph in one call. The comparison reads the graph as last
+indexed. On a server without `locate`, a repository that is not indexed by path, or any failure,
+the request is sent without stamps and the lessons keep their file tags; `hook.log` gets one
+`coding.symbol_stamps_skipped` or `coding.symbol_marks_skipped` line.
 
 **Server.** Coding mode needs a cognee server with PR #6568. On an older one (no event-time
 fields in `/openapi.json`), memory is off: nothing is captured or injected, and session start
@@ -736,7 +758,8 @@ command, such as `/cognee-memory:cognee-search <query>`.
 | `cognee-switch-datasets` | "switch to research", "use project-alpha from now on" |
 | `cognee-keys` | "list the Cognee keys", "revoke an old machine's key", "the agent is full of keys" |
 | `cognee-code` | "index this repo", "what calls or uses process_payment?" |
-| `cognee-architecture` | "explain the architecture of this repo", "where are the hotspots?" |
+| `cognee-architecture` | "explain the architecture of this repo", "where are the hotspots?", "review my change's impact before I merge" |
+| `cognee-rules` | "propose architecture rules for this repo", "don't suggest that rule again" |
 | `cognee-standup` | "prep my standup", "what did I work on yesterday?" |
 | `cognee-digest` | "recap my week", "what did we ship and decide this week?" |
 | `cognee-timeline` | "how did the retry policy evolve?", "when did we first discuss dataset switching?" |
@@ -849,7 +872,59 @@ dataset from the current checkout, so the generated name rarely needs typing.
 Indexing writes enola's snapshot into the indexed repository itself, at
 `<repo>/.enola/` (untracked). Add `.enola/` to the repository's `.gitignore` or
 your global excludes; the plugin's change detection already ignores it, so the
-indexer's own output never triggers a re-index.
+indexer's own output never triggers a re-index. A repository that shares its dataset
+with other repositories gets the cluster snapshot in `<repo>/.enola-<dataset id>/`
+instead; change detection ignores those directories as well.
+
+### Reviewing a change
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" [<base-ref>] [--fail-on <explainers>] [--max-spillover <n>] [--target <symbol-or-package>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" --stored
+```
+
+The server runs enola's `check` on the repository this checkout was indexed from and
+grades what the working tree (uncommitted edits included) did to the architecture since
+it left the base ref (default: the remote default branch). The report gives the status,
+the new findings by explainer, the edges added and removed by kind, what was reached
+outside the scope named with `--target`, and a prominent line when the change touches
+the files that decide its own grade (`enola-intent.yaml`, `mcp-arch.yaml`,
+`enola/constraints/`). Nothing counts as a regression until `--fail-on` or
+`--max-spillover` says what should. The plugin never runs enola itself and never runs
+a review on its own.
+
+The server stores the verdict on the repository's code graph. After a review, the next
+prompt in that repository reads the stored verdict once and, when it reports a
+regression or changed rule files, puts a short block in front of the prompt's memory
+context: once per stored verdict, within the injection budget, and at most two seconds
+of waiting. `--stored` prints the stored verdict in full and says when the graph was
+reloaded since.
+
+Reviews and the rule proposals below need a local Cognee server with the code analysis
+API (`POST /api/v1/code/analyze`, cognee 1.6.11 or later) and a repository indexed by
+path. On an older server, on Cognee Cloud, or for a repository indexed from a git URL
+(the server then holds a shallow clone of pushed commits), the scripts answer with one
+line that says so. The plugin's own local server is pinned to an earlier cognee, so
+today this needs a newer server at `COGNEE_BASE_URL`, started with
+`ACCEPT_LOCAL_FILE_PATH=true`.
+
+### Proposing rules
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-rules.sh" list [--limit <n>] [--min-confidence <0..1>] [--min-support <n>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-rules.sh" accept <id> [--name <file-name>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-rules.sh" reject <id> [<id> ...]
+```
+
+`list` has the server mine candidate rules from the repository's snapshot (regularities
+most facts follow, with their exceptions) and lint each candidate shown as a draft. A
+candidate that fails lint is shown as failing, with the reason; none is dropped. With
+coding memory on, a candidate is annotated with the stored `constraint` and
+`convention` lessons that mention the same files or symbols, and annotated candidates
+come first. `accept` writes the rule to `enola/constraints/<name>.yaml` in the working
+tree: it commits nothing and sends nothing to the server. `reject` records the candidate
+in `~/.cognee-plugin/claude-code/code-review/` so it is not proposed again. The
+`cognee-rules` skill accepts or rejects only on your say-so.
 
 ### What the graph reflects: working tree vs. pushed commits
 
@@ -1476,6 +1551,21 @@ network, no `cognee` import — run:
 
 It reports sessions, recalls and hit-rate, saves (prompt/trace/answer), the
 local-vs-cloud mode split, and how often an open recall breaker skipped recall.
+
+## Session trace
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-plugin" trace [--follow] [--session <id>]
+```
+
+Prints one session's hook events (from `hook.log`) and the server's pipeline runs for it
+(`GET /api/v1/activity/pipeline-runs`), one line per event in time order. An improve
+that reports its stages prints one line per stage, with its status, the reason it was
+skipped and its duration. `--session` takes the host session id or the Cognee session
+id; the default is this launch, else the newest. `--follow` polls every two seconds
+until interrupted. Nothing is written. A hook process's lines are counted to the session
+when one of them names it, so a line of a process that never logged a session is left
+out.
 
 ## Updating
 
