@@ -1,0 +1,34 @@
+# The architecture enola grades this repository against
+# (https://github.com/enola-labs/enola). The "Architecture (enola)" CI job
+# reports what each pull request does to it; nothing here fails a build until
+# the team decides to add --fail-on.
+#
+# Documented, but not declared, because enola 0.5.4 would report false breaches:
+# - "Each integration ... is an independently publishable package" (README.md),
+#   so integrations do not import each other. enola resolves every
+#   `import cognee` to integrations/dify/provider/cognee.py, and resolves calls
+#   between the host plugins' copied hook modules (_plugin_common.py, config.py,
+#   ...) onto one of the copies, so it sees thousands of cross-integration edges
+#   that do not exist.
+# - "The hooks never import cognee" (the claude-code, codex and cursor READMEs).
+#   For the same reason, a rule cannot tell an import of the cognee package from
+#   an import of dify's module.
+
+layers:
+  # integrations/vscode/README.md: "All editor-agnostic logic lives in src/core
+  # (no vscode imports), so it is unit-tested against a mocked backend and can
+  # back other editors (e.g. a JetBrains sidecar) unchanged." The extension
+  # builds on the core, never the other way round.
+  - {name: vscode-extension, paths: ["integrations/vscode/src/extension/**"]}
+  - {name: vscode-core, paths: ["integrations/vscode/src/core/**"]}
+
+components:
+  - name: vscode-core
+    match: ["integrations/vscode/src/core/**"]
+
+rules:
+  - id: vscode-core-imports-no-vscode
+    forbid: vscode-core
+    to_name: ["vscode"]
+    via: imports
+    because: "All editor-agnostic logic lives in src/core (no vscode imports), so it is unit-tested against a mocked backend and can back other editors unchanged (integrations/vscode/README.md)"
