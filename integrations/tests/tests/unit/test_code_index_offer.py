@@ -44,7 +44,12 @@ def start(suite, hook_module, monkeypatch):
     module = hook_module(suite, "session-start.py")
     events: list = []
     monkeypatch.setattr(module, "hook_log", lambda e, d=None: events.append((e, d)))
-    for name in ("COGNEE_CODE_AUTOINDEX", "COGNEE_BASE_URL", "COGNEE_LOCAL_API_URL"):
+    for name in (
+        "COGNEE_CODE_AUTOINDEX",
+        "COGNEE_CODE_SERVER_SHARES_FILES",
+        "COGNEE_BASE_URL",
+        "COGNEE_LOCAL_API_URL",
+    ):
         monkeypatch.delenv(name, raising=False)
     module.events = events
     return module
@@ -66,8 +71,8 @@ def test_a_local_session_is_told_to_ask(start, repo):
     # where the path's backslashes would otherwise be eaten.
     script = start.Path(start.__file__).resolve().parent / "cognee-index-repo.sh"
     arg = shlex.quote(str(repo))
-    assert f'`"{script}" {arg} --wait 60`' in text
-    assert f'`"{script}" {arg} --decline`' in text
+    assert f'`"{script}" {arg} --expect-server local --wait 60`' in text
+    assert f'`"{script}" {arg} --expect-server local --decline`' in text
     assert "Never index it without a yes" in text
     # For the agent only: the question itself is what the user sees.
     assert "systemMessage" not in out
@@ -85,6 +90,33 @@ def test_a_cloud_session_says_what_leaves_the_machine(start, repo, monkeypatch):
     assert "no local file is uploaded" in text
     assert "a private repository fails" in text
     assert "the code stays on this machine" not in text
+    # A yes covers a remote server only: the command stops if it finds a local one.
+    assert "--expect-server remote --wait 60`" in text
+    assert "--expect-server remote --decline`" in text
+
+
+def test_the_question_describes_the_server_the_command_will_use(start, repo, monkeypatch):
+    """A yes runs cognee-index-repo.sh, which reads COGNEE_BASE_URL and then
+    COGNEE_LOCAL_API_URL. The question must describe that server, or "the code
+    stays on this machine" would precede a clone by a remote one."""
+    monkeypatch.setenv("COGNEE_LOCAL_API_URL", CLOUD)
+    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
+    assert "(tenant.cognee.example) cannot read this folder" in text
+    assert "the code stays on this machine" not in text
+
+    monkeypatch.setenv("COGNEE_BASE_URL", "http://localhost:8011")
+    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
+    assert "the code stays on this machine" in text
+
+
+def test_a_server_that_shares_the_filesystem_is_described_as_such(start, repo, monkeypatch):
+    monkeypatch.setenv("COGNEE_BASE_URL", "http://cognee:8000")
+    monkeypatch.setenv("COGNEE_CODE_SERVER_SHARES_FILES", "true")
+    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
+    assert "(cognee) is set up as sharing this filesystem" in text
+    assert "no file is uploaded" in text
+    assert "the code stays on this machine" not in text
+    assert "--expect-server local --wait 60`" in text
 
 
 def test_the_question_leads_the_context(start, repo):
@@ -104,7 +136,7 @@ def test_a_path_with_a_space_stays_one_argument(start, tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
     (root / "app.py").write_text("x = 1\n", encoding="utf-8")
     text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(root)}))
-    assert f"'{root.resolve()}' --wait 60`" in text
+    assert f"'{root.resolve()}' --expect-server local --wait 60`" in text
 
 
 @pytest.mark.parametrize("source", ["resume", "compact"])
@@ -131,10 +163,14 @@ def test_not_asked_outside_a_repository(start, tmp_path):
 
 
 def test_a_failure_costs_the_question_not_the_startup(start, repo, monkeypatch):
-    def boom():
-        raise RuntimeError("config unreadable")
+    import _code_graph
 
-    monkeypatch.setattr(start, "load_config", boom)
+    def boom(*_a, **_kw):
+        raise RuntimeError("git unreadable")
+
+    # Anything that goes wrong while the question is prepared, down to a git
+    # call inside index_offer, is logged here and costs nothing else.
+    monkeypatch.setattr(_code_graph, "git_repo_root", boom)
     out = start._apply_code_index_offer({"a": 1}, {**STARTUP, "cwd": str(repo)})
     assert out == {"a": 1}
-    assert start.events == [("code_index_offer_failed", {"error": "config unreadable"})]
+    assert start.events == [("code_index_offer_failed", {"error": "git unreadable"})]

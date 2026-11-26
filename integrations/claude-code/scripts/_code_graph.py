@@ -318,8 +318,34 @@ def git_fingerprint(root: str) -> str:
     return digest.hexdigest()
 
 
+def server_shares_files() -> bool:
+    """``COGNEE_CODE_SERVER_SHARES_FILES``: the server reads this disk from elsewhere.
+
+    A loopback URL is the only thing that says so by itself. A server reached
+    by another name (a container's service name, a LAN host) that mounts the
+    same checkout at the same path has to be declared; it is then treated as a
+    local one everywhere here, and sent the path instead of a clone URL.
+    """
+    value = str(os.environ.get("COGNEE_CODE_SERVER_SHARES_FILES", "") or "").strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+def _reads_disk(is_local_server):
+    """``is_local_server`` as the functions below mean it: the server reads this disk."""
+    return True if server_shares_files() else is_local_server
+
+
 def service_is_local(service_url: str) -> bool:
-    """Whether the server runs on this machine and so reads the checkout in place."""
+    """Whether the server at ``service_url`` reads the checkout in place.
+
+    The loopback hosts are the ones ``_plugin_common.service_url_is_local``
+    lists; this module imports nothing of the plugin's, so the list is repeated
+    and a test holds the two together. They differ on an empty URL on purpose:
+    the hooks default it to the local server, while a command given no server
+    has none to read a path.
+    """
+    if server_shares_files():
+        return True
     host = (urllib.parse.urlparse(str(service_url or "")).hostname or "").lower()
     return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
@@ -520,6 +546,7 @@ def find_indexed_repo(cwd: str, is_local_server=None) -> dict:
     real = os.path.realpath(cwd) if cwd else ""
     if not real:
         return {}
+    is_local_server = _reads_disk(is_local_server)
     best: dict = {}
     for state in load_repo_states():
         root = str(state.get("repo_root") or "")
@@ -856,6 +883,7 @@ def index_repo(
     """
     if is_local_server is None:
         is_local_server = service_is_local(service_url)
+    is_local_server = _reads_disk(is_local_server)
     spec = canonical_spec(spec)
     remote = is_remote_repo(spec)
     repo_root = "" if remote else spec
@@ -994,6 +1022,7 @@ def reingest_if_changed(
     use (a remote server has no such path).
     """
     try:
+        is_local_server = _reads_disk(is_local_server)
         state = find_indexed_repo(cwd, is_local_server)
         if not state or state.get("spec_kind") not in ("path", "url"):
             return {}
@@ -1060,6 +1089,8 @@ _AUTOINDEX_MAX_FILES = 3000
 # The question is prepared inside the SessionStart hook itself, so the git
 # calls behind it get a short leash instead of the module-wide timeout.
 _OFFER_GIT_TIMEOUT_SECONDS = 3.0
+# The one call there that walks the working tree instead of reading the index.
+_OFFER_WALK_TIMEOUT_SECONDS = 1.0
 
 
 def autoindex_mode() -> str:
@@ -1106,23 +1137,31 @@ def _git_code_file_count(root: str, *, tracked_only: bool) -> int:
     """Code files git tracks in ``root``, read from the index with no tree walk.
 
     The number sizes the question, so tracked files are enough for it, and the
-    index answers in the same time on a monorepo as on a small service. A local
-    server also reads untracked files, so a checkout that tracks no code yet (a
-    fresh ``git init``) is counted again with those included; that walk only
-    ever runs on a tree git holds nothing of. 0 when git gives no answer in
-    time, which callers read as "nothing to offer".
+    index answers in the same time on a monorepo as on a small service. A
+    checkout that tracks files but no code (a dotfiles repository in a home
+    directory) is 0, and nothing is walked to find that out.
+
+    Only a checkout that tracks nothing at all, a fresh ``git init``, is listed
+    with its untracked files, since a local server would read those; that walk
+    gets a shorter leash still. 0 when git gives no answer in time, which
+    callers read as "nothing to offer".
     """
 
-    def count(args) -> int:
-        listed = _run_git(args, root, timeout=_OFFER_GIT_TIMEOUT_SECONDS)
+    def code_files(listed: str) -> int:
         return sum(
             1 for name in listed.split("\0") if name.rsplit(".", 1)[-1].lower() in CODE_EXTENSIONS
         )
 
-    tracked = count(["ls-files", "-z"])
-    if tracked or tracked_only:
-        return tracked
-    return count(["ls-files", "-z", "--others", "--exclude-standard"])
+    tracked = _run_git(["ls-files", "-z"], root, timeout=_OFFER_GIT_TIMEOUT_SECONDS)
+    if tracked.strip("\0") or tracked_only:
+        return code_files(tracked)
+    return code_files(
+        _run_git(
+            ["ls-files", "-z", "--others", "--exclude-standard"],
+            root,
+            timeout=_OFFER_WALK_TIMEOUT_SECONDS,
+        )
+    )
 
 
 def index_offer(cwd, *, is_local_server=True) -> dict:
@@ -1133,31 +1172,31 @@ def index_offer(cwd, *, is_local_server=True) -> dict:
     not on ``ask``, or a remote server with no git remote it could clone.
     Otherwise ``repo_root``, ``source_files`` and ``server`` ("local" or
     "remote"), plus ``clone_url`` for a remote server: the one thing that would
-    be sent. Makes no request and never raises: it runs inside SessionStart.
+    be sent. Makes no request. An error is the caller's to catch and log:
+    SessionStart records it as ``code_index_offer_failed``.
     """
-    try:
-        if autoindex_mode() != "ask":
-            return {}
-        root = git_repo_root(cwd, _OFFER_GIT_TIMEOUT_SECONDS)
-        if not root:
-            return {}
-        if find_indexed_repo(root, is_local_server):
-            return {}
-        if is_declined(root, is_local_server):
-            return {}
-        offer = {"repo_root": root, "server": _server_kind(is_local_server)}
-        if not is_local_server:
-            offer["clone_url"] = remote_clone_url(root, _OFFER_GIT_TIMEOUT_SECONDS)
-            if not offer["clone_url"]:
-                return {}
-        offer["source_files"] = _git_code_file_count(root, tracked_only=not is_local_server)
-        return offer if offer["source_files"] else {}
-    except Exception:
+    if autoindex_mode() != "ask":
         return {}
+    is_local_server = _reads_disk(is_local_server)
+    root = git_repo_root(cwd, _OFFER_GIT_TIMEOUT_SECONDS)
+    if not root:
+        return {}
+    if find_indexed_repo(root, is_local_server):
+        return {}
+    if is_declined(root, is_local_server):
+        return {}
+    offer = {"repo_root": root, "server": _server_kind(is_local_server)}
+    if not is_local_server:
+        offer["clone_url"] = remote_clone_url(root, _OFFER_GIT_TIMEOUT_SECONDS)
+        if not offer["clone_url"]:
+            return {}
+    offer["source_files"] = _git_code_file_count(root, tracked_only=not is_local_server)
+    return offer if offer["source_files"] else {}
 
 
 def decline_repo(cwd, *, is_local_server=True) -> dict:
     """Record a "never" for the repository containing ``cwd``."""
+    is_local_server = _reads_disk(is_local_server)
     root = git_repo_root(cwd) or canonical_spec(cwd)
     record_declined(root, is_local_server)
     return {"ok": True, "declined": root, "server": _server_kind(is_local_server)}
@@ -1186,6 +1225,7 @@ def autoindex_on_session_start(
         a yes runs the index command. Only ``always`` indexes from here.
     """
     try:
+        is_local_server = _reads_disk(is_local_server)
         root = git_repo_root(cwd)
         if not root:
             return {}
@@ -1252,13 +1292,19 @@ def main(argv):
     """CLI: ``index <repo-path-or-url> [dataset]``, ``decline <path>`` or ``dataset <path>``.
 
     argv mirrors the sibling scripts: service_url, api_key, command, spec,
-    dataset, index_vectors, wait_seconds. The ``dataset`` command prints the
+    dataset, index_vectors, wait_seconds, expected_server. The ``dataset`` command prints the
     code dataset covering a path (empty line when that path is not indexed) —
     dataset names carry a path digest, so callers resolve the name from the
     checkout instead of reconstructing it. ``decline`` records the "never"
     answered to the session-start question and submits nothing.
+
+    ``expected_server`` ("local" or "remote") is what the session-start question
+    told the user about the server. The user's answer covers that and nothing
+    else, so when the server resolved here is of the other kind, the command
+    stops instead of doing something the question did not describe.
     """
-    a = list(argv) + [""] * 7
+    a = list(argv) + [""] * 8
+    expected_server = str(a[7]).strip().lower()
     service_url, api_key, command, spec = a[0], a[1], a[2], a[3]
     dataset = a[4]
     index_vectors = str(a[5]).strip().lower() in ("1", "true", "yes", "on")
@@ -1271,6 +1317,22 @@ def main(argv):
         state = find_indexed_repo(spec or os.getcwd())
         print(str(state.get("dataset") or ""))
         return
+
+    actual_server = _server_kind(service_is_local(service_url))
+    if command in ("index", "decline") and expected_server in ("local", "remote"):
+        if expected_server != actual_server:
+            print(
+                json.dumps(
+                    {
+                        "error": f"the question described a {expected_server} Cognee server, "
+                        f"but this command resolved a {actual_server} one ({service_url}); "
+                        "nothing was submitted or recorded. Tell the user, and ask again "
+                        "with what a new session reports.",
+                        "status": 0,
+                    }
+                )
+            )
+            return
 
     if command == "decline":
         print(

@@ -3112,11 +3112,15 @@ def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
     import shlex
 
     root = str(offer.get("repo_root") or "")
+    server = "remote" if offer.get("server") == "remote" else "local"
     script = Path(__file__).resolve().parent / "cognee-index-repo.sh"
     # Quoted: the plugin root can contain a space (topoteretes/cognee#5154).
-    command = f'"{script}" {shlex.quote(root)}'
-    if offer.get("server") == "remote":
-        host = urllib.parse.urlparse(service_url).hostname or "the Cognee server"
+    # --expect-server carries what this question says about the server, so the
+    # command stops if it resolves the other kind: the answer covers only what
+    # was described.
+    command = f'"{script}" {shlex.quote(root)} --expect-server {server}'
+    host = urllib.parse.urlparse(service_url).hostname or "the Cognee server"
+    if server == "remote":
         where = (
             f"the Cognee server ({host}) cannot read this folder, so it would clone "
             f"{offer.get('clone_url')} itself: only commits pushed to the default branch are "
@@ -3128,8 +3132,15 @@ def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
             "parse the repository: say so, and that a private repository is the usual "
             "cause. The graph follows later pushes."
         )
-    else:
+    elif service_url_is_local(service_url):
         where = "Cognee's local server reads the folder in place and the code stays on this machine"
+        after = "The graph follows later edits on its own."
+    else:
+        # COGNEE_CODE_SERVER_SHARES_FILES: a server elsewhere that mounts this disk.
+        where = (
+            f"the Cognee server ({host}) is set up as sharing this filesystem, so it reads "
+            "the folder in place and no file is uploaded"
+        )
         after = "The graph follows later edits on its own."
     count = offer.get("source_files")
     files = "1 source file" if count == 1 else f"{count} source files"
@@ -3142,12 +3153,27 @@ def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
         f'Question: "{_CODE_INDEX_QUESTION}" Say in it that {where}.\n'
         "Options, and what each one means for you:\n"
         f'- "Index it": run `{command} --wait 60` and tell the user in one line whether it '
-        f"worked (`wait_outcome` `timeout` means it is still indexing in the background). "
+        f"worked (`wait_outcome` `timeout` means it is still indexing in the background; an "
+        f"`error` saying the server is not the one described means nothing was sent). "
         f"{after}\n"
         '- "Not now": do nothing. A later session asks again.\n'
         f'- "Never for this repository": run `{command} --decline`. It is not asked again; '
         "asking you to index the repository still works.\n"
         "Never index it without a yes, and do not ask twice in one session."
+    )
+
+
+def _index_command_service_url() -> str:
+    """The server ``cognee-index-repo.sh`` submits to, resolved the way it resolves it.
+
+    The question describes what a yes does, and a yes runs that command, so the
+    server is read in the command's order (``COGNEE_BASE_URL`` first), not in
+    the hooks' own (``COGNEE_LOCAL_API_URL`` first).
+    """
+    return _normalize_service_url(
+        os.environ.get("COGNEE_BASE_URL")
+        or os.environ.get("COGNEE_LOCAL_API_URL")
+        or _LOCAL_SERVICE_URL
     )
 
 
@@ -3163,12 +3189,11 @@ def _apply_code_index_offer(output: dict, payload: dict | None = None) -> dict:
     if str((payload or {}).get("source") or "") in ("resume", "compact"):
         return output
     try:
-        from _code_graph import index_offer
+        from _code_graph import index_offer, service_is_local
 
         cwd = str((payload or {}).get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
-        service_url = _normalize_service_url(str(load_config().get("base_url", "") or ""))
-        service_url = service_url or _LOCAL_SERVICE_URL
-        offer = index_offer(cwd, is_local_server=service_url_is_local(service_url))
+        service_url = _index_command_service_url()
+        offer = index_offer(cwd, is_local_server=service_is_local(service_url))
         if not offer:
             return output
         text = _code_index_offer_text(offer, service_url)

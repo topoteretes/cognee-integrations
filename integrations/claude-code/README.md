@@ -897,6 +897,7 @@ knows.
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_CODE_AUTOINDEX` | `ask` | `ask`: ask before indexing a new repository, on a local or a remote server · `always`: index new repositories without asking, on a local or a remote server · `off`: never ask and never index new repositories (indexed ones still refresh) |
+| `COGNEE_CODE_SERVER_SHARES_FILES` | unset | `true`: the Cognee server is not on `localhost` but mounts this machine's files at the same paths (a container, a LAN host), so a repository is indexed by its path, as on a local server, instead of being cloned from its git remote. Without it, any server that is not on `localhost` is treated as unable to read this disk |
 
 No question is asked for a directory that is not a git repository or holds no source
 files. With `always`, a repository of more than 3000 source files is skipped; one you

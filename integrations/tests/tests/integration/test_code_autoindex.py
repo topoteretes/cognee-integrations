@@ -459,6 +459,100 @@ def test_a_checkout_that_tracks_nothing_yet_is_still_offered(cg, tmp_path, askin
     assert cg.index_offer(str(fresh), is_local_server=True)["source_files"] == 1
 
 
+def test_a_repository_that_tracks_no_code_is_not_walked(cg, tmp_path, monkeypatch, asking):
+    """A dotfiles repository in a home directory tracks files, none of them
+    code, and sits on a tree far too big to list at every session start."""
+    home = tmp_path / "dotfiles"
+    home.mkdir()
+    _git(home, "init", "-q")
+    _git(home, "config", "user.email", "test@example.com")
+    _git(home, "config", "user.name", "Test")
+    _git(home, "config", "commit.gpgsign", "false")
+    (home / ".zshrc").write_text("export A=1\n", encoding="utf-8")
+    _git(home, "add", ".zshrc")
+    _git(home, "commit", "-q", "-m", "dotfiles")
+    (home / "untracked.py").write_text("x = 1\n", encoding="utf-8")
+
+    listings: list = []
+    real = cg._run_git
+
+    def spy(args, cwd, timeout=10.0):
+        if args[:1] == ["ls-files"]:
+            listings.append(list(args))
+        return real(args, cwd, timeout)
+
+    monkeypatch.setattr(cg, "_run_git", spy)
+    assert cg.index_offer(str(home), is_local_server=True) == {}
+    assert listings and all("--others" not in args for args in listings)
+
+
+@pytest.mark.parametrize("command", ["index", "decline"])
+def test_the_command_stops_when_the_server_is_not_the_one_described(
+    cg, mock_server, pushed_repo, asking, capsys, command
+):
+    """The question said the code stays on this machine; the command then finds
+    a remote server. The yes did not cover that, so nothing is sent or recorded."""
+    remote_url = "https://tenant.cognee.example"
+    cg.main([remote_url, "", command, str(pushed_repo), "", "", "", "local"])
+    out = capsys.readouterr().out
+    assert "described a local Cognee server" in out and "nothing was submitted" in out
+    mock_server.assert_not_called("POST", REMEMBER)
+    assert cg.load_repo_states() == []
+    assert not cg.is_declined(str(pushed_repo.resolve()), False)
+
+
+def test_the_command_runs_when_the_server_is_the_one_described(
+    cg, mock_server, git_repo, asking, capsys
+):
+    cg.main([mock_server.url, "", "index", str(git_repo), "", "", "", "local"])
+    assert '"ok": true' in capsys.readouterr().out
+    assert mock_server.assert_called("POST", REMEMBER)["form"]["raw_data"] == str(
+        git_repo.resolve()
+    )
+
+
+def test_a_server_declared_as_sharing_files_is_sent_the_path(
+    cg, mock_server, git_repo, monkeypatch, asking
+):
+    """A server reached by another name that mounts this disk reads a path as a
+    local one does. Without the setting, a graph it built would be hidden and
+    the checkout, having no remote to clone, could not be indexed at all."""
+    monkeypatch.setenv("COGNEE_CODE_SERVER_SHARES_FILES", "true")
+    assert cg.service_is_local("http://cognee:8000") is True
+    assert cg.index_offer(str(git_repo), is_local_server=False)["server"] == "local"
+
+    result = cg.index_repo(mock_server.url, "", str(git_repo), is_local_server=False)
+    assert result["ok"] is True
+    assert mock_server.assert_called("POST", REMEMBER)["form"]["raw_data"] == str(
+        git_repo.resolve()
+    )
+    state = cg.load_repo_states()[0]
+    assert state["spec_kind"] == "path"
+    assert cg.find_indexed_repo(str(git_repo), False)["dataset"] == result["dataset"]
+
+    monkeypatch.delenv("COGNEE_CODE_SERVER_SHARES_FILES")
+    assert cg.find_indexed_repo(str(git_repo), False) == {}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8011",
+        "http://127.0.0.1:8011/",
+        "http://[::1]:8011",
+        "http://0.0.0.0:8011",
+        "https://tenant.cognee.example",
+        "http://192.168.1.20:8011",
+        "http://host.docker.internal:8011",
+    ],
+)
+def test_the_command_and_the_hooks_agree_on_what_is_local(cg, suite, isolated_modules, asking, url):
+    """``_code_graph`` imports nothing of the plugin's, so it repeats the
+    loopback list the hooks use. This holds the two together."""
+    common = isolated_modules(suite, "_plugin_common")
+    assert cg.service_is_local(url) is common.service_url_is_local(url)
+
+
 def test_autoindex_can_be_turned_off(cg, mock_server, git_repo, monkeypatch):
     monkeypatch.setenv("COGNEE_CODE_AUTOINDEX", "off")
     outcome = cg.autoindex_on_session_start(

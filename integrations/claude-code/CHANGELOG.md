@@ -41,6 +41,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dataset; on the other server the repository counts as not indexed, and is asked
   about. A checkout indexed on both keeps both graphs.
 
+### Upgrade note
+
+- **A server that is not on `localhost` but reads your files.** Until now such a server
+  (a container, a LAN host that mounts the same paths) was sent a repository's path.
+  It is now treated like Cognee Cloud and sent the git remote to clone, and a graph it
+  built from a path is no longer used or refreshed. Set
+  `COGNEE_CODE_SERVER_SHARES_FILES=true` to keep indexing by path there.
+
 ## [1.8.11]
 
 **This release takes back versions 1.8.2 to 1.8.10.** The plugin is the code on `dev`

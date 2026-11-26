@@ -26,6 +26,9 @@
 # --index-vectors: also embed the extracted code facts so semantic search can
 #                  see them (needs an embedding provider; default off — the
 #                  code graph pipeline makes no LLM/embedding calls).
+# --expect-server: "local" or "remote", what the session-start question said
+#                  about the server. The command stops, submitting nothing,
+#                  when it resolves a server of the other kind.
 # --wait:          seconds to poll the code_graph_pipeline status before
 #                  returning (default 0: submit in background and return).
 #
@@ -110,6 +113,7 @@ DATASET=""
 INDEX_VECTORS="false"
 WAIT_SECONDS="0"
 COMMAND="index"
+EXPECTED_SERVER=""
 
 shift || true
 while [ $# -gt 0 ]; do
@@ -128,6 +132,10 @@ while [ $# -gt 0 ]; do
         --decline)
             COMMAND="decline"
             ;;
+        --expect-server)
+            shift
+            EXPECTED_SERVER="${1:-}"
+            ;;
         *)
             ;;
     esac
@@ -140,7 +148,7 @@ if [ -z "$REPO" ]; then
     exit 1
 fi
 
-RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" "$COMMAND" "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
+RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" "$COMMAND" "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" "$EXPECTED_SERVER" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"

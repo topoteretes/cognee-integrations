@@ -542,9 +542,10 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
     repo is re-submitted (background) so the code graph reflects the turn's
     edits by the next prompt. The fingerprint is only a cheap client-side
     gate — the server re-hashes every covered file anyway, so a false
-    positive costs one skipped submission. Repos indexed by git URL are NOT
-    re-submitted here: the server's clone only sees pushed commits, so local
-    edits cannot reach it. Never raises: this must not disturb the hook.
+    positive costs one skipped submission. A checkout a remote server cloned
+    by its git URL is gated on the pushed commit instead: the clone only sees
+    pushed commits, so it is re-submitted when that commit moved and never for
+    a local edit. Never raises: this must not disturb the hook.
     """
     try:
         from _code_graph import reingest_if_changed
