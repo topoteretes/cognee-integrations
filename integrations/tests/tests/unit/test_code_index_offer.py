@@ -9,6 +9,7 @@ yes. These tests pin what that instruction says and when it is given; what
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 
 import pytest
@@ -60,10 +61,13 @@ def test_a_local_session_is_told_to_ask(start, repo):
     assert "ask them once" in text and "AskUserQuestion" in text
     assert "Index this repository in Cognee's code graph?" in text
     assert "the code stays on this machine" in text
-    # One command per answer, spelled with the installed script's path.
+    # One command per answer, spelled with the installed script's path. The
+    # repository is quoted for the shell: bare on POSIX, quoted on Windows,
+    # where the path's backslashes would otherwise be eaten.
     script = start.Path(start.__file__).resolve().parent / "cognee-index-repo.sh"
-    assert f'`"{script}" {repo} --wait 60`' in text
-    assert f'`"{script}" {repo} --decline`' in text
+    arg = shlex.quote(str(repo))
+    assert f'`"{script}" {arg} --wait 60`' in text
+    assert f'`"{script}" {arg} --decline`' in text
     assert "Never index it without a yes" in text
     # For the agent only: the question itself is what the user sees.
     assert "systemMessage" not in out
