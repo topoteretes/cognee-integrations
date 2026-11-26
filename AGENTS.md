@@ -10,7 +10,7 @@ The `Architecture (enola)` CI job reports what each pull request does to that ar
 
 **If you do not already use enola while developing, run it locally:**
 
-- **Install** the version CI uses: `uv tool install enola-cli==0.5.4`.
+- **Install** the version CI uses, the `ENOLA_VERSION` in `.github/workflows/enola.yml`: `uv tool install enola-cli==<ENOLA_VERSION>`.
 - **Before changing shared code**, see what depends on it: `enola impact <symbol>`, or `enola plan --paths <files>` for the declared rules that govern those files.
 - **Before opening a pull request**, grade the branch: `enola check --base origin/main`. It writes nothing. In a checkout whose directory is not named after the repository (a `git worktree`, for example), it declines to compare (exit 3); there, run `enola baseline pin` before you start editing and `enola check` when done.
 - **With a coding agent**, serve the graph over MCP: `claude mcp add enola -- enola <path to this repository>`.
