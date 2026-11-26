@@ -259,11 +259,11 @@ def _run_git(args, cwd: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
     return proc.stdout
 
 
-def git_repo_root(cwd: str) -> str:
+def git_repo_root(cwd: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
     """The repo root containing ``cwd``, or "" when not inside a git repo."""
     if not cwd or not os.path.isdir(cwd):
         return ""
-    out = _run_git(["rev-parse", "--show-toplevel"], cwd).strip()
+    out = _run_git(["rev-parse", "--show-toplevel"], cwd, timeout=timeout).strip()
     return os.path.realpath(out) if out else ""
 
 
@@ -325,6 +325,12 @@ def service_is_local(service_url: str) -> bool:
 
 
 _SCP_REMOTE_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(?!/)(.+)$")
+# The clone URL is shown to the agent inside the session-start question, and the
+# remote it comes from is whatever the checkout's git config says. Only the
+# characters a repository URL needs get through, so a crafted remote cannot
+# carry a sentence into that instruction.
+_CLONE_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+(?::\d+)?$")
+_CLONE_PATH_RE = re.compile(r"^[A-Za-z0-9._~%/-]+$")
 
 
 def _https_clone_url(remote: str) -> str:
@@ -335,7 +341,8 @@ def _https_clone_url(remote: str) -> str:
     keys, so the SSH form could never work there. Userinfo is dropped from an
     http(s) remote, since a token saved in the local git config must not be
     sent anywhere. Remotes a server cannot reach at all (a path, ``file://``,
-    ``git://``) give "".
+    ``git://``) give "", and so does one whose host or path holds anything but
+    URL characters.
     """
     remote = str(remote or "").strip()
     if not remote:
@@ -360,25 +367,28 @@ def _https_clone_url(remote: str) -> str:
         path = path[: -len(".git")]
     if not path or "." not in host:
         return ""
+    if not _CLONE_HOST_RE.match(host) or not _CLONE_PATH_RE.match(path):
+        return ""
     return f"{scheme}://{host}/{path}"
 
 
-def _remote_name(root: str) -> str:
+def _remote_name(root: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
     """``origin``, or the only remote when there is exactly one; else ""."""
-    remotes = [line.strip() for line in _run_git(["remote"], root).splitlines() if line.strip()]
+    listed = _run_git(["remote"], root, timeout=timeout)
+    remotes = [line.strip() for line in listed.splitlines() if line.strip()]
     if "origin" in remotes:
         return "origin"
     return remotes[0] if len(remotes) == 1 else ""
 
 
-def remote_clone_url(root: str) -> str:
+def remote_clone_url(root: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
     """The URL a remote server would clone for the checkout at ``root``, or ""."""
     if not root:
         return ""
-    name = _remote_name(root)
+    name = _remote_name(root, timeout)
     if not name:
         return ""
-    return _https_clone_url(_run_git(["remote", "get-url", name], root))
+    return _https_clone_url(_run_git(["remote", "get-url", name], root, timeout=timeout))
 
 
 def pushed_fingerprint(root: str) -> str:
@@ -455,17 +465,27 @@ def is_remote_repo(spec: str) -> bool:
     return isinstance(spec, str) and spec.startswith(("https://", "http://", "git@", "ssh://"))
 
 
-def _state_path(key: str) -> Path:
-    return _STATE_DIR / f"{_repo_slug(key)}.json"
+def _state_path(key: str, cloned_checkout: bool = False) -> Path:
+    suffix = ".remote.json" if cloned_checkout else ".json"
+    return _STATE_DIR / f"{_repo_slug(key)}{suffix}"
 
 
 def save_repo_state(state: dict) -> None:
-    """Persist one repo's index state. ``state`` must carry ``spec``."""
+    """Persist one repo's index state. ``state`` must carry ``spec``.
+
+    One checkout can be indexed twice: read in place by a local server, and
+    cloned from its remote by a remote one. Those are two graphs in two
+    datasets, so each keeps a file of its own under the checkout's name;
+    indexing on one kind of server must not erase what is known of the other.
+    """
     key = state.get("repo_root") or state.get("spec") or ""
     if not key:
         return
+    cloned_checkout = bool(state.get("repo_root")) and state.get("spec_kind") == "url"
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _state_path(key).write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    _state_path(key, cloned_checkout).write_text(
+        json.dumps(state, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def load_repo_states() -> list:
@@ -485,13 +505,17 @@ def load_repo_states() -> list:
     return states
 
 
-def find_indexed_repo(cwd: str) -> dict:
+def find_indexed_repo(cwd: str, is_local_server=None) -> dict:
     """The index state whose repo_root contains ``cwd``, or {}.
 
     Matched by the checkout a state was indexed from: a path given to a local
     server, or the checkout whose remote a remote server cloned. A bare URL has
     no checkout and matches no cwd. Longest matching root wins so nested
     checkouts resolve to the innermost indexed repo.
+
+    ``is_local_server`` is the kind of server in use now. When given, only a
+    graph built on that kind counts (``state_serves``): the other one sits in a
+    dataset this server does not have.
     """
     real = os.path.realpath(cwd) if cwd else ""
     if not real:
@@ -500,6 +524,8 @@ def find_indexed_repo(cwd: str) -> dict:
     for state in load_repo_states():
         root = str(state.get("repo_root") or "")
         if not root:
+            continue
+        if is_local_server is not None and not state_serves(state, is_local_server):
             continue
         if real == root or real.startswith(root.rstrip(os.sep) + os.sep):
             if len(root) > len(str(best.get("repo_root") or "")):
@@ -578,17 +604,18 @@ def clear_declined(root: str, is_local_server: bool) -> None:
         pass
 
 
-def auto_code_lane(prompt: str, cwd: str) -> dict:
+def auto_code_lane(prompt: str, cwd: str, is_local_server=None) -> dict:
     """The per-prompt recall gate. Returns {} when the lane must not fire.
 
     Fires only when the prompt carries an identifier-shaped token AND the
     cwd sits inside a repo this plugin indexed — never on conversational
-    prompts, never on repos nobody asked to index.
+    prompts, never on repos nobody asked to index. With ``is_local_server``
+    given, the repo must be indexed on that kind of server.
     """
     identifiers = extract_identifiers(prompt)
     if not identifiers:
         return {}
-    state = find_indexed_repo(cwd)
+    state = find_indexed_repo(cwd, is_local_server)
     if not state or not state.get("dataset"):
         return {}
     return {
@@ -967,10 +994,8 @@ def reingest_if_changed(
     use (a remote server has no such path).
     """
     try:
-        state = find_indexed_repo(cwd)
+        state = find_indexed_repo(cwd, is_local_server)
         if not state or state.get("spec_kind") not in ("path", "url"):
-            return {}
-        if is_local_server is not None and not state_serves(state, is_local_server):
             return {}
         root = str(state.get("repo_root") or "")
         fingerprint = _state_fingerprint(root, state.get("spec_kind") == "url")
@@ -1078,19 +1103,26 @@ def _source_file_count(root: str, cap: int) -> int:
 
 
 def _git_code_file_count(root: str, *, tracked_only: bool) -> int:
-    """Code files git knows in ``root``, from the index instead of a tree walk.
+    """Code files git tracks in ``root``, read from the index with no tree walk.
 
-    A server-side clone holds tracked files only; a local server also reads
-    untracked files that are not ignored. 0 when git gives no answer in time,
-    which callers read as "nothing to offer".
+    The number sizes the question, so tracked files are enough for it, and the
+    index answers in the same time on a monorepo as on a small service. A local
+    server also reads untracked files, so a checkout that tracks no code yet (a
+    fresh ``git init``) is counted again with those included; that walk only
+    ever runs on a tree git holds nothing of. 0 when git gives no answer in
+    time, which callers read as "nothing to offer".
     """
-    args = ["ls-files", "-z"]
-    if not tracked_only:
-        args += ["--cached", "--others", "--exclude-standard"]
-    listed = _run_git(args, root, timeout=_OFFER_GIT_TIMEOUT_SECONDS)
-    return sum(
-        1 for name in listed.split("\0") if name.rsplit(".", 1)[-1].lower() in CODE_EXTENSIONS
-    )
+
+    def count(args) -> int:
+        listed = _run_git(args, root, timeout=_OFFER_GIT_TIMEOUT_SECONDS)
+        return sum(
+            1 for name in listed.split("\0") if name.rsplit(".", 1)[-1].lower() in CODE_EXTENSIONS
+        )
+
+    tracked = count(["ls-files", "-z"])
+    if tracked or tracked_only:
+        return tracked
+    return count(["ls-files", "-z", "--others", "--exclude-standard"])
 
 
 def index_offer(cwd, *, is_local_server=True) -> dict:
@@ -1106,17 +1138,16 @@ def index_offer(cwd, *, is_local_server=True) -> dict:
     try:
         if autoindex_mode() != "ask":
             return {}
-        root = git_repo_root(cwd)
+        root = git_repo_root(cwd, _OFFER_GIT_TIMEOUT_SECONDS)
         if not root:
             return {}
-        indexed = find_indexed_repo(root)
-        if indexed and state_serves(indexed, is_local_server):
+        if find_indexed_repo(root, is_local_server):
             return {}
         if is_declined(root, is_local_server):
             return {}
         offer = {"repo_root": root, "server": _server_kind(is_local_server)}
         if not is_local_server:
-            offer["clone_url"] = remote_clone_url(root)
+            offer["clone_url"] = remote_clone_url(root, _OFFER_GIT_TIMEOUT_SECONDS)
             if not offer["clone_url"]:
                 return {}
         offer["source_files"] = _git_code_file_count(root, tracked_only=not is_local_server)
@@ -1159,8 +1190,8 @@ def autoindex_on_session_start(
         if not root:
             return {}
 
-        indexed = find_indexed_repo(root)
-        if indexed and state_serves(indexed, is_local_server):
+        indexed = find_indexed_repo(root, is_local_server)
+        if indexed:
             # A session start is the gesture a user makes after fixing what
             # broke indexing (a corrected API key, a restarted/upgraded
             # server), so it always gets one attempt rather than waiting out a

@@ -35,9 +35,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   on `Read` resolve it from the folder, and it is re-indexed at the first session start
   after a push. The server must be able to clone the URL without credentials; a
   checkout with no git remote is reported as such instead of being submitted.
-- **A code graph is refreshed only on the server that built it.** A repository indexed
-  on a local server is no longer re-submitted, as a path, to a remote one (and the
-  other way round); on the other server it counts as not indexed, and is asked about.
+- **A code graph is used and refreshed only on the server that built it.** A repository
+  indexed on a local server is no longer re-submitted, as a path, to a remote one (and
+  the other way round), and code recall no longer asks one server for the other's
+  dataset; on the other server the repository counts as not indexed, and is asked
+  about. A checkout indexed on both keeps both graphs.
 
 ## [1.8.11]
 

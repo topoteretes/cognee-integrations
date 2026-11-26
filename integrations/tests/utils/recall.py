@@ -96,7 +96,7 @@ def arm_code_lane(monkeypatch, lane: dict | None = None) -> dict:
     """
     lane = dict(lane or CODE_LANE)
     fake = types.ModuleType("_code_graph")
-    fake.auto_code_lane = lambda prompt, cwd: dict(lane)
+    fake.auto_code_lane = lambda prompt, cwd, **_kw: dict(lane)
     monkeypatch.setitem(sys.modules, "_code_graph", fake)
     return lane
 

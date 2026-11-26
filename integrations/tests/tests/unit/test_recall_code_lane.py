@@ -45,14 +45,18 @@ def lookup(suite, hook_module):
 
 @pytest.fixture
 def indexed_repo(suite, isolated_modules, tmp_path):
-    """A repo recorded as indexed, so the lane's opt-in requirement is met."""
+    """A repo recorded as indexed, so the lane's opt-in requirement is met.
+
+    Indexed on the server ``drive_recall`` talks to, which is a remote one: the
+    state is the one a server-side clone of this checkout leaves.
+    """
     cg = isolated_modules(suite, "_code_graph")
     repo = tmp_path / "proj"
     (repo / "src").mkdir(parents=True)
     cg.save_repo_state(
         {
-            "spec": str(repo),
-            "spec_kind": "path",
+            "spec": "https://github.com/acme/proj",
+            "spec_kind": "url",
             "repo_root": str(repo),
             "dataset": "codebase-proj",
             "fingerprint": "seed",

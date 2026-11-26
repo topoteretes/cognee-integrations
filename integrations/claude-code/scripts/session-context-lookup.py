@@ -67,6 +67,7 @@ from _plugin_common import (
     same_connection_target,
     saves_segment,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
     slow_streak_threshold,
     warmup_backlog,
@@ -614,7 +615,11 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     try:
         from _code_graph import auto_code_lane
 
-        code_lane = auto_code_lane(prompt, cwd) or {}
+        # The graph of this checkout lives on the kind of server that built it:
+        # one indexed locally is in no dataset a remote server has.
+        code_lane = (
+            auto_code_lane(prompt, cwd, is_local_server=service_url_is_local(service_url)) or {}
+        )
     except Exception as exc:
         hook_log("code_lane_gate_error", {"error": str(exc)[:200]})
     if code_lane:

@@ -98,7 +98,9 @@ def wire(fc, repo, monkeypatch, isolated_modules, suite):
     calls: list[dict] = []
     state = {"repo_root": str(repo), "dataset": "codebase-repo-1234"}
     monkeypatch.setattr(
-        code_graph, "find_indexed_repo", lambda cwd: state if str(cwd).startswith(str(repo)) else {}
+        code_graph,
+        "find_indexed_repo",
+        lambda cwd, **_kw: state if str(cwd).startswith(str(repo)) else {},
     )
 
     def fake_recall(query, **kw):
@@ -273,7 +275,7 @@ def test_edit_after_index_flags_line_numbers(fc, repo, wire, capsys, monkeypatch
     state = {"repo_root": str(repo), "dataset": "codebase-repo-1234"}
     if offset is not None:
         state["last_index_at"] = mtime + offset
-    monkeypatch.setattr(sys.modules["_code_graph"], "find_indexed_repo", lambda cwd: state)
+    monkeypatch.setattr(sys.modules["_code_graph"], "find_indexed_repo", lambda cwd, **_kw: state)
     _run(fc, monkeypatch, _payload(target, cwd=repo))
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "Widget:10" in ctx  # the map is still served either way

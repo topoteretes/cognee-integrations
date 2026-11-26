@@ -162,12 +162,13 @@ def _connection_session_id(service_url: str, api_key: str, https_context) -> str
     return ""
 
 
-def _code_dataset(cwd: str) -> str:
-    """The code dataset indexed for this checkout ("" when it is not indexed)."""
+def _code_dataset(cwd: str, service_url: str) -> str:
+    """The code dataset indexed for this checkout on this server ("" when none is)."""
     try:
         import _code_graph
 
-        return str(_code_graph.find_indexed_repo(cwd).get("dataset") or "")
+        local = _code_graph.service_is_local(service_url)
+        return str(_code_graph.find_indexed_repo(cwd, local).get("dataset") or "")
     except Exception:
         return ""
 
@@ -255,7 +256,7 @@ def main(argv: list[str]) -> int:
     # search then reports no code facts rather than silently querying the
     # session dataset.
     if mode == "code" and not dataset_explicit:
-        dataset = _code_dataset(os.getcwd()) or dataset
+        dataset = _code_dataset(os.getcwd(), rt["service_url"]) or dataset
 
     # Auto recall (SDK-1393): unless the user pinned a dataset, a graph search
     # that names none sends none, and the server picks the dataset(s): a
