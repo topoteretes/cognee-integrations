@@ -380,3 +380,28 @@ class _Stdin:
 
     def read(self):
         return self._text
+
+
+@pytest.mark.parametrize(
+    ("server", "found"), [("https://cloud.example", True), ("https://other.example", False)]
+)
+def test_the_code_lane_reads_only_a_graph_on_the_server_it_asks(
+    suite, fc, repo, isolated_modules, monkeypatch, server, found
+):
+    """File context asks the server the hooks talk to, so only a graph built on
+    that server answers for the file."""
+    cg = isolated_modules(suite, "_code_graph")
+    monkeypatch.setenv("COGNEE_LOCAL_API_URL", "https://cloud.example")
+    root = repo.resolve()
+    cg.save_repo_state(
+        {
+            "spec": "https://github.com/acme/repo",
+            "spec_kind": "url",
+            "repo_root": str(root),
+            "server": cg.server_identity(server),
+            "dataset": "codebase-repo-1234",
+            "fingerprint": "seed",
+        }
+    )
+    lane = fc.code_lane_for(str(root / "pkg" / "mod.py"))
+    assert (lane.get("dataset") == "codebase-repo-1234") is found

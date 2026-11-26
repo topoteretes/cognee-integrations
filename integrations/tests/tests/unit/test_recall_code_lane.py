@@ -23,7 +23,7 @@ in integration/test_code_graph.py.
 from __future__ import annotations
 
 import pytest
-from utils.recall import CODE_SCOPES, SCOPES, drive_recall
+from utils.recall import CODE_SCOPES, SCOPES, URL, drive_recall
 
 #: A 1.6.0-shaped memory item: the server's rendered LLM input, question and all.
 MEMORY = {"graph": [{"source": "graph", "text": "The question is: `q`\n\nContext:\n`a`"}]}
@@ -48,20 +48,22 @@ def indexed_repo(suite, isolated_modules, tmp_path):
     """A repo recorded as indexed, so the lane's opt-in requirement is met.
 
     Indexed on the server ``drive_recall`` talks to, which is a remote one: the
-    state is the one a server-side clone of this checkout leaves.
+    state is the one a server-side clone of this checkout leaves. Where graphs
+    are bound to the server that built them, the state names that server.
     """
     cg = isolated_modules(suite, "_code_graph")
     repo = tmp_path / "proj"
     (repo / "src").mkdir(parents=True)
-    cg.save_repo_state(
-        {
-            "spec": "https://github.com/acme/proj",
-            "spec_kind": "url",
-            "repo_root": str(repo),
-            "dataset": "codebase-proj",
-            "fingerprint": "seed",
-        }
-    )
+    state = {
+        "spec": "https://github.com/acme/proj",
+        "spec_kind": "url",
+        "repo_root": str(repo),
+        "dataset": "codebase-proj",
+        "fingerprint": "seed",
+    }
+    if suite.asks_before_code_index:
+        state["server"] = cg.server_identity(URL)
+    cg.save_repo_state(state)
     return repo
 
 
@@ -244,3 +246,35 @@ def test_a_broken_gate_never_breaks_the_prompt(lookup, monkeypatch, indexed_repo
     assert run.calls == list(SCOPES)
     assert run.fired("code_lane_gate_error")
     assert "The question is: `q`" in run.output["hookSpecificOutput"]["additionalContext"]
+
+
+# ── the server the recall goes to decides ──────────────────────────────────
+
+
+@pytest.mark.parametrize(("server", "armed"), [(URL, True), ("https://other.example", False)])
+def test_the_lane_reads_only_a_graph_on_the_server_it_queries(
+    suite, lookup, monkeypatch, isolated_modules, tmp_path, server, armed
+):
+    """A graph lives on the server that built it. The lane asks the server this
+    recall goes to, so a graph on another one (another tenant, another local
+    port) would be a dataset that server does not have."""
+    if not suite.asks_before_code_index:
+        pytest.skip("this host's code lane does not bind graphs to a server")
+    cg = isolated_modules(suite, "_code_graph")
+    repo = tmp_path / "proj"
+    (repo / "src").mkdir(parents=True)
+    cg.save_repo_state(
+        {
+            "spec": "https://github.com/acme/proj",
+            "spec_kind": "url",
+            "repo_root": str(repo),
+            "server": cg.server_identity(server),
+            "dataset": "codebase-proj",
+            "fingerprint": "seed",
+        }
+    )
+    run = drive_recall(
+        lookup, monkeypatch, prompt="what calls process_payment?", cwd=str(repo / "src")
+    )
+    assert bool(run.fired("code_lane_armed")) is armed
+    assert sorted(run.calls) == sorted(CODE_SCOPES if armed else SCOPES), run.calls

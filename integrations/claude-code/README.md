@@ -844,13 +844,23 @@ Index one yourself — this repository, a different one, a git URL, or one you a
 "never" for — with:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--server <url>] [--dataset <name>] [--index-vectors] [--wait <seconds>]
 ```
 
 Given a path while the server is remote, the command indexes the repository that path
-is a checkout of, by its git remote. `cognee-index-repo.sh <repo-path> --decline`
-records a "never" without indexing; the answers are kept per kind of server, so
-declining Cognee Cloud leaves a local server free to ask.
+is a checkout of, by its git remote. `--server` picks the server instead of
+`COGNEE_BASE_URL`; the session-start question passes the server it named, so a yes
+indexes there, and `--expect-server local|remote` with it, so the command stops
+rather than clone a repository the question said would be read in place (or the
+other way round). The command reads `~/.cognee/.env` as the hooks do. `cognee-index-repo.sh <repo-path> --decline` records a "never" without
+indexing; the answers are kept per kind of server, so declining Cognee Cloud leaves a
+local server free to ask.
+
+A graph belongs to the server that built it. Switching to another server (another
+Cognee tenant, Cloud after a local index, another local port) makes the repository
+count as not indexed there: the session asks again, and nothing is submitted to that
+server until it gets its own yes. Each server's graph is kept and refreshed on its
+own.
 
 Query it with `cognee-search.sh ... --code` (see the `cognee-code` skill for the
 operations: `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
@@ -896,7 +906,7 @@ knows.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_CODE_AUTOINDEX` | `ask` | `ask`: ask before indexing a new repository, on a local or a remote server · `always`: index new repositories without asking, on a local or a remote server · `off`: never ask and never index new repositories (indexed ones still refresh) |
+| `COGNEE_CODE_AUTOINDEX` | `ask` | `ask`: ask before indexing a new repository, on a local or a remote server · `always`: index new repositories without asking, on a local or a remote server (not one answered "never") · `off`: never ask and never index new repositories (indexed ones still refresh) |
 | `COGNEE_CODE_SERVER_SHARES_FILES` | unset | `true`: the Cognee server is not on `localhost` but mounts this machine's files at the same paths (a container, a LAN host), so a repository is indexed by its path, as on a local server, instead of being cloned from its git remote. Without it, any server that is not on `localhost` is treated as unable to read this disk |
 
 No question is asked for a directory that is not a git repository or holds no source

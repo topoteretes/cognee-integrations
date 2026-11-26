@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import sys
 
 import pytest
@@ -205,3 +206,22 @@ def test_a_session_handed_to_the_cloud_worker_is_left_to_it(suite, start, monkey
     monkeypatch.setattr(worker, "enabled", lambda *a, **k: True)
     state = start(live=True)
     assert registered and state["pending"] and "retry_at" not in state
+
+
+def test_the_cloud_worker_gets_this_sessions_code_graph_settings(suite, start, monkeypatch):
+    """The worker is shared and long-lived; the session hands it the settings
+    its own SessionStart read, so its startup pass decides by them."""
+    if suite.name != "claude-code":
+        pytest.skip("only Claude Code has the cloud worker")
+    worker = importlib.import_module("_cloud_worker")
+    registered: list = []
+    monkeypatch.setattr(worker, "register_session", lambda item: registered.append(item))
+    monkeypatch.setattr(worker, "enabled", lambda *a, **k: True)
+    monkeypatch.setenv("COGNEE_CODE_AUTOINDEX", "always")
+    monkeypatch.delenv("COGNEE_CODE_SERVER_SHARES_FILES", raising=False)
+    start(live=True)
+    assert registered[0]["code_settings"] == {
+        "COGNEE_CODE_AUTOINDEX": "always",
+        "COGNEE_CODE_SERVER_SHARES_FILES": "",
+        "COGNEE_CODING_MEMORY": os.environ.get("COGNEE_CODING_MEMORY", ""),
+    }

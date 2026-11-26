@@ -42,10 +42,20 @@ Four responsibilities, all shared by the wrapper CLI and the hooks:
    and the index runs only on a yes (see ``autoindex_mode``). A "never" is
    recorded per repo and per kind of server, and never asked again.
 
-State lives under ``~/.cognee-plugin/<integration>/code-graph/<slug>.json``.
-A repo has a state file once it has been indexed, and only repos with a state
-file are ever refreshed or queried by the recall lane. A recorded "never" lives
-in ``code-graph/declined/<slug>.json``.
+State lives under ``~/.cognee-plugin/<integration>/code-graph/``, one file per
+indexed repo and server (``<slug>@<server digest>.json``). A repo has a state
+file once it has been indexed, and only repos with a state file are ever
+refreshed or queried by the recall lane. A recorded "never" lives in
+``code-graph/declined/<slug>.json``.
+
+**One graph per server.** A graph lives on the server that built it, so each
+state records that server (``server``, see ``server_identity``), and only a
+graph built on the server in use counts: it alone is refreshed, recalled, or
+taken as an answer to the session-start question. A checkout indexed on one
+Cognee tenant is unindexed on another, so it is asked about there, and nothing
+is ever submitted to a server the user did not say yes to. A state written
+before states recorded their server matches any server of its kind, and is
+stamped with the server at its next successful refresh.
 
 **Local and remote servers.** A local server reads the checkout in place, so
 the spec it is sent is the path. A remote server (Cognee Cloud, any non-loopback
@@ -84,6 +94,7 @@ import socket
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -259,11 +270,59 @@ def _run_git(args, cwd: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
     return proc.stdout
 
 
-def git_repo_root(cwd: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
+def _git_output_or_none(args, cwd: str, timeout: float):
+    """Like ``_run_git``, but None when git did not answer within ``timeout``."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            timeout=timeout,
+            text=True,
+            errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def _bounded_timeout(timeout: float, deadline=None) -> float:
+    """``timeout``, cut to what is left before ``deadline`` (a ``time.monotonic()`` value).
+
+    Raises ``TimeoutError`` once the deadline has passed, so a caller with a
+    budget for several git calls stops instead of starting another.
+    """
+    if deadline is None:
+        return timeout
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("git did not answer in time")
+    return min(timeout, left)
+
+
+def _git_in_time(args, cwd: str, timeout: float, deadline=None) -> str:
+    """``_run_git``, or with ``deadline`` a call that must answer before it.
+
+    Without a deadline a git that does not answer reads as no output, as
+    everywhere else in this module. With one, it raises ``TimeoutError``: a
+    budget spent inside a call must not pass for "not a repository" or "no
+    remote", which would quietly drop the session-start question.
+    """
+    if deadline is None:
+        return _run_git(args, cwd, timeout=timeout)
+    out = _git_output_or_none(args, cwd, _bounded_timeout(timeout, deadline))
+    if out is None:
+        raise TimeoutError("git did not answer in time")
+    return out
+
+
+def git_repo_root(cwd: str, timeout: float = _GIT_TIMEOUT_SECONDS, deadline=None) -> str:
     """The repo root containing ``cwd``, or "" when not inside a git repo."""
     if not cwd or not os.path.isdir(cwd):
         return ""
-    out = _run_git(["rev-parse", "--show-toplevel"], cwd, timeout=timeout).strip()
+    out = _git_in_time(["rev-parse", "--show-toplevel"], cwd, timeout, deadline).strip()
     return os.path.realpath(out) if out else ""
 
 
@@ -347,7 +406,43 @@ def service_is_local(service_url: str) -> bool:
     if server_shares_files():
         return True
     host = (urllib.parse.urlparse(str(service_url or "")).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    return host in _LOOPBACK_HOSTS
+
+
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def server_identity(service_url: str) -> str:
+    """The server ``service_url`` names, as one string two URLs can be compared by.
+
+    Scheme and host are lowercased, a default port and a trailing slash are
+    dropped, and the loopback names ``service_is_local`` accepts count as one
+    host, ``localhost``: ``http://127.0.0.1:8011/`` and ``http://localhost:8011``
+    are the same server. The port and any path stay, since a second local
+    server or a deployment under a path prefix is another server. "" when the
+    URL names no host.
+    """
+    raw = str(service_url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "http://" + raw
+    parts = urllib.parse.urlsplit(raw)
+    scheme = (parts.scheme or "http").lower()
+    host = (parts.hostname or "").lower()
+    if not host:
+        return ""
+    if host in _LOOPBACK_HOSTS:
+        host = "localhost"
+    elif ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    netloc = host if port in (None, _DEFAULT_PORTS.get(scheme)) else f"{host}:{port}"
+    return f"{scheme}://{netloc}{parts.path.rstrip('/')}"
 
 
 _SCP_REMOTE_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(?!/)(.+)$")
@@ -398,23 +493,23 @@ def _https_clone_url(remote: str) -> str:
     return f"{scheme}://{host}/{path}"
 
 
-def _remote_name(root: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
+def _remote_name(root: str, timeout: float = _GIT_TIMEOUT_SECONDS, deadline=None) -> str:
     """``origin``, or the only remote when there is exactly one; else ""."""
-    listed = _run_git(["remote"], root, timeout=timeout)
+    listed = _git_in_time(["remote"], root, timeout, deadline)
     remotes = [line.strip() for line in listed.splitlines() if line.strip()]
     if "origin" in remotes:
         return "origin"
     return remotes[0] if len(remotes) == 1 else ""
 
 
-def remote_clone_url(root: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
+def remote_clone_url(root: str, timeout: float = _GIT_TIMEOUT_SECONDS, deadline=None) -> str:
     """The URL a remote server would clone for the checkout at ``root``, or ""."""
     if not root:
         return ""
-    name = _remote_name(root, timeout)
+    name = _remote_name(root, timeout, deadline)
     if not name:
         return ""
-    return _https_clone_url(_run_git(["remote", "get-url", name], root, timeout=timeout))
+    return _https_clone_url(_git_in_time(["remote", "get-url", name], root, timeout, deadline))
 
 
 def pushed_fingerprint(root: str) -> str:
@@ -491,27 +586,68 @@ def is_remote_repo(spec: str) -> bool:
     return isinstance(spec, str) and spec.startswith(("https://", "http://", "git@", "ssh://"))
 
 
-def _state_path(key: str, cloned_checkout: bool = False) -> Path:
-    suffix = ".remote.json" if cloned_checkout else ".json"
-    return _STATE_DIR / f"{_repo_slug(key)}{suffix}"
+def _state_path(key: str, server: str = "", spec_kind: str = "") -> Path:
+    """The state file of one indexed repo on one server, for one way of reading it.
+
+    ``<slug>@<server digest>.json`` for a graph read from the path,
+    ``….remote.json`` for one cloned from the remote: a server can hold both,
+    one after the other, when ``COGNEE_CODE_SERVER_SHARES_FILES`` changes.
+    ``<slug>.json`` when ``server`` is empty: the name every state had before
+    states recorded their server, still read and still written for such a state.
+    """
+    if not server:
+        return _STATE_DIR / f"{_repo_slug(key)}.json"
+    digest = hashlib.sha256(server.encode("utf-8")).hexdigest()[:12]
+    suffix = ".remote.json" if spec_kind == "url" else ".json"
+    return _STATE_DIR / f"{_repo_slug(key)}@{digest}{suffix}"
 
 
 def save_repo_state(state: dict) -> None:
     """Persist one repo's index state. ``state`` must carry ``spec``.
 
-    One checkout can be indexed twice: read in place by a local server, and
-    cloned from its remote by a remote one. Those are two graphs in two
-    datasets, so each keeps a file of its own under the checkout's name;
-    indexing on one kind of server must not erase what is known of the other.
+    One file per repo and server: a checkout indexed on two servers (a local
+    one and Cognee Cloud, or two tenants) is two graphs in two places, and
+    indexing on one must not erase what is known of the other. A state that
+    names its server replaces the server-less file of the same repo and kind,
+    which it supersedes.
     """
     key = state.get("repo_root") or state.get("spec") or ""
     if not key:
         return
-    cloned_checkout = bool(state.get("repo_root")) and state.get("spec_kind") == "url"
+    server = str(state.get("server") or "")
+    spec_kind = str(state.get("spec_kind") or "")
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _state_path(key, cloned_checkout).write_text(
+    _state_path(key, server, spec_kind).write_text(
         json.dumps(state, ensure_ascii=False), encoding="utf-8"
     )
+    if server:
+        _drop_superseded_states(key, spec_kind, server)
+
+
+def _drop_superseded_states(key: str, spec_kind: str, server: str) -> None:
+    """Remove the states under an older name that the bound one replaces.
+
+    ``<slug>.json`` is what released versions write; ``<slug>.remote.json`` is
+    what development builds of server binding wrote for a cloned checkout. One
+    of the same kind either names no server, or names this one: a released
+    version still running elsewhere loads a bound state and saves it back
+    under its own name, and that copy must not outlive the state it copies.
+    """
+    slug = _repo_slug(key)
+    for legacy in (_STATE_DIR / f"{slug}.json", _STATE_DIR / f"{slug}.remote.json"):
+        try:
+            old = json.loads(legacy.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(old, dict)
+            and old.get("spec_kind") == spec_kind
+            and str(old.get("server") or "") in ("", server)
+        ):
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
 
 
 def load_repo_states() -> list:
@@ -531,7 +667,7 @@ def load_repo_states() -> list:
     return states
 
 
-def find_indexed_repo(cwd: str, is_local_server=None) -> dict:
+def find_indexed_repo(cwd: str, service_url=None, is_local_server=None) -> dict:
     """The index state whose repo_root contains ``cwd``, or {}.
 
     Matched by the checkout a state was indexed from: a path given to a local
@@ -539,35 +675,64 @@ def find_indexed_repo(cwd: str, is_local_server=None) -> dict:
     no checkout and matches no cwd. Longest matching root wins so nested
     checkouts resolve to the innermost indexed repo.
 
-    ``is_local_server`` is the kind of server in use now. When given, only a
-    graph built on that kind counts (``state_serves``): the other one sits in a
-    dataset this server does not have.
+    ``service_url`` is the server in use now. When given, only a graph built on
+    that server counts (``state_serves``): any other sits in a dataset this
+    server does not have. ``is_local_server`` overrides what the URL says about
+    the kind of server, which only states that predate ``server`` are matched by.
     """
     real = os.path.realpath(cwd) if cwd else ""
     if not real:
         return {}
-    is_local_server = _reads_disk(is_local_server)
     best: dict = {}
     for state in load_repo_states():
         root = str(state.get("repo_root") or "")
         if not root:
             continue
-        if is_local_server is not None and not state_serves(state, is_local_server):
+        if service_url is not None and not state_serves(state, service_url, is_local_server):
             continue
         if real == root or real.startswith(root.rstrip(os.sep) + os.sep):
-            if len(root) > len(str(best.get("repo_root") or "")):
+            if not best or _state_rank(state) > _state_rank(best):
                 best = state
     return best
 
 
-def state_serves(state: dict, is_local_server: bool) -> bool:
-    """Whether a repo's state was indexed on the kind of server in use now.
+def _state_rank(state: dict) -> tuple:
+    """How one matching state beats another: the innermost checkout first; then a
+    state that names its server over one that predates that; then the latest
+    index, so a copy a released version saved under its own name cannot shadow
+    the state it was copied from."""
+    try:
+        indexed_at = float(state.get("last_index_at") or 0.0)
+    except (TypeError, ValueError):
+        indexed_at = 0.0
+    return (len(str(state.get("repo_root") or "")), bool(state.get("server")), indexed_at)
 
-    A path was read in place by a local server; a URL was cloned by a remote
-    one. Each graph lives where it was built, so a checkout indexed locally is
-    still unindexed on Cognee Cloud, and the other way round.
+
+def state_serves(state: dict, service_url: str, is_local_server=None) -> bool:
+    """Whether ``state`` is the graph the server at ``service_url`` reads this repo by.
+
+    A graph lives on the server that built it: a checkout indexed on one Cognee
+    tenant is still unindexed on another, and one indexed locally is unindexed
+    on Cognee Cloud. It must also be read the way that server reads the repo
+    now (a path for a server that reads this disk, a clone for one that does
+    not): after ``COGNEE_CODE_SERVER_SHARES_FILES`` changes, the other kind of
+    graph is not refreshed, and the repo is asked about again.
+
+    A state written before states recorded their server matches any server of
+    its kind, as it always did. Except a cloned checkout with no server: no
+    release wrote one (only development builds of this binding did), and which
+    tenant holds that graph is unknown, so it answers for none.
+    ``is_local_server`` overrides what the URL says about the kind.
     """
-    return (state.get("spec_kind") == "path") == bool(is_local_server)
+    if is_local_server is None:
+        is_local_server = service_is_local(service_url)
+    kind_matches = (state.get("spec_kind") == "path") == bool(_reads_disk(is_local_server))
+    recorded = str(state.get("server") or "")
+    if recorded:
+        return kind_matches and recorded == server_identity(service_url)
+    if state.get("spec_kind") != "path" and state.get("repo_root"):
+        return False
+    return kind_matches
 
 
 # ---------------------------------------------------------------------------
@@ -631,18 +796,18 @@ def clear_declined(root: str, is_local_server: bool) -> None:
         pass
 
 
-def auto_code_lane(prompt: str, cwd: str, is_local_server=None) -> dict:
+def auto_code_lane(prompt: str, cwd: str, service_url=None, is_local_server=None) -> dict:
     """The per-prompt recall gate. Returns {} when the lane must not fire.
 
     Fires only when the prompt carries an identifier-shaped token AND the
     cwd sits inside a repo this plugin indexed — never on conversational
-    prompts, never on repos nobody asked to index. With ``is_local_server``
-    given, the repo must be indexed on that kind of server.
+    prompts, never on repos nobody asked to index. With ``service_url`` given,
+    the repo must be indexed on that server, the one the lane queries.
     """
     identifiers = extract_identifiers(prompt)
     if not identifiers:
         return {}
-    state = find_indexed_repo(cwd, is_local_server)
+    state = find_indexed_repo(cwd, service_url, is_local_server)
     if not state or not state.get("dataset"):
         return {}
     return {
@@ -880,6 +1045,9 @@ def index_repo(
     remote and clones it. A clone is always the whole repository, so
     ``repo_root`` is the git root then, and the fingerprint is the pushed
     commit. ``is_local_server`` defaults to what the service URL says.
+
+    The state records the server (``server_identity``): the graph exists there
+    and nowhere else.
     """
     if is_local_server is None:
         is_local_server = service_is_local(service_url)
@@ -922,6 +1090,7 @@ def index_repo(
         "spec": spec,
         "spec_kind": "url" if remote else "path",
         "repo_root": repo_root,
+        "server": server_identity(service_url),
         "dataset": dataset,
         "index_vectors": bool(index_vectors),
         "fingerprint": _state_fingerprint(repo_root, remote),
@@ -1017,13 +1186,13 @@ def reingest_if_changed(
     ever holds pushed commits: a local edit would re-pull the same commits and
     produce the same graph, so the gate there is the pushed commit.
 
-    ``is_local_server`` is the kind of server in use now. When given, a state
-    indexed on the other kind is left alone: its spec is one this server cannot
-    use (a remote server has no such path).
+    Only the graph built on this server is refreshed (``state_serves``): a
+    graph elsewhere is another server's, and submitting to this one would index
+    the repository on a server nobody said yes to. ``is_local_server``
+    overrides what the URL says about the kind of server.
     """
     try:
-        is_local_server = _reads_disk(is_local_server)
-        state = find_indexed_repo(cwd, is_local_server)
+        state = find_indexed_repo(cwd, service_url, is_local_server)
         if not state or state.get("spec_kind") not in ("path", "url"):
             return {}
         root = str(state.get("repo_root") or "")
@@ -1054,6 +1223,9 @@ def reingest_if_changed(
             state["fingerprint"] = fingerprint
             state["last_index_at"] = now
             state["last_status"] = str(result.get("status") or "submitted")
+            # A state that predates ``server`` belongs to the server that just
+            # took the refresh.
+            state["server"] = state.get("server") or server_identity(service_url)
             _clear_retry_failure(state)
             save_repo_state(state)
             outcome["submitted"] = True
@@ -1087,8 +1259,8 @@ def reingest_if_changed(
 _AUTOINDEX_MAX_FILES = 3000
 
 # The question is prepared inside the SessionStart hook itself, so the git
-# calls behind it get a short leash instead of the module-wide timeout.
-_OFFER_GIT_TIMEOUT_SECONDS = 3.0
+# calls behind it share one short budget instead of the module-wide timeout.
+_OFFER_DEADLINE_SECONDS = 3.0
 # The one call there that walks the working tree instead of reading the index.
 _OFFER_WALK_TIMEOUT_SECONDS = 1.0
 
@@ -1107,7 +1279,12 @@ def autoindex_mode() -> str:
     repo's index was the consent, and a stale graph is the failure mode the
     freshness loop exists to prevent.
     """
-    value = str(os.environ.get("COGNEE_CODE_AUTOINDEX", "") or "").strip().lower()
+    return parse_autoindex_mode(os.environ.get("COGNEE_CODE_AUTOINDEX", ""))
+
+
+def parse_autoindex_mode(value) -> str:
+    """A ``COGNEE_CODE_AUTOINDEX`` value as a mode; anything unrecognised is "ask"."""
+    value = str(value or "").strip().lower()
     if value in ("off", "0", "false", "no"):
         return "off"
     if value in ("always", "1", "true", "yes", "on"):
@@ -1133,18 +1310,21 @@ def _source_file_count(root: str, cap: int) -> int:
     return seen
 
 
-def _git_code_file_count(root: str, *, tracked_only: bool) -> int:
+def _git_code_file_count(root: str, *, tracked_only: bool, deadline=None):
     """Code files git tracks in ``root``, read from the index with no tree walk.
 
     The number sizes the question, so tracked files are enough for it, and the
     index answers in the same time on a monorepo as on a small service. A
     checkout that tracks files but no code (a dotfiles repository in a home
-    directory) is 0, and nothing is walked to find that out.
+    directory) is 0, and nothing is walked to find that out. None when git did
+    not list the index in time: the size is unknown, which is no reason to keep
+    the question from the biggest repositories.
 
     Only a checkout that tracks nothing at all, a fresh ``git init``, is listed
     with its untracked files, since a local server would read those; that walk
-    gets a shorter leash still. 0 when git gives no answer in time, which
-    callers read as "nothing to offer".
+    gets a shorter leash still, and one that does not finish in time counts as
+    nothing to offer (a tree that big that git tracks nothing of is not a code
+    project anyone is working on).
     """
 
     def code_files(listed: str) -> int:
@@ -1152,50 +1332,96 @@ def _git_code_file_count(root: str, *, tracked_only: bool) -> int:
             1 for name in listed.split("\0") if name.rsplit(".", 1)[-1].lower() in CODE_EXTENSIONS
         )
 
-    tracked = _run_git(["ls-files", "-z"], root, timeout=_OFFER_GIT_TIMEOUT_SECONDS)
+    budget = _bounded_timeout(_OFFER_DEADLINE_SECONDS, deadline)
+    tracked = _git_output_or_none(["ls-files", "-z"], root, budget)
+    if tracked is None:
+        return None
     if tracked.strip("\0") or tracked_only:
         return code_files(tracked)
-    return code_files(
-        _run_git(
-            ["ls-files", "-z", "--others", "--exclude-standard"],
-            root,
-            timeout=_OFFER_WALK_TIMEOUT_SECONDS,
-        )
+    walk = _bounded_timeout(_OFFER_WALK_TIMEOUT_SECONDS, deadline)
+    untracked = _git_output_or_none(
+        ["ls-files", "-z", "--others", "--exclude-standard"], root, walk
     )
+    return code_files(untracked or "")
 
 
-def index_offer(cwd, *, is_local_server=True) -> dict:
-    """The repository a session should ask about indexing, or {}.
+# Format characters that stay in names people use: the joiners inside emoji
+# and many scripts, and the soft hyphen. Every other one can reorder or hide
+# text (bidi controls, zero-width spaces, tag characters).
+_NAME_FORMAT_CHARACTERS = frozenset("\u200c\u200d\u00ad")
+
+
+def _fits_in_instruction(text: str) -> bool:
+    """Whether ``text`` can be shown in the session-start instruction as it is.
+
+    Not when it holds a line or paragraph break or any other control
+    character, a character that reorders or hides text, or a backtick, which
+    would end the code span the command sits in. Any letter, space or emoji
+    is fine, including characters the interpreter's Unicode tables are too
+    old to name.
+    """
+    for ch in text:
+        if ch == "`":
+            return False
+        category = unicodedata.category(ch)
+        if category in ("Cc", "Cs", "Zl", "Zp"):
+            return False
+        if category == "Cf" and ch not in _NAME_FORMAT_CHARACTERS:
+            return False
+    return True
+
+
+def index_offer(cwd, *, service_url, is_local_server=None) -> dict:
+    """The repository a session should ask about indexing on ``service_url``, or {}.
 
     {} whenever there is nothing to ask: not a git repo, no code in it, already
-    indexed on this kind of server, declined before, ``COGNEE_CODE_AUTOINDEX``
-    not on ``ask``, or a remote server with no git remote it could clone.
-    Otherwise ``repo_root``, ``source_files`` and ``server`` ("local" or
-    "remote"), plus ``clone_url`` for a remote server: the one thing that would
-    be sent. Makes no request. An error is the caller's to catch and log:
-    SessionStart records it as ``code_index_offer_failed``.
+    indexed on this server, declined before on this kind of server,
+    ``COGNEE_CODE_AUTOINDEX`` not on ``ask``, a remote server with no git remote
+    it could clone, or a path that cannot be put in the instruction as it is
+    (``_fits_in_instruction``). Otherwise ``repo_root``,
+    ``source_files`` (None when git did not count them in time) and ``server``
+    ("local" or "remote"), plus ``clone_url`` for a remote server: the one thing
+    that would be sent.
+
+    Makes no request, and every git call shares one budget
+    (``_OFFER_DEADLINE_SECONDS``): it runs inside the SessionStart hook. An
+    error, a spent budget included (``TimeoutError``), is the caller's to catch
+    and log: SessionStart records it as ``code_index_offer_failed``.
     """
     if autoindex_mode() != "ask":
         return {}
+    deadline = time.monotonic() + _OFFER_DEADLINE_SECONDS
+    if is_local_server is None:
+        is_local_server = service_is_local(service_url)
     is_local_server = _reads_disk(is_local_server)
-    root = git_repo_root(cwd, _OFFER_GIT_TIMEOUT_SECONDS)
-    if not root:
+    root = git_repo_root(cwd, _OFFER_DEADLINE_SECONDS, deadline)
+    if not root or not _fits_in_instruction(root):
         return {}
-    if find_indexed_repo(root, is_local_server):
+    if find_indexed_repo(root, service_url, is_local_server):
         return {}
     if is_declined(root, is_local_server):
         return {}
     offer = {"repo_root": root, "server": _server_kind(is_local_server)}
     if not is_local_server:
-        offer["clone_url"] = remote_clone_url(root, _OFFER_GIT_TIMEOUT_SECONDS)
+        offer["clone_url"] = remote_clone_url(root, _OFFER_DEADLINE_SECONDS, deadline)
         if not offer["clone_url"]:
             return {}
-    offer["source_files"] = _git_code_file_count(root, tracked_only=not is_local_server)
-    return offer if offer["source_files"] else {}
+    offer["source_files"] = _git_code_file_count(
+        root, tracked_only=not is_local_server, deadline=deadline
+    )
+    return offer if offer["source_files"] != 0 else {}
 
 
-def decline_repo(cwd, *, is_local_server=True) -> dict:
-    """Record a "never" for the repository containing ``cwd``."""
+def decline_repo(cwd, *, service_url="", is_local_server=None) -> dict:
+    """Record a "never" for the repository containing ``cwd``.
+
+    Kept per kind of server, not per server: a "never" given for one Cognee
+    tenant also stops the question for another, where a yes covers only the
+    server it was given for. ``is_local_server`` overrides what ``service_url``
+    says about the kind.
+    """
+    if is_local_server is None:
+        is_local_server = service_is_local(service_url)
     is_local_server = _reads_disk(is_local_server)
     root = git_repo_root(cwd) or canonical_spec(cwd)
     record_declined(root, is_local_server)
@@ -1207,7 +1433,7 @@ def autoindex_on_session_start(
     service_url,
     api_key,
     *,
-    is_local_server=True,
+    is_local_server=None,
     opener=urllib.request.urlopen,
 ) -> dict:
     """Refresh the repo a session opened in; index a new one only if told to.
@@ -1217,20 +1443,27 @@ def autoindex_on_session_start(
     nothing to do.
 
     Two distinct cases, deliberately governed by different rules:
-      * the repo is ALREADY indexed on this kind of server -> refresh it if it
-        moved since the last index (edits made while the agent was away, or a
-        push when the server clones);
+      * the repo is ALREADY indexed on this server -> refresh it if it moved
+        since the last index (edits made while the agent was away, or a push
+        when the server clones). A graph on another server is not this one's:
+        the repo counts as new here;
       * the repo is NEW -> the user decides. In the default ``ask`` mode nothing
         is submitted here: SessionStart puts the question (``index_offer``) and
         a yes runs the index command. Only ``always`` indexes from here.
+
+    The settings are read from the environment. The long-lived cloud worker
+    sets them, around this call, to what the session's own SessionStart read:
+    its own environment holds whatever they were when the worker started.
     """
     try:
+        if is_local_server is None:
+            is_local_server = service_is_local(service_url)
         is_local_server = _reads_disk(is_local_server)
         root = git_repo_root(cwd)
         if not root:
             return {}
 
-        indexed = find_indexed_repo(root, is_local_server)
+        indexed = find_indexed_repo(root, service_url, is_local_server)
         if indexed:
             # A session start is the gesture a user makes after fixing what
             # broke indexing (a corrected API key, a restarted/upgraded
@@ -1253,10 +1486,12 @@ def autoindex_on_session_start(
         if not is_local_server and not remote_clone_url(root):
             # Nothing a remote server could clone, so nothing to ask about either.
             return {"skipped": "no_git_remote", "repo_root": root}
+        if is_declined(root, is_local_server):
+            # A "never" given for this repository holds against a standing yes too.
+            return {"skipped": "declined", "repo_root": root}
         if mode == "ask":
             # The question is SessionStart's to put; an unanswered one indexes nothing.
-            reason = "declined" if is_declined(root, is_local_server) else "awaiting_consent"
-            return {"skipped": reason, "repo_root": root}
+            return {"skipped": "awaiting_consent", "repo_root": root}
 
         count = _source_file_count(root, _AUTOINDEX_MAX_FILES)
         if count == 0:
@@ -1292,17 +1527,22 @@ def main(argv):
     """CLI: ``index <repo-path-or-url> [dataset]``, ``decline <path>`` or ``dataset <path>``.
 
     argv mirrors the sibling scripts: service_url, api_key, command, spec,
-    dataset, index_vectors, wait_seconds, expected_server. The ``dataset`` command prints the
-    code dataset covering a path (empty line when that path is not indexed) —
-    dataset names carry a path digest, so callers resolve the name from the
-    checkout instead of reconstructing it. ``decline`` records the "never"
-    answered to the session-start question and submits nothing.
+    dataset, index_vectors, wait_seconds, expected_server. The ``dataset``
+    command prints the code dataset covering a path on that server (empty line
+    when that path is not indexed there) — dataset names carry a path digest,
+    so callers resolve the name from the checkout instead of reconstructing it.
+    ``decline`` records the "never" answered to the session-start question and
+    submits nothing.
 
-    ``expected_server`` ("local" or "remote") is what the session-start question
-    told the user about the server. The user's answer covers that and nothing
-    else, so when the server resolved here is of the other kind, the command
-    stops instead of doing something the question did not describe.
+    The settings in ``~/.cognee/.env`` are read first, as the hooks read them:
+    whether the server reads this disk (``COGNEE_CODE_SERVER_SHARES_FILES``)
+    must be decided the same way here as when the question was put.
+    ``expected_server`` ("local" or "remote") is what the question told the
+    user about that: a yes or a "never" covers that and nothing else, so when
+    this command would read the repository the other way (an environment that
+    differs from the hooks'), it stops and changes nothing.
     """
+    _load_plugin_env_file()
     a = list(argv) + [""] * 8
     expected_server = str(a[7]).strip().lower()
     service_url, api_key, command, spec = a[0], a[1], a[2], a[3]
@@ -1314,7 +1554,7 @@ def main(argv):
         wait_seconds = 0.0
 
     if command == "dataset":
-        state = find_indexed_repo(spec or os.getcwd())
+        state = find_indexed_repo(spec or os.getcwd(), service_url)
         print(str(state.get("dataset") or ""))
         return
 
@@ -1325,7 +1565,7 @@ def main(argv):
                 json.dumps(
                     {
                         "error": f"the question described a {expected_server} Cognee server, "
-                        f"but this command resolved a {actual_server} one ({service_url}); "
+                        f"but this command would treat {service_url} as a {actual_server} one; "
                         "nothing was submitted or recorded. Tell the user, and ask again "
                         "with what a new session reports.",
                         "status": 0,
@@ -1335,11 +1575,7 @@ def main(argv):
             return
 
     if command == "decline":
-        print(
-            json.dumps(
-                decline_repo(spec or os.getcwd(), is_local_server=service_is_local(service_url))
-            )
-        )
+        print(json.dumps(decline_repo(spec or os.getcwd(), service_url=service_url)))
         return
 
     if command != "index" or not spec:
@@ -1363,6 +1599,19 @@ def main(argv):
         wait_seconds=wait_seconds,
     )
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
+
+
+def _load_plugin_env_file() -> None:
+    """Read ``~/.cognee/.env`` as the hooks do; a missing loader changes nothing."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        from _env_file import load_env_file
+
+        load_env_file()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

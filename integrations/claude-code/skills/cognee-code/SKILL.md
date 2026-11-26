@@ -74,12 +74,16 @@ session-start context tells you to ask the user once, with their first message
 
 | Answer | What you do |
 |--------|-------------|
-| Index it | Run the index command the context gives (`cognee-index-repo.sh <repo> --wait 60`) and report the outcome in one line |
+| Index it | Run the index command the context gives (`cognee-index-repo.sh <repo> --server <url> --expect-server <local\|remote> --wait 60`) and report the outcome in one line |
 | Not now | Nothing. A later session asks again |
-| Never for this repository | Run `cognee-index-repo.sh <repo> --decline`. It is not asked again; "index this repo" still works |
+| Never for this repository | Run `cognee-index-repo.sh <repo> --server <url> --expect-server <local\|remote> --decline`. It is not asked again; "index this repo" still works |
 
-Never index without a yes, and do not ask twice in one session. What the yes
-means depends on the server, and the question says so:
+Never index without a yes, and do not ask twice in one session. Keep the
+`--server` and `--expect-server` the context gives: the yes covers the server
+the question named, read the way the question said, and nothing else; the
+command stops with an error instead of doing anything else. A graph belongs to the server that built it, so on another server
+(another Cognee tenant, another local port) the repository is asked about
+again. What the yes means depends on the server, and the question says so:
 
 | Situation | Behavior |
 |-----------|----------|

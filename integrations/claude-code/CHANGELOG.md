@@ -18,9 +18,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   repository holding code that is not in the code graph yet has Claude ask once, with
   your first message: index it, not now, or never for this repository. Nothing is
   submitted without a yes, on a local server or on Cognee Cloud. Until now a local
-  server indexed a new repository without asking. "Never" is remembered per repository
-  and per kind of server (`cognee-index-repo.sh <repo> --decline`), and indexing the
-  repository yourself lifts it. `COGNEE_CODE_AUTOINDEX` is now `ask` (default),
+  server indexed a new repository without asking. The question names the server, and
+  a yes covers that server only: the command it gives says which, and how the server
+  reads the repository
+  (`cognee-index-repo.sh <repo> --server <url> --expect-server local|remote`).
+  "Never" is remembered per repository and per kind of server (`--decline`), holds
+  against `always` too, and indexing the repository yourself lifts it. `COGNEE_CODE_AUTOINDEX` is now `ask` (default),
   `always` (index without asking) or `off` (never ask, never index); `auto` is read as
   `ask`. Repositories already indexed keep refreshing as before.
 
@@ -35,11 +38,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
   on `Read` resolve it from the folder, and it is re-indexed at the first session start
   after a push. The server must be able to clone the URL without credentials; a
   checkout with no git remote is reported as such instead of being submitted.
-- **A code graph is used and refreshed only on the server that built it.** A repository
-  indexed on a local server is no longer re-submitted, as a path, to a remote one (and
-  the other way round), and code recall no longer asks one server for the other's
-  dataset; on the other server the repository counts as not indexed, and is asked
-  about. A checkout indexed on both keeps both graphs.
+- **A code graph is used and refreshed only on the server that built it.** Each graph
+  records its server (the URL's scheme, host and port; `localhost` and `127.0.0.1`
+  count as one). On any other server (Cognee Cloud after a local index, a second Cloud
+  tenant, another local port) the repository counts as not indexed: it is asked about
+  there, and nothing is submitted to that server, not even a refresh after a push,
+  until it gets its own yes. Code recall, file context on `Read` and `--code` searches
+  no longer ask one server for another's dataset. A checkout indexed on several
+  servers keeps every graph. Graphs indexed before this release match any server of
+  their kind, and are bound to the server of their next refresh.
+- **`cognee-index-repo.sh` reads `~/.cognee/.env` the way the hooks do.** A setting kept
+  there (`COGNEE_CODE_SERVER_SHARES_FILES`) now decides how the command reads a
+  repository just as it decides what the session-start question says.
+- **Code-graph settings take effect from the next session on Cognee Cloud.** The
+  background worker that runs the startup pass there kept the `COGNEE_CODE_AUTOINDEX`,
+  `COGNEE_CODE_SERVER_SHARES_FILES` and `COGNEE_CODING_MEMORY` it was started with, so
+  removing `always` could still index a new repository without asking. Each session now
+  hands the worker the values its own SessionStart read, and a value the plugin does
+  not know means `ask`. A pass that runs only after the session's registration had to
+  be retried indexes nothing new: the standing yes may have been withdrawn by then.
 
 ### Upgrade note
 

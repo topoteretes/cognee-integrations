@@ -49,6 +49,7 @@ from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (  # noqa: E402
     DEFINITIVE_FAILURE_STATES,
     _float_env,
+    _local_api_url,
     _session_key_path_safe,
     elapsed_ms,
     get_session_key,
@@ -58,9 +59,7 @@ from _plugin_common import (  # noqa: E402
     quiet_hook_output,
     read_connection_state,
     recall_via_http,
-    resolve_runtime_mode,
     resolve_session_key_from_payload,
-    service_url_is_local,
     set_session_key,
 )
 from config import coding_memory_enabled
@@ -201,20 +200,12 @@ def mark_seen(session_key: str, file_path: str, now: float | None = None) -> Non
 # ---------------------------------------------------------------------------
 
 
-def _server_is_local():
-    """Whether the server in use runs on this machine; None when it cannot be told."""
-    try:
-        service_url = str(resolve_runtime_mode().get("base_url") or "")
-        return service_url_is_local(service_url) if service_url else None
-    except Exception:
-        return None
-
-
 def code_lane_for(file_path: str) -> dict:
     """``{"dataset", "repo_root", "rel"}`` when the file sits in an indexed repo, else {}.
 
-    Indexed on the kind of server in use, that is: a checkout indexed on a
-    local server has no graph on a remote one, and the other way round.
+    Indexed on the server the lane's recall goes to (``_local_api_url``), that
+    is: a graph lives on the server that built it, and any other server has no
+    such dataset.
     """
     try:
         from _code_graph import CODE_EXTENSIONS, find_indexed_repo
@@ -222,7 +213,7 @@ def code_lane_for(file_path: str) -> dict:
         # CODE_EXTENSIONS holds bare extensions ("py", not ".py").
         if Path(file_path).suffix.lower().lstrip(".") not in CODE_EXTENSIONS:
             return {}
-        state = find_indexed_repo(os.path.dirname(file_path), is_local_server=_server_is_local())
+        state = find_indexed_repo(os.path.dirname(file_path), service_url=_local_api_url())
         if not state or not state.get("dataset") or not state.get("repo_root"):
             return {}
         root = str(state["repo_root"])

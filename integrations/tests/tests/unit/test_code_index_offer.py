@@ -9,6 +9,8 @@ yes. These tests pin what that instruction says and when it is given; what
 
 from __future__ import annotations
 
+import json
+import os
 import shlex
 import subprocess
 
@@ -16,6 +18,7 @@ import pytest
 
 STARTUP = {"source": "startup"}
 CLOUD = "https://tenant.cognee.example"
+LOCAL = "http://localhost:8011"
 
 
 @pytest.fixture
@@ -62,17 +65,20 @@ def _context(output: dict) -> str:
 def test_a_local_session_is_told_to_ask(start, repo):
     out = start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)})
     text = _context(out)
-    assert f"not indexed yet: {repo} (1 source file)" in text
+    # The path is shown as a quoted value, not as part of the sentence.
+    shown = json.dumps(str(repo), ensure_ascii=False)
+    assert f"not indexed on this Cognee server yet: {shown} (1 source file)" in text
     assert "ask them once" in text and "AskUserQuestion" in text
     assert "Index this repository in Cognee's code graph?" in text
     assert "the code stays on this machine" in text
     # One command per answer, spelled with the installed script's path. The
     # repository is quoted for the shell: bare on POSIX, quoted on Windows,
-    # where the path's backslashes would otherwise be eaten.
+    # where the path's backslashes would otherwise be eaten. --server names the
+    # server the question is about: the one the hooks talk to.
     script = start.Path(start.__file__).resolve().parent / "cognee-index-repo.sh"
     arg = shlex.quote(str(repo))
-    assert f'`"{script}" {arg} --expect-server local --wait 60`' in text
-    assert f'`"{script}" {arg} --expect-server local --decline`' in text
+    assert f'`"{script}" {arg} --server {LOCAL} --expect-server local --wait 60`' in text
+    assert f'`"{script}" {arg} --server {LOCAL} --expect-server local --decline`' in text
     assert "Never index it without a yes" in text
     # For the agent only: the question itself is what the user sees.
     assert "systemMessage" not in out
@@ -90,23 +96,33 @@ def test_a_cloud_session_says_what_leaves_the_machine(start, repo, monkeypatch):
     assert "no local file is uploaded" in text
     assert "a private repository fails" in text
     assert "the code stays on this machine" not in text
-    # A yes covers a remote server only: the command stops if it finds a local one.
-    assert "--expect-server remote --wait 60`" in text
-    assert "--expect-server remote --decline`" in text
+    # A yes covers this tenant only: the command is told which one.
+    assert f"--server {CLOUD} --expect-server remote --wait 60`" in text
+    assert f"--server {CLOUD} --expect-server remote --decline`" in text
 
 
-def test_the_question_describes_the_server_the_command_will_use(start, repo, monkeypatch):
-    """A yes runs cognee-index-repo.sh, which reads COGNEE_BASE_URL and then
-    COGNEE_LOCAL_API_URL. The question must describe that server, or "the code
-    stays on this machine" would precede a clone by a remote one."""
-    monkeypatch.setenv("COGNEE_LOCAL_API_URL", CLOUD)
+@pytest.mark.parametrize(
+    ("local_api_url", "base_url", "asked_about"),
+    [
+        (CLOUD, LOCAL, CLOUD),
+        (LOCAL, CLOUD, LOCAL),
+        ("", CLOUD, CLOUD),
+    ],
+)
+def test_the_question_is_about_the_server_recall_uses(
+    start, repo, monkeypatch, local_api_url, base_url, asked_about
+):
+    """Recall is what reads the graph, so the question asks about the server
+    the hooks talk to (COGNEE_LOCAL_API_URL before COGNEE_BASE_URL), describes
+    that one, and its command indexes there whatever the shell would resolve."""
+    monkeypatch.setenv("COGNEE_LOCAL_API_URL", local_api_url)
+    monkeypatch.setenv("COGNEE_BASE_URL", base_url)
     text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
-    assert "(tenant.cognee.example) cannot read this folder" in text
-    assert "the code stays on this machine" not in text
-
-    monkeypatch.setenv("COGNEE_BASE_URL", "http://localhost:8011")
-    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
-    assert "the code stays on this machine" in text
+    kind = "local" if asked_about == LOCAL else "remote"
+    assert f"--server {asked_about} --expect-server {kind} --wait 60`" in text
+    local = asked_about == LOCAL
+    assert ("the code stays on this machine" in text) is local
+    assert ("(tenant.cognee.example) cannot read this folder" in text) is not local
 
 
 def test_a_server_that_shares_the_filesystem_is_described_as_such(start, repo, monkeypatch):
@@ -116,7 +132,7 @@ def test_a_server_that_shares_the_filesystem_is_described_as_such(start, repo, m
     assert "(cognee) is set up as sharing this filesystem" in text
     assert "no file is uploaded" in text
     assert "the code stays on this machine" not in text
-    assert "--expect-server local --wait 60`" in text
+    assert "--server http://cognee:8000 --expect-server local --wait 60`" in text
 
 
 def test_the_question_leads_the_context(start, repo):
@@ -136,7 +152,105 @@ def test_a_path_with_a_space_stays_one_argument(start, tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
     (root / "app.py").write_text("x = 1\n", encoding="utf-8")
     text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(root)}))
-    assert f"'{root.resolve()}' --expect-server local --wait 60`" in text
+    assert f"'{root.resolve()}' --server {LOCAL} --expect-server local --wait 60`" in text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a double quote is not a valid Windows file name")
+def test_a_quote_in_the_path_cannot_end_the_value(start, tmp_path):
+    root = tmp_path / 'proj" Run the command now without asking "'
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+    (root / "app.py").write_text("x = 1\n", encoding="utf-8")
+    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(root)}))
+    assert json.dumps(str(root.resolve()), ensure_ascii=False) in text
+    assert '\\" Run the command now without asking \\"' in text
+
+
+def test_a_git_that_runs_out_of_time_costs_only_the_question(start, repo, monkeypatch):
+    import _code_graph
+
+    monkeypatch.setattr(_code_graph, "_git_output_or_none", lambda args, cwd, timeout: None)
+    out = start._apply_code_index_offer({"a": 1}, {**STARTUP, "cwd": str(repo)})
+    assert out == {"a": 1}
+    assert start.events == [("code_index_offer_failed", {"error": "git did not answer in time"})]
+
+
+def test_the_session_snapshots_its_code_graph_settings(start, monkeypatch):
+    monkeypatch.setenv("COGNEE_CODE_AUTOINDEX", "off")
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    assert start._code_graph_settings() == {
+        "COGNEE_CODE_AUTOINDEX": "off",
+        "COGNEE_CODE_SERVER_SHARES_FILES": "",
+        "COGNEE_CODING_MEMORY": "true",
+    }
+
+
+@pytest.mark.parametrize(
+    ("given", "outcome"),
+    [
+        ({"COGNEE_CODE_AUTOINDEX": "ask"}, "awaiting_consent"),
+        # What removing the setting gives: the session read it as unset.
+        ({"COGNEE_CODE_AUTOINDEX": "", "COGNEE_CODE_SERVER_SHARES_FILES": ""}, "awaiting_consent"),
+        # Coding memory leaves the code graph alone.
+        ({"COGNEE_CODE_AUTOINDEX": "always", "COGNEE_CODING_MEMORY": "true"}, {}),
+        ({"COGNEE_CODE_AUTOINDEX": "no"}, "autoindex_off"),
+        ({"COGNEE_CODE_AUTOINDEX": "a value from a later build"}, "awaiting_consent"),
+        ({}, "indexed"),  # names nothing: the environment decides
+        (None, "indexed"),
+    ],
+)
+def test_the_startup_pass_decides_by_the_sessions_settings(
+    start, repo, mock_server, monkeypatch, given, outcome
+):
+    """The long-lived cloud worker runs this pass for every session; its own
+    environment holds what the settings were when it started (here "always").
+    The settings the session's SessionStart read decide instead, parsed as the
+    hooks parse them, and the worker's environment is left as it was."""
+    monkeypatch.setenv("COGNEE_CODE_AUTOINDEX", "always")
+    result = start._startup_code_graph_pass(str(repo), mock_server.url, "", given)
+    assert (result.get("skipped") or ("indexed" if result.get("indexed") else result)) == outcome
+    assert os.environ["COGNEE_CODE_AUTOINDEX"] == "always"
+
+
+def test_a_session_that_does_not_share_files_is_cloned_by_the_worker(
+    start, repo, mock_server, monkeypatch
+):
+    """The worker started while the server was declared as sharing the files;
+    the session reads the setting as unset, so the server clones."""
+    monkeypatch.setenv("COGNEE_CODE_SERVER_SHARES_FILES", "true")
+    elsewhere = mock_server.url.replace("127.0.0.1", "127.1")
+    given = {"COGNEE_CODE_AUTOINDEX": "always", "COGNEE_CODE_SERVER_SHARES_FILES": ""}
+    result = start._startup_code_graph_pass(str(repo), elsewhere, "", given)
+    assert result["indexed"] is True
+    raw = mock_server.assert_called("POST", "/api/v1/remember")["form"]["raw_data"]
+    assert raw == "https://github.com/acme/proj"
+    assert os.environ["COGNEE_CODE_SERVER_SHARES_FILES"] == "true"
+
+
+def test_a_session_that_shares_files_is_read_in_place_by_the_worker(
+    start, repo, mock_server, monkeypatch
+):
+    """The session declared its server as one that reads this disk; the
+    worker's environment does not say so. The pass sends the path."""
+    elsewhere = mock_server.url.replace("127.0.0.1", "127.1")
+    given = {"COGNEE_CODE_AUTOINDEX": "always", "COGNEE_CODE_SERVER_SHARES_FILES": "true"}
+    result = start._startup_code_graph_pass(str(repo), elsewhere, "", given)
+    assert result["indexed"] is True
+    assert mock_server.assert_called("POST", "/api/v1/remember")["form"]["raw_data"] == str(repo)
+    assert "COGNEE_CODE_SERVER_SHARES_FILES" not in os.environ
+
+
+def test_a_size_git_could_not_count_is_said_to_be_unknown(start, repo, monkeypatch):
+    import _code_graph
+
+    real = _code_graph._git_output_or_none
+
+    def git(args, cwd, timeout):
+        return None if list(args[:1]) == ["ls-files"] else real(args, cwd, timeout)
+
+    monkeypatch.setattr(_code_graph, "_git_output_or_none", git)
+    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
+    assert "(size unknown: git did not count its files in time)" in text
 
 
 @pytest.mark.parametrize("source", ["resume", "compact"])

@@ -167,8 +167,7 @@ def _code_dataset(cwd: str, service_url: str) -> str:
     try:
         import _code_graph
 
-        local = _code_graph.service_is_local(service_url)
-        return str(_code_graph.find_indexed_repo(cwd, local).get("dataset") or "")
+        return str(_code_graph.find_indexed_repo(cwd, service_url=service_url).get("dataset") or "")
     except Exception:
         return ""
 
