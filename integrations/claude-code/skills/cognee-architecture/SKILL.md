@@ -65,7 +65,7 @@ To review what the working tree (uncommitted edits included) did to the
 architecture since it left a base ref, run:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" [<base-ref>] [--fail-on <explainers>] [--max-spillover <n>] [--target <symbol-or-package>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" [<base-ref>] [--fail-on <explainers>] [--min-confidence <x>] [--max-spillover <n>] [--target <symbol-or-package>]
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" --stored
 ```
 
@@ -78,7 +78,10 @@ the stored one without running a review.
 Nothing is a regression until a policy says so: pass `--fail-on` with the
 explainers that should fail (`cycles`, `layers`, `constraints`, `dead-code`, …)
 and `--target` with `--max-spillover 0` when the user named what they meant to
-change. Without them every finding is reported and the status stays clean.
+change. Without them every finding is reported and the status stays clean. A
+`--fail-on` finding counts only when enola is certain of it; heuristic findings
+(`dead-code` is 0.8) need `--min-confidence 0.8`, and the report says when findings
+fell below the floor.
 
 Report the status, the new findings with their files, the edges added and removed
 by kind, and what was reached outside the expected scope. Lead with the line about

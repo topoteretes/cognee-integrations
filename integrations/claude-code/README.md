@@ -879,7 +879,7 @@ instead; change detection ignores those directories as well.
 ### Reviewing a change
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" [<base-ref>] [--fail-on <explainers>] [--max-spillover <n>] [--target <symbol-or-package>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" [<base-ref>] [--fail-on <explainers>] [--min-confidence <x>] [--max-spillover <n>] [--target <symbol-or-package>]
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-review.sh" --stored
 ```
 
@@ -890,7 +890,9 @@ the new findings by explainer, the edges added and removed by kind, what was rea
 outside the scope named with `--target`, and a prominent line when the change touches
 the files that decide its own grade (`enola-intent.yaml`, `mcp-arch.yaml`,
 `enola/constraints/`). Nothing counts as a regression until `--fail-on` or
-`--max-spillover` says what should. The plugin never runs enola itself and never runs
+`--max-spillover` says what should, and a `--fail-on` finding counts only when enola is
+certain of it: pass `--min-confidence 0.8` to count heuristic findings such as
+`dead-code` (the report says when findings fell below the floor). The plugin never runs enola itself and never runs
 a review on its own.
 
 The server stores the verdict on the repository's code graph. After a review, the next

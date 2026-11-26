@@ -119,7 +119,39 @@ def _finding_line(finding: dict) -> str:
                 ":%s" % evidence["line"] if evidence.get("line") else "",
             )
             break
-    return "[%s] %s%s" % (finding.get("source") or "?", finding.get("title") or "", where)
+    confidence = finding.get("confidence")
+    sure = ", confidence %s" % confidence if isinstance(confidence, (int, float)) else ""
+    return "[%s] %s%s%s" % (
+        finding.get("source") or "?",
+        finding.get("title") or "",
+        where,
+        sure,
+    )
+
+
+def below_floor_line(verdict: dict) -> str:
+    """One line when findings of the --fail-on explainers did not count because enola
+    was less sure of them than the policy's confidence floor; "" when none."""
+    policy = verdict.get("policy") or {}
+    explainers = policy.get("fail_explainers") or []
+    floor = policy.get("min_confidence")
+    if not explainers or not isinstance(floor, (int, float)):
+        return ""
+    confidences = [
+        finding["confidence"]
+        for finding in (verdict.get("diff") or {}).get("findings_new") or []
+        if isinstance(finding, dict)
+        and finding.get("source") in explainers
+        and isinstance(finding.get("confidence"), (int, float))
+        and finding["confidence"] < floor
+    ]
+    if not confidences:
+        return ""
+    return (
+        "%d new finding(s) of the --fail-on explainers did not count: enola's confidence "
+        "in them (highest %s) is below the floor %s. Pass --min-confidence %s to count them."
+        % (len(confidences), max(confidences), floor, max(confidences))
+    )
 
 
 def is_regression(verdict: dict, exit_code) -> bool:
@@ -200,6 +232,9 @@ def report(review: dict, verdict: dict, exit_code, enola_version: str = "") -> s
             lines.append("  (%d more; --json prints all)" % (len(new) - _MAX_LISTED))
     else:
         lines.append("New findings: none")
+    below_floor = below_floor_line(verdict)
+    if below_floor:
+        lines.append(below_floor)
     added = _counts(verdict.get("edge_kinds_added"))
     removed = _counts(verdict.get("edge_kinds_removed"))
     lines.append(

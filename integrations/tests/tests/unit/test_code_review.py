@@ -167,6 +167,38 @@ def test_the_report_of_a_clean_review(env):
     assert "Outside the expected scope: nothing reported" in text
 
 
+def test_findings_below_the_confidence_floor_are_explained(env):
+    """enola counts a --fail-on finding only at its confidence floor (default 1): a
+    heuristic finding is reported, the verdict stays clean, and the report says why."""
+    heuristic = dict(DEAD, confidence=0.8)
+    verdict = dict(
+        CLEAN,
+        policy={"fail_explainers": ["dead-code"], "min_confidence": 1, "warn_only": False},
+        diff={"findings_new": [heuristic, dict(CYCLE, confidence=1)]},
+    )
+    text = env.cr.report(REVIEW, verdict, 0)
+    assert "Status: clean" in text
+    assert "(billing/invoice.py:6), confidence 0.8" in text
+    assert (
+        "1 new finding(s) of the --fail-on explainers did not count: enola's confidence in "
+        "them (highest 0.8) is below the floor 1. Pass --min-confidence 0.8 to count them."
+    ) in text
+    # Without a --fail-on policy, or once the floor admits the finding, nothing to explain.
+    assert "did not count" not in env.cr.report(REVIEW, dict(verdict, policy={}), 0)
+    counted = dict(verdict, policy={"fail_explainers": ["dead-code"], "min_confidence": 0.8})
+    assert "did not count" not in env.cr.report(REVIEW, counted, 0)
+
+
+def test_the_script_passes_the_confidence_floor(env, script):
+    env.server.on("POST", ANALYZE, (200, check_reply(CLEAN)))
+    script.main(["main", "--fail-on", "dead-code", "--min-confidence", "0.8"])
+    assert env.server.bodies(ANALYZE)[0]["params"] == {
+        "base": "main",
+        "fail_on": ["dead-code"],
+        "min_confidence": 0.8,
+    }
+
+
 def test_changed_rule_files_get_a_prominent_line(env):
     review = {**REVIEW, "rule_files_changed": ["enola/constraints/layers.yaml"]}
     lines = env.cr.report(review, CLEAN, 0).splitlines()

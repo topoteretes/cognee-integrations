@@ -2,8 +2,9 @@
 """Review what the working tree did to the architecture since a base ref.
 
 Usage:
-  cognee-review.py [<base-ref>] [--fail-on <explainers>] [--max-spillover <n>]
-                   [--target <symbol-or-package>] [--expected <packages>] [--json]
+  cognee-review.py [<base-ref>] [--fail-on <explainers>] [--min-confidence <x>]
+                   [--max-spillover <n>] [--target <symbol-or-package>]
+                   [--expected <packages>] [--json]
   cognee-review.py --stored [--json]
 
 <base-ref>:      what to compare against (a branch, tag or commit). Default: the
@@ -13,6 +14,10 @@ Usage:
                  regression (cycles, layers, constraints, dead-code, ...).
                  Without --fail-on / --max-spillover everything is reported and
                  nothing is a regression.
+--min-confidence: how sure enola must be of a --fail-on finding for it to
+                 count, above 0 up to 1. enola's default is 1: only certain
+                 findings count, so a heuristic one (dead-code is 0.8) is
+                 reported but is not a regression unless this is lowered.
 --max-spillover: regression when more than <n> packages are reached outside
                  the scope given with --target / --expected.
 --target:        the symbol, type or package you meant to change.
@@ -43,6 +48,7 @@ import _code_review
 
 _VALUE_FLAGS = {
     "--fail-on": "fail_on",
+    "--min-confidence": "min_confidence",
     "--max-spillover": "max_spillover",
     "--target": "target",
     "--expected": "expected",
@@ -62,6 +68,8 @@ def _parse(argv: list) -> tuple:
                 params[name] = [item.strip() for item in value.split(",") if item.strip()]
             elif name == "max_spillover":
                 params[name] = int(value)
+            elif name == "min_confidence":
+                params[name] = float(value)
             else:
                 params[name] = value
         elif arg in ("--stored", "--json"):
