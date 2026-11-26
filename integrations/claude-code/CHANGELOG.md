@@ -39,8 +39,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - The unused evidence protocol: recall no longer sends `evidence_mode`, and
   `cognee-evidence.py` keeps only `explain` (`index` and `details` needed a server
-  route that no release provides). The `entries_unavailable` stats counter stays
-  at 0.
+  route that no release provides). Receipts no longer carry `unavailable` items and
+  `stats.json` no longer counts `entries_unavailable`; `cognee-report` prints the
+  unavailable count only for older receipts that have one.
 
 ## [1.8.11]
 

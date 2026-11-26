@@ -10,6 +10,7 @@ record in the receipt, and ``cognee-search.sh --expand`` reads tags back.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import urllib.error
@@ -326,3 +327,110 @@ def test_expand_refuses_bad_tags_and_old_servers(search, monkeypatch, capsys):
     assert search.main(["--expand", TENANT]) == 1
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["status"] == "unsupported"
     assert server.posts == []
+
+
+# -- a real server's responses (cognee#6827 at c41cd46f6) ----------------------
+
+
+def _live() -> dict:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "fixtures" / "cited_recall_cognee_c41cd46f6.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_real_cited_recall_keeps_every_tag_with_its_record(lookup, modules, monkeypatch):
+    from utils.recall import drive_recall
+
+    live = _live()
+    records = [record["tag"] for record in live["recall"][0]["metadata"]["records"]]
+    assert {tag_.split("/")[0] for tag_ in records} == {"[mem:passage", "[mem:entity", "[mem:fact"}
+    # Every tag the server lists is one the plugin reads as a record boundary.
+    assert modules("_recall_text").cited_tags(live["recall"][0]) == frozenset(records)
+
+    monkeypatch.setattr(lookup, "cited_supported", lambda url: True)
+    run = drive_recall(lookup, monkeypatch, recall={"graph": live["recall"]}, prompt=live["query"])
+    lines = injected(run).splitlines()
+    for tag_ in records:
+        assert lines.count(tag_) == 1, tag_
+        body = lines[lines.index(tag_) + 1]
+        assert body.strip() and not body.startswith("[mem:"), (tag_, body)
+    receipt = modules("_evidence").last_receipt(KEY)
+    cited_items = {i["reference"]["tag"] for i in receipt["items"] if i.get("reference")}
+    assert cited_items == set(records)
+
+
+def test_a_real_expand_reports_unchanged_records(search, monkeypatch, capsys):
+    live = _live()
+    server = _Server(["recall_cited_v1"], live["expand"])
+    monkeypatch.setattr(search, "_http_json", server)
+    assert search.main(["--expand", ",".join(live["expand_items"])]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [r["tag"] for r in out["records"]] == live["expand_items"]
+    assert not any(r["changed"] for r in out["records"])
+    assert all(r["text"] for r in out["records"])
+    assert out["missing"] == [] and out["forbidden"] == []
+
+
+# -- review fixes (PR #642) ----------------------------------------------------
+
+
+def test_expand_sends_each_record_once_and_reports_every_tag(search, monkeypatch, capsys):
+    """Two versions of one record are one row on the server: both tags get that
+    row, and the next tag keeps its own."""
+    older, current = tag("passage", 1, "a"), tag("passage", 1, "c")
+    server = _Server(
+        ["recall_cited_v1"],
+        [
+            {"text": "the passage", "metadata": {"status": "available", "tag": current}},
+            {"text": "- the fact", "metadata": {"status": "available", "tag": PINNING}},
+        ],
+    )
+    monkeypatch.setattr(search, "_http_json", server)
+    assert search.main(["--expand", f"{older},{current},{PINNING}"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert server.posts == [{"query": server.posts[0]["query"], "expand_items": [older, PINNING]}]
+    assert [(r["tag"], r["text"], r["changed"]) for r in out["records"]] == [
+        (older, "the passage", True),
+        (current, "the passage", False),
+        (PINNING, "- the fact", False),
+    ]
+    assert out["missing"] == [] and out["forbidden"] == []
+
+
+def test_expand_matches_nothing_when_the_row_count_is_off(search, monkeypatch, capsys):
+    server = _Server(
+        ["recall_cited_v1"], [{"text": "x", "metadata": {"status": "available", "tag": LEARNING}}]
+    )
+    monkeypatch.setattr(search, "_http_json", server)
+    assert search.main(["--expand", f"{LEARNING},{PINNING}"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "error" and "records" not in out
+
+
+def test_session_start_records_a_server_that_is_already_up(
+    suite, hook_module, payloads, closed_port_url, monkeypatch
+):
+    """The connect path records capabilities too, not only a boot (finding 3)."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude Code cited recall")
+    module = hook_module(suite, "session-start.py")
+    monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
+    monkeypatch.setenv("COGNEE_LLM_OBSERVER", "false")
+    monkeypatch.setattr(module, "_LAZY_BOOTSTRAP", True)
+    for name in ("_spawn_bootstrap", "_spawn_idle_watcher", "_spawn_exit_watcher"):
+        monkeypatch.setattr(module, name, lambda *a, **k: None)
+    monkeypatch.setenv("COGNEE_BASE_URL", closed_port_url)
+    recorded = []
+    monkeypatch.setattr(module, "_record_server_capabilities", recorded.append)
+
+    async def heavy(*a, **k):
+        return "user-1", "", True
+
+    monkeypatch.setattr(module, "_run_heavy", heavy)
+    for verdict, expected in ((module.PRESENCE_ABSENT, 0), (module.PRESENCE_READY, 1)):
+        recorded.clear()
+        monkeypatch.setattr(module, "server_presence", lambda *a, v=verdict, **k: (v, {}))
+        asyncio.run(module._start(payloads.session_start()))
+        assert len(recorded) == expected, verdict
+    assert recorded == [module._health_url(closed_port_url)]

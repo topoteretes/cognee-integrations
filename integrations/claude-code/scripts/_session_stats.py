@@ -15,9 +15,8 @@ COUNTERS = (
     "hits",
     "entries_injected",
     "entries_deduped",
-    # Retrieved but cut to fit, and evidence the server returned unavailable (SDK-1098).
+    # Retrieved but cut to fit (SDK-1098).
     "entries_over_budget",
-    "entries_unavailable",
     "chars_injected",
     "dedup_chars_saved",
     "dedup_measurements",

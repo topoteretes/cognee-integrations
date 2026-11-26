@@ -1,0 +1,342 @@
+{
+ "_about": "Raw responses of a local cognee server at topoteretes/cognee#6827 commit c41cd46f6 (access control on), captured 2026-11-26 for SDK-1099. Synthetic data. Refresh by repeating both requests against a newer server.",
+ "query": "Who directs the Harbor Lights Festival and where does it open?",
+ "recall_request": {
+  "scope": [
+   "graph"
+  ],
+  "only_context": true,
+  "top_k": 5,
+  "search_type": "HYBRID_COMPLETION",
+  "result_mode": "cited"
+ },
+ "recall": [
+  {
+   "kind": "graph_completion",
+   "search_type": "HYBRID_COMPLETION",
+   "text": "The question is: `Who directs the Harbor Lights Festival and where does it open?`\nAnswer using this sectioned context. Keep the answer brief and do not use information outside the context.\n\nContext:\n`## Relevant passages\n[mem:passage/142de367-ba9a-5b78-9d03-093b9b63ebe4/00b8bb6c-109b-5183-bc80-9d14591d408c@10090ba0a97ed4b954a645a44534b4d7]\nHarbor Lights Festival notes.\nThe Harbor Lights Festival opens on 14 March at Pier 7 in Port Alder. Mira Kovac directs the festival and\nbooked the Tidewater Quartet as the opening act. Tickets are sold by Lantern Box Office, which Mira Kovac founded\nin 2019. The closing fireworks are run by Emberline Pyrotechnics from a barge moored off Pier 7.\n\n## Relevant entities\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/f222291e-e0f8-52dd-ab27-1ef49112ab31@a3bfaf2bda73283c8803171b852f2030]\n### harbor lights festival (event)\n- harbor lights festival is a event.\n- Harbor Lights Festival opens_at 2026-03-14.\n- Mira Kovac directs Harbor Lights Festival.\n- Harbor Lights Festival held_at Pier 7.\n- Document chunk mentions harbor lights festival: Festival that opens on 14 March at Pier 7 in Port Alder.\n- Tidewater Quartet opening_act_for Harbor Lights Festival.\n- Closing Fireworks closes Harbor Lights Festival.\n- Lantern Box Office sells_tickets_for Harbor Lights Festival.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/7733a1df-5a8f-559c-8099-a1370683486e@b161ec74568b679245f7fadfdebeda8b]\n### closing fireworks (event)\n- closing fireworks is a event.\n- Closing Fireworks closes Harbor Lights Festival.\n- Document chunk mentions closing fireworks: Closing fireworks for Harbor Lights Festival, run from a barge moored off Pier 7.\n- Closing Fireworks run_from Barge.\n- Emberline Pyrotechnics runs Closing Fireworks.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/ec7638b7-f955-566c-a3b3-7992b66f1b4a@db280339abbb4262812d66465deb7037]\n### lantern box office (organization)\n- lantern box office is a organization.\n- Document chunk mentions lantern box office: Organization that sells tickets for Harbor Lights Festival; founded by Mira Kovac in 2019.\n- Lantern Box Office sells_tickets_for Harbor Lights Festival.\n- Lantern Box Office founded_at 2019.\n- Mira Kovac founded Lantern Box Office.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/67ce20f1-7e66-5188-b08c-d8af394f1ad2@659bf6f70fdccb03a643b0d04cc114ac]\n### tidewater quartet (organization)\n- tidewater quartet is a organization.\n- Tidewater Quartet opening_act_for Harbor Lights Festival.\n- Mira Kovac booked Tidewater Quartet as the opening act for Harbor Lights Festival.\n- Document chunk mentions tidewater quartet: Musical act booked as the opening act for Harbor Lights Festival.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/4bf6eb3d-d793-5be4-97d7-24773d9bbd84@baf1674d1928eefd7a71648064868301]\n### port alder (place)\n- port alder is a place.\n- Pier 7 located_in Port Alder.\n- Document chunk mentions port alder: Port Alder is the port hosting Pier 7.\n\n## Related facts\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/d4a70088-74ff-53b5-bfe9-db0e8669554b@5c333d31e3a08a4830cec8b6ac9c0236]\n- event: harbor lights festival, closing fireworks place: pier 7, port alder, barg made from Harbor Lights Festival notes. The Harbor Lights Festival opens on 14 March at Pi.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/c0153f80-ca42-544f-8bcd-424d7554805d@d7b36f1a00381418666f9e61ed05c66d]\n- Harbor Lights Festival notes. The Harbor Lights Festival opens on 14 March at Pi is part of text_10090ba0a97ed4b954a645a44534b4d7.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/76345507-81a7-5756-908b-755d337eac33@d4c1da5d3a725fcf209c4d6a30e8d0fc]\n- Mira kovac: Director of Harbor Lights Festival and founder of Lantern Box Office.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/9a541519-2f0b-5cff-8d08-e75e1213175f@e8ca4b6828f6840f3f2f63f852a6b4b2]\n- Emberline pyrotechnics: Company that runs the closing fireworks for Harbor Lights Festival.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/e8f3123a-af13-5597-b20a-ed9999437c94@fa51bbd4d13cb54b0e00db3f9abc9c66]\n- 2026-03-14: Normalized date for the festival opening as stated: 14 March.`",
+   "system_prompt": "Answer the question using the provided context. Be as brief as possible.",
+   "score": null,
+   "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+   "dataset_name": "cited_fixture",
+   "metadata": {
+    "records": [
+     {
+      "tag": "[mem:passage/142de367-ba9a-5b78-9d03-093b9b63ebe4/00b8bb6c-109b-5183-bc80-9d14591d408c@10090ba0a97ed4b954a645a44534b4d7]",
+      "record_kind": "passage",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+      "version": "10090ba0a97ed4b954a645a44534b4d7",
+      "chars": 346,
+      "full_chars": 346,
+      "rank": 1,
+      "score": 0.06451612903225806,
+      "distance": 0.1632850170135498,
+      "conflicts": [],
+      "sources": [
+       {
+        "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+        "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+        "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+        "created_at": "2026-11-26T13:50:12.684928"
+       }
+      ],
+      "status": null
+     },
+     {
+      "tag": "[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/f222291e-e0f8-52dd-ab27-1ef49112ab31@a3bfaf2bda73283c8803171b852f2030]",
+      "record_kind": "entity",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "f222291e-e0f8-52dd-ab27-1ef49112ab31",
+      "version": "a3bfaf2bda73283c8803171b852f2030",
+      "chars": 484,
+      "full_chars": 484,
+      "rank": 1,
+      "score": 0.1395896077156067,
+      "distance": null,
+      "conflicts": [],
+      "sources": [
+       {
+        "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+        "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+        "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+        "created_at": "2026-11-26T13:50:12.684928"
+       }
+      ],
+      "status": null
+     },
+     {
+      "tag": "[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/7733a1df-5a8f-559c-8099-a1370683486e@b161ec74568b679245f7fadfdebeda8b]",
+      "record_kind": "entity",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "7733a1df-5a8f-559c-8099-a1370683486e",
+      "version": "b161ec74568b679245f7fadfdebeda8b",
+      "chars": 324,
+      "full_chars": 324,
+      "rank": 2,
+      "score": 0.465739905834198,
+      "distance": null,
+      "conflicts": [],
+      "sources": [
+       {
+        "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+        "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+        "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+        "created_at": "2026-11-26T13:50:12.684928"
+       }
+      ],
+      "status": null
+     },
+     {
+      "tag": "[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/ec7638b7-f955-566c-a3b3-7992b66f1b4a@db280339abbb4262812d66465deb7037]",
+      "record_kind": "entity",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "ec7638b7-f955-566c-a3b3-7992b66f1b4a",
+      "version": "db280339abbb4262812d66465deb7037",
+      "chars": 356,
+      "full_chars": 356,
+      "rank": 3,
+      "score": 0.47703981399536133,
+      "distance": null,
+      "conflicts": [],
+      "sources": [
+       {
+        "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+        "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+        "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+        "created_at": "2026-11-26T13:50:12.684928"
+       }
+      ],
+      "status": null
+     },
+     {
+      "tag": "[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/67ce20f1-7e66-5188-b08c-d8af394f1ad2@659bf6f70fdccb03a643b0d04cc114ac]",
+      "record_kind": "entity",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "67ce20f1-7e66-5188-b08c-d8af394f1ad2",
+      "version": "659bf6f70fdccb03a643b0d04cc114ac",
+      "chars": 331,
+      "full_chars": 331,
+      "rank": 4,
+      "score": 0.47704410552978516,
+      "distance": null,
+      "conflicts": [],
+      "sources": [
+       {
+        "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+        "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+        "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+        "created_at": "2026-11-26T13:50:12.684928"
+       }
+      ],
+      "status": null
+     },
+     {
+      "tag": "[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/4bf6eb3d-d793-5be4-97d7-24773d9bbd84@baf1674d1928eefd7a71648064868301]",
+      "record_kind": "entity",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "4bf6eb3d-d793-5be4-97d7-24773d9bbd84",
+      "version": "baf1674d1928eefd7a71648064868301",
+      "chars": 156,
+      "full_chars": 156,
+      "rank": 5,
+      "score": 0.4896942973136902,
+      "distance": null,
+      "conflicts": [],
+      "sources": [
+       {
+        "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+        "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+        "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+        "created_at": "2026-11-26T13:50:12.684928"
+       }
+      ],
+      "status": null
+     },
+     {
+      "tag": "[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/d4a70088-74ff-53b5-bfe9-db0e8669554b@5c333d31e3a08a4830cec8b6ac9c0236]",
+      "record_kind": "fact",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "d4a70088-74ff-53b5-bfe9-db0e8669554b",
+      "version": "5c333d31e3a08a4830cec8b6ac9c0236",
+      "chars": 174,
+      "full_chars": 174,
+      "rank": 1,
+      "score": 0.22771573066711426,
+      "distance": null,
+      "conflicts": [],
+      "sources": null,
+      "status": null
+     },
+     {
+      "tag": "[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/c0153f80-ca42-544f-8bcd-424d7554805d@d7b36f1a00381418666f9e61ed05c66d]",
+      "record_kind": "fact",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "c0153f80-ca42-544f-8bcd-424d7554805d",
+      "version": "d7b36f1a00381418666f9e61ed05c66d",
+      "chars": 132,
+      "full_chars": 132,
+      "rank": 2,
+      "score": 0.22941267490386963,
+      "distance": null,
+      "conflicts": [],
+      "sources": null,
+      "status": null
+     },
+     {
+      "tag": "[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/76345507-81a7-5756-908b-755d337eac33@d4c1da5d3a725fcf209c4d6a30e8d0fc]",
+      "record_kind": "fact",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "76345507-81a7-5756-908b-755d337eac33",
+      "version": "d4c1da5d3a725fcf209c4d6a30e8d0fc",
+      "chars": 83,
+      "full_chars": 83,
+      "rank": 3,
+      "score": 0.298164963722229,
+      "distance": null,
+      "conflicts": [],
+      "sources": null,
+      "status": null
+     },
+     {
+      "tag": "[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/9a541519-2f0b-5cff-8d08-e75e1213175f@e8ca4b6828f6840f3f2f63f852a6b4b2]",
+      "record_kind": "fact",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "9a541519-2f0b-5cff-8d08-e75e1213175f",
+      "version": "e8ca4b6828f6840f3f2f63f852a6b4b2",
+      "chars": 93,
+      "full_chars": 93,
+      "rank": 4,
+      "score": 0.33492302894592285,
+      "distance": null,
+      "conflicts": [],
+      "sources": null,
+      "status": null
+     },
+     {
+      "tag": "[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/e8f3123a-af13-5597-b20a-ed9999437c94@fa51bbd4d13cb54b0e00db3f9abc9c66]",
+      "record_kind": "fact",
+      "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+      "record_id": "e8f3123a-af13-5597-b20a-ed9999437c94",
+      "version": "fa51bbd4d13cb54b0e00db3f9abc9c66",
+      "chars": 75,
+      "full_chars": 75,
+      "rank": 5,
+      "score": 0.43925178050994873,
+      "distance": null,
+      "conflicts": [],
+      "sources": null,
+      "status": null
+     }
+    ]
+   },
+   "raw": {
+    "value": "The question is: `Who directs the Harbor Lights Festival and where does it open?`\nAnswer using this sectioned context. Keep the answer brief and do not use information outside the context.\n\nContext:\n`## Relevant passages\n[mem:passage/142de367-ba9a-5b78-9d03-093b9b63ebe4/00b8bb6c-109b-5183-bc80-9d14591d408c@10090ba0a97ed4b954a645a44534b4d7]\nHarbor Lights Festival notes.\nThe Harbor Lights Festival opens on 14 March at Pier 7 in Port Alder. Mira Kovac directs the festival and\nbooked the Tidewater Quartet as the opening act. Tickets are sold by Lantern Box Office, which Mira Kovac founded\nin 2019. The closing fireworks are run by Emberline Pyrotechnics from a barge moored off Pier 7.\n\n## Relevant entities\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/f222291e-e0f8-52dd-ab27-1ef49112ab31@a3bfaf2bda73283c8803171b852f2030]\n### harbor lights festival (event)\n- harbor lights festival is a event.\n- Harbor Lights Festival opens_at 2026-03-14.\n- Mira Kovac directs Harbor Lights Festival.\n- Harbor Lights Festival held_at Pier 7.\n- Document chunk mentions harbor lights festival: Festival that opens on 14 March at Pier 7 in Port Alder.\n- Tidewater Quartet opening_act_for Harbor Lights Festival.\n- Closing Fireworks closes Harbor Lights Festival.\n- Lantern Box Office sells_tickets_for Harbor Lights Festival.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/7733a1df-5a8f-559c-8099-a1370683486e@b161ec74568b679245f7fadfdebeda8b]\n### closing fireworks (event)\n- closing fireworks is a event.\n- Closing Fireworks closes Harbor Lights Festival.\n- Document chunk mentions closing fireworks: Closing fireworks for Harbor Lights Festival, run from a barge moored off Pier 7.\n- Closing Fireworks run_from Barge.\n- Emberline Pyrotechnics runs Closing Fireworks.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/ec7638b7-f955-566c-a3b3-7992b66f1b4a@db280339abbb4262812d66465deb7037]\n### lantern box office (organization)\n- lantern box office is a organization.\n- Document chunk mentions lantern box office: Organization that sells tickets for Harbor Lights Festival; founded by Mira Kovac in 2019.\n- Lantern Box Office sells_tickets_for Harbor Lights Festival.\n- Lantern Box Office founded_at 2019.\n- Mira Kovac founded Lantern Box Office.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/67ce20f1-7e66-5188-b08c-d8af394f1ad2@659bf6f70fdccb03a643b0d04cc114ac]\n### tidewater quartet (organization)\n- tidewater quartet is a organization.\n- Tidewater Quartet opening_act_for Harbor Lights Festival.\n- Mira Kovac booked Tidewater Quartet as the opening act for Harbor Lights Festival.\n- Document chunk mentions tidewater quartet: Musical act booked as the opening act for Harbor Lights Festival.\n\n[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/4bf6eb3d-d793-5be4-97d7-24773d9bbd84@baf1674d1928eefd7a71648064868301]\n### port alder (place)\n- port alder is a place.\n- Pier 7 located_in Port Alder.\n- Document chunk mentions port alder: Port Alder is the port hosting Pier 7.\n\n## Related facts\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/d4a70088-74ff-53b5-bfe9-db0e8669554b@5c333d31e3a08a4830cec8b6ac9c0236]\n- event: harbor lights festival, closing fireworks place: pier 7, port alder, barg made from Harbor Lights Festival notes. The Harbor Lights Festival opens on 14 March at Pi.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/c0153f80-ca42-544f-8bcd-424d7554805d@d7b36f1a00381418666f9e61ed05c66d]\n- Harbor Lights Festival notes. The Harbor Lights Festival opens on 14 March at Pi is part of text_10090ba0a97ed4b954a645a44534b4d7.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/76345507-81a7-5756-908b-755d337eac33@d4c1da5d3a725fcf209c4d6a30e8d0fc]\n- Mira kovac: Director of Harbor Lights Festival and founder of Lantern Box Office.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/9a541519-2f0b-5cff-8d08-e75e1213175f@e8ca4b6828f6840f3f2f63f852a6b4b2]\n- Emberline pyrotechnics: Company that runs the closing fireworks for Harbor Lights Festival.\n[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/e8f3123a-af13-5597-b20a-ed9999437c94@fa51bbd4d13cb54b0e00db3f9abc9c66]\n- 2026-03-14: Normalized date for the festival opening as stated: 14 March.`"
+   },
+   "structured": null,
+   "source": "graph"
+  }
+ ],
+ "expand_items": [
+  "[mem:passage/142de367-ba9a-5b78-9d03-093b9b63ebe4/00b8bb6c-109b-5183-bc80-9d14591d408c@10090ba0a97ed4b954a645a44534b4d7]",
+  "[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/f222291e-e0f8-52dd-ab27-1ef49112ab31@a3bfaf2bda73283c8803171b852f2030]",
+  "[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/d4a70088-74ff-53b5-bfe9-db0e8669554b@5c333d31e3a08a4830cec8b6ac9c0236]"
+ ],
+ "expand": [
+  {
+   "kind": "graph_completion",
+   "search_type": "HYBRID_COMPLETION",
+   "text": "Harbor Lights Festival notes.\nThe Harbor Lights Festival opens on 14 March at Pier 7 in Port Alder. Mira Kovac directs the festival and\nbooked the Tidewater Quartet as the opening act. Tickets are sold by Lantern Box Office, which Mira Kovac founded\nin 2019. The closing fireworks are run by Emberline Pyrotechnics from a barge moored off Pier 7.",
+   "system_prompt": null,
+   "score": null,
+   "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+   "dataset_name": "cited_fixture",
+   "metadata": {
+    "tag": "[mem:passage/142de367-ba9a-5b78-9d03-093b9b63ebe4/00b8bb6c-109b-5183-bc80-9d14591d408c@10090ba0a97ed4b954a645a44534b4d7]",
+    "record_kind": "passage",
+    "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+    "record_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+    "version": "10090ba0a97ed4b954a645a44534b4d7",
+    "chars": 346,
+    "full_chars": 346,
+    "rank": null,
+    "score": null,
+    "distance": null,
+    "conflicts": [],
+    "sources": [
+     {
+      "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+      "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+      "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+      "created_at": "2026-11-26T13:50:12.684928"
+     }
+    ],
+    "status": "available"
+   },
+   "raw": {},
+   "structured": null,
+   "source": "graph"
+  },
+  {
+   "kind": "graph_completion",
+   "search_type": "HYBRID_COMPLETION",
+   "text": "### harbor lights festival (event)\n- Closing Fireworks closes Harbor Lights Festival.\n- Document chunk mentions harbor lights festival: Festival that opens on 14 March at Pier 7 in Port Alder.\n- Harbor Lights Festival held_at Pier 7.\n- Harbor Lights Festival opens_at 2026-03-14.\n- Lantern Box Office sells_tickets_for Harbor Lights Festival.\n- Mira Kovac directs Harbor Lights Festival.\n- Tidewater Quartet opening_act_for Harbor Lights Festival.\n- harbor lights festival is a event.",
+   "system_prompt": null,
+   "score": null,
+   "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+   "dataset_name": "cited_fixture",
+   "metadata": {
+    "tag": "[mem:entity/142de367-ba9a-5b78-9d03-093b9b63ebe4/f222291e-e0f8-52dd-ab27-1ef49112ab31@a3bfaf2bda73283c8803171b852f2030]",
+    "record_kind": "entity",
+    "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+    "record_id": "f222291e-e0f8-52dd-ab27-1ef49112ab31",
+    "version": "a3bfaf2bda73283c8803171b852f2030",
+    "chars": 484,
+    "full_chars": 484,
+    "rank": null,
+    "score": null,
+    "distance": null,
+    "conflicts": [],
+    "sources": [
+     {
+      "data_id": "e991bfb5-6b0a-409b-83b9-ac8586bb0d56",
+      "document_name": "text_10090ba0a97ed4b954a645a44534b4d7",
+      "chunk_id": "00b8bb6c-109b-5183-bc80-9d14591d408c",
+      "created_at": "2026-11-26T13:50:12.684928"
+     }
+    ],
+    "status": "available"
+   },
+   "raw": {},
+   "structured": null,
+   "source": "graph"
+  },
+  {
+   "kind": "graph_completion",
+   "search_type": "HYBRID_COMPLETION",
+   "text": "- event: harbor lights festival, closing fireworks place: pier 7, port alder, barg made from Harbor Lights Festival notes. The Harbor Lights Festival opens on 14 March at Pi.",
+   "system_prompt": null,
+   "score": null,
+   "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+   "dataset_name": "cited_fixture",
+   "metadata": {
+    "tag": "[mem:fact/142de367-ba9a-5b78-9d03-093b9b63ebe4/d4a70088-74ff-53b5-bfe9-db0e8669554b@5c333d31e3a08a4830cec8b6ac9c0236]",
+    "record_kind": "fact",
+    "dataset_id": "142de367-ba9a-5b78-9d03-093b9b63ebe4",
+    "record_id": "d4a70088-74ff-53b5-bfe9-db0e8669554b",
+    "version": "5c333d31e3a08a4830cec8b6ac9c0236",
+    "chars": 174,
+    "full_chars": 174,
+    "rank": null,
+    "score": null,
+    "distance": null,
+    "conflicts": [],
+    "sources": null,
+    "status": "available"
+   },
+   "raw": {},
+   "structured": null,
+   "source": "graph"
+  }
+ ]
+}

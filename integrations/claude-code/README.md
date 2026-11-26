@@ -1857,7 +1857,7 @@ Delivery segments classify each recall once (zero hit, fully in transcript,
 fully repeated, then new graph/session context). Missing evidence is explicitly
 unmeasured. Historical clipped text gives a lower-bound novelty estimate.
 Each session also gets a `receipts:` line counted from the recall receipts recorded
-inside the window: injected, already in context, over budget and unavailable entries,
+inside the window: injected, already in context and over budget entries,
 plus scope failures such as `graph timed out on 1 of 3 recalls`.
 Delivery does not prove that memory changed an answer. Failed gates and low-n
 metrics are never hidden or converted to a positive grade.

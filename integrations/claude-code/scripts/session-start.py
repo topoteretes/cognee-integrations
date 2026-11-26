@@ -2779,6 +2779,11 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
     if target_url and _is_local_url(target_url):
         presence_verdict, presence_evidence = server_presence(target_url, confirm_absent=False)
         server_live = presence_verdict == PRESENCE_READY
+        if server_live:
+            # Connect path: the boot path records in ``_ready``. A server that is
+            # already up (started earlier, or outside the plugin) is recorded
+            # here, or the recall hook never learns it can cite (SDK-1099).
+            _record_server_capabilities(_health_url(target_url))
     else:
         server_live = bool(target_url) and _health_ok(_health_url(target_url))
     # COGNEE_MANAGED_ENDPOINT: the URL belongs to a deployment we don't own, so

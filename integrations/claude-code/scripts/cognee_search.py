@@ -241,6 +241,14 @@ def _http_json(rt: dict, path: str, payload: dict | None = None):
         return json.loads(resp.read().decode("utf-8") or "null")
 
 
+def _record_of(tag: str) -> tuple:
+    """The record a tag names, whatever its version: (kind, dataset id, record id)."""
+    from _recall_text import MEMORY_TAG_RE
+
+    match = MEMORY_TAG_RE.fullmatch(tag)
+    return (match["kind"], match["dataset_id"].lower(), match["record_id"].lower())
+
+
 def _expand(rt: dict, argv: list[str]) -> int:
     """Read cited memories back by tag: bodies, then missing and forbidden tags."""
     from _cited_recall import CAPABILITY
@@ -279,7 +287,16 @@ def _expand(rt: dict, argv: list[str]) -> int:
                 )
             )
             return 1
-        rows = _http_json(rt, "/api/v1/recall", {"query": query, "expand_items": tags})
+        # The server reads one record per (kind, dataset, record id), whatever the
+        # version in the tag, and answers one row per record it was sent, in order.
+        # Send each record once, so rows and tags line up; every tag of a record
+        # is then reported from that record's row.
+        sent, tags_of = [], {}
+        for tag in tags:
+            if _record_of(tag) not in tags_of:
+                sent.append(tag)
+            tags_of.setdefault(_record_of(tag), []).append(tag)
+        rows = _http_json(rt, "/api/v1/recall", {"query": query, "expand_items": sent})
     except urllib.error.HTTPError as exc:
         print(json.dumps({"status": "error", "http_status": exc.code}))
         return 1
@@ -287,9 +304,25 @@ def _expand(rt: dict, argv: list[str]) -> int:
         print(f"[cognee-search] expand failed: {exc}", file=sys.stderr)
         print(UNREACHABLE)
         return 1
-    # One row per requested tag, in request order (the server dedupes; so did we).
+    if not isinstance(rows, list) or len(rows) != len(sent):
+        # Pairing rows with tags by position would put a body under the wrong tag.
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": f"The server answered {len(rows) if isinstance(rows, list) else 0} "
+                    f"rows for {len(sent)} records; nothing was matched to a tag.",
+                }
+            )
+        )
+        return 1
+    by_tag = {}
+    for first, row in zip(sent, rows):
+        for tag in tags_of[_record_of(first)]:
+            by_tag[tag] = row
     records, missing, forbidden = [], [], []
-    for tag, row in zip(tags, rows if isinstance(rows, list) else []):
+    for tag in tags:
+        row = by_tag[tag]
         meta = (row or {}).get("metadata") or {}
         status = meta.get("status")
         if status == "available":
