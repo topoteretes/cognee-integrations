@@ -35,9 +35,12 @@ accurately. Do not claim Cognee improved the answer merely because a search ran.
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
 ```
 
-- **Local path** (e.g. `.` or `/path/to/repo`): works when the Cognee server
-  shares this filesystem — the default local plugin server does. Cloud servers
-  reject local paths; pass a git URL instead.
+- **Local path** (e.g. `.` or `/path/to/repo`): a local server reads it in
+  place. A cloud or other remote server cannot read this disk, so the command
+  sends it the checkout's git remote as an `https` URL instead and the server
+  clones that (no file is uploaded, no local credential is sent). A checkout
+  with no git remote cannot be indexed there, and the server must be able to
+  clone the URL without credentials — a private repository fails.
 - **Git URL** (`https://github.com/org/repo`): the server shallow-clones it.
   Freshness follows *pushed* commits — local edits are invisible to it.
 - Default dataset is `codebase-<repo-name>-<digest>`, one per indexed repo —
@@ -62,21 +65,33 @@ background when a turn changed the working tree, so the graph tracks your
 edits. Re-indexing an unchanged repo is skipped server-side (content hashes),
 so re-running the command is always safe.
 
-## Automatic indexing
+## Indexing at session start: the user decides
 
-Opening the agent inside a git repository indexes it automatically in the
-background at session start — no setup step. What happens depends on the
-server, because indexing a repo means the code has to be readable by it:
+A repository is never indexed on the plugin's own initiative. When a session
+opens inside a git repository that holds code and is not indexed yet, the
+session-start context tells you to ask the user once, with their first message
+(AskUserQuestion), and gives the command for each answer. Follow it as written:
+
+| Answer | What you do |
+|--------|-------------|
+| Index it | Run the index command the context gives (`cognee-index-repo.sh <repo> --wait 60`) and report the outcome in one line |
+| Not now | Nothing. A later session asks again |
+| Never for this repository | Run `cognee-index-repo.sh <repo> --decline`. It is not asked again; "index this repo" still works |
+
+Never index without a yes, and do not ask twice in one session. What the yes
+means depends on the server, and the question says so:
 
 | Situation | Behavior |
 |-----------|----------|
-| Local server (default), new repo | Indexed automatically — the server reads the working tree in place, so the code never leaves the machine |
-| Cloud/remote server, new repo | **Not** indexed automatically; run the index command with a git URL, or set `COGNEE_CODE_AUTOINDEX=always` |
-| Already-indexed repo | Always refreshed if the tree changed since the last index — regardless of the setting above |
-| Not a git repo / no code files / very large repo (>3000 source files) | Skipped; index it explicitly if you want it |
+| Local server (default) | The server reads the working tree in place, so the code never leaves the machine |
+| Cloud/remote server | The server clones the checkout's git remote (`https` URL): pushed commits on the default branch only, and it must be cloneable without credentials |
+| Cloud/remote server, checkout with no git remote | Not offered; nothing the server could clone |
+| Already-indexed repo | Refreshed without asking — after a turn that changed the tree (local), or at the session start after a push (cloud) |
+| Not a git repo / no code files | Not offered |
 
-Set `COGNEE_CODE_AUTOINDEX=off` to disable automatic indexing of new repos
-(explicitly indexed repos keep refreshing). Explicit indexing has no size cap.
+`COGNEE_CODE_AUTOINDEX=always` indexes new repos without asking (repos of
+more than 3000 source files are then skipped); `off` never asks and never
+indexes. Indexed repos keep refreshing either way.
 
 ## What the graph reflects (freshness)
 
@@ -86,7 +101,7 @@ normal, expected behavior — but the results look identical, so know which one 
 | Server | Graph reflects | Stays current via |
 |--------|----------------|-------------------|
 | **Local** (default) | The working tree, **uncommitted and untracked changes included** | Automatic re-index after any turn that changed a file |
-| **Cloud / remote** | The **last pushed commit** — the server clones the repo and cannot read this machine's disk | Pushing, then re-indexing |
+| **Cloud / remote** | The **last pushed commit** on the default branch — the server clones the repo and cannot read this machine's disk | Pushing; the checkout is re-indexed at the next session start (or run the index command again) |
 
 On a cloud server, local edits are invisible to the graph until they are pushed. Nothing
 errors and nothing looks unusual: a question about a symbol you just renamed locally is
@@ -95,8 +110,8 @@ in progress, either push first or say so in the answer. `{"operation": "delta"}`
 what the last index actually changed and is the fastest way to check what the graph
 currently knows.
 
-Local-path indexing therefore requires a server that shares this filesystem; cloud
-servers reject local paths and need a git URL.
+A cloud server therefore never gets a local path: given one, the index command sends
+the checkout's git remote, and fails when there is none.
 
 ## Query the code graph
 

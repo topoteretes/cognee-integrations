@@ -3100,6 +3100,94 @@ def _apply_recall_mode_notice(output: dict, payload: dict | None = None) -> dict
     return result
 
 
+_CODE_INDEX_QUESTION = "Index this repository in Cognee's code graph?"
+
+
+def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
+    """The instruction that has the agent ask the user about indexing ``offer``.
+
+    The plugin never answers for the user: a hook cannot put a question, so the
+    agent puts it, and each answer maps to one command (or to nothing).
+    """
+    import shlex
+
+    root = str(offer.get("repo_root") or "")
+    script = Path(__file__).resolve().parent / "cognee-index-repo.sh"
+    # Quoted: the plugin root can contain a space (topoteretes/cognee#5154).
+    command = f'"{script}" {shlex.quote(root)}'
+    if offer.get("server") == "remote":
+        host = urllib.parse.urlparse(service_url).hostname or "the Cognee server"
+        where = (
+            f"the Cognee server ({host}) cannot read this folder, so it would clone "
+            f"{offer.get('clone_url')} itself: only commits pushed to the default branch are "
+            "indexed, no local file is uploaded, and the server must be able to clone the "
+            "repository without credentials (a private repository fails)"
+        )
+        after = (
+            "If the result has `wait_outcome` `errored`, the server could not clone or "
+            "parse the repository: say so, and that a private repository is the usual "
+            "cause. The graph follows later pushes."
+        )
+    else:
+        where = "Cognee's local server reads the folder in place and the code stays on this machine"
+        after = "The graph follows later edits on its own."
+    count = offer.get("source_files")
+    files = "1 source file" if count == 1 else f"{count} source files"
+    return (
+        f"Cognee code graph: this session opened in a code repository that is not indexed "
+        f"yet: {root} ({files}). Whether to index it is the "
+        "user's decision, so ask them once: at the start of your reply to their first "
+        "message, with AskUserQuestion (single select; with no such tool, ask in one plain "
+        "sentence), then carry on with what they asked, whatever the answer.\n"
+        f'Question: "{_CODE_INDEX_QUESTION}" Say in it that {where}.\n'
+        "Options, and what each one means for you:\n"
+        f'- "Index it": run `{command} --wait 60` and tell the user in one line whether it '
+        f"worked (`wait_outcome` `timeout` means it is still indexing in the background). "
+        f"{after}\n"
+        '- "Not now": do nothing. A later session asks again.\n'
+        f'- "Never for this repository": run `{command} --decline`. It is not asked again; '
+        "asking you to index the repository still works.\n"
+        "Never index it without a yes, and do not ask twice in one session."
+    )
+
+
+def _apply_code_index_offer(output: dict, payload: dict | None = None) -> dict:
+    """Have the agent ask whether to index the repository this session opened in.
+
+    Indexing a new repository is the user's decision (``_code_graph.index_offer``
+    says when there is one to ask about), on a local server and on Cognee Cloud
+    alike. Asked when a conversation starts, not on a resume or a compaction,
+    which land in the middle of one. The instruction leads the context, so it
+    survives the host cutting an oversized SessionStart output down to its head.
+    """
+    if str((payload or {}).get("source") or "") in ("resume", "compact"):
+        return output
+    try:
+        from _code_graph import index_offer
+
+        cwd = str((payload or {}).get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
+        service_url = _normalize_service_url(str(load_config().get("base_url", "") or ""))
+        service_url = service_url or _LOCAL_SERVICE_URL
+        offer = index_offer(cwd, is_local_server=service_url_is_local(service_url))
+        if not offer:
+            return output
+        text = _code_index_offer_text(offer, service_url)
+    except Exception as exc:
+        hook_log("code_index_offer_failed", {"error": str(exc)[:200]})
+        return output
+    hook_log(
+        "code_index_offered",
+        {key: offer.get(key) for key in ("repo_root", "server", "source_files")},
+    )
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("additionalContext") or "").strip()
+    hso["additionalContext"] = f"{text}\n\n{existing}" if existing else text
+    result["hookSpecificOutput"] = hso
+    return result
+
+
 def main():
     if is_observer_child():
         return
@@ -3215,6 +3303,7 @@ def main():
         output = _coding_session_start(output, payload)
     else:
         output = _apply_recall_mode_notice(output, payload)
+        output = _apply_code_index_offer(output, payload)
     print(json.dumps(output or {}))
 
 

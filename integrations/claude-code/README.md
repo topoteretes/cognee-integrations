@@ -823,14 +823,34 @@ imports, endpoints, dependencies) via cognee's enola-backed pipeline. Indexing m
 **no LLM or embedding calls** — it is fast and costs no tokens. Requires a cognee
 server >= 1.5.3.
 
-Opening the agent inside a git repository indexes it automatically at session start
-(background, never blocking the first prompt), and re-indexes it after any turn that
-changed the working tree. Index one explicitly — a different repo, a git URL, or one
-automation declined — with:
+**You decide whether a repository is indexed.** When a session opens inside a git
+repository that holds code and is not indexed yet, Claude asks once, with your first
+message: index it, not now, or never for this repository. Nothing is submitted without
+a yes. "Not now" asks again in a later session; "never" is remembered for that
+repository and is not asked again. This holds on a local server and on Cognee Cloud;
+the question says what each one does with the code:
+
+- **Local server**: it reads the folder in place. The code stays on the machine, and
+  the graph is re-indexed after any turn that changed the working tree.
+- **Cognee Cloud, or any remote server**: it cannot read your disk, so it is sent the
+  repository's git remote as an `https` URL and clones it itself. No file is uploaded
+  and no credential from your git config is sent (`git@github.com:org/repo.git`
+  becomes `https://github.com/org/repo`; a token in the remote URL is dropped). The
+  server must be able to clone that URL without credentials, so a private repository
+  fails, and a checkout with no remote is not offered. The graph is the default
+  branch as last pushed, and it is re-indexed at the first session start after a push.
+
+Index one yourself — this repository, a different one, a git URL, or one you answered
+"never" for — with:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
 ```
+
+Given a path while the server is remote, the command indexes the repository that path
+is a checkout of, by its git remote. `cognee-index-repo.sh <repo-path> --decline`
+records a "never" without indexing; the answers are kept per kind of server, so
+declining Cognee Cloud leaves a local server free to ask.
 
 Query it with `cognee-search.sh ... --code` (see the `cognee-code` skill for the
 operations: `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
@@ -860,7 +880,7 @@ are using, because the output looks identical either way.
 | Server | Indexed from | Graph reflects | Updated by |
 |---|---|---|---|
 | **Local** (default) | The repository path on this machine | Your working tree, **including uncommitted and untracked changes** | Every turn that changes a file |
-| **Cloud / remote** | A git URL the server clones | The **last pushed commit** on the cloned branch | Pushing, then re-indexing |
+| **Cloud / remote** | A git URL the server clones (for a checkout: its git remote) | The **last pushed commit** on the default branch | Pushing; a checkout is re-indexed at the next session start, a bare URL when you index it again |
 
 A remote server cannot read your disk. It only ever sees code you have pushed, so a
 local edit — however recent — is invisible to it until it lands on the remote. The
@@ -876,10 +896,11 @@ knows.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_CODE_AUTOINDEX` | `auto` | `auto`: auto-index new repositories only when the server is local (code never leaves the machine) · `always`: also auto-index against a remote server · `off`: never auto-index new repositories (explicitly indexed ones still refresh) |
+| `COGNEE_CODE_AUTOINDEX` | `ask` | `ask`: ask before indexing a new repository, on a local or a remote server · `always`: index new repositories without asking, on a local or a remote server · `off`: never ask and never index new repositories (indexed ones still refresh) |
 
-Automatic indexing skips directories that are not git repositories, hold no source
-files, or exceed 3000 source files. Explicit indexing has no size cap.
+No question is asked for a directory that is not a git repository or holds no source
+files. With `always`, a repository of more than 3000 source files is skipped; one you
+said yes to, or index yourself, has no size cap (the question states the file count).
 
 ### File context on Read
 

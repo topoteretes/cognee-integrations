@@ -10,6 +10,35 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **You are asked before a repository is indexed.** A session that opens inside a git
+  repository holding code that is not in the code graph yet has Claude ask once, with
+  your first message: index it, not now, or never for this repository. Nothing is
+  submitted without a yes, on a local server or on Cognee Cloud. Until now a local
+  server indexed a new repository without asking. "Never" is remembered per repository
+  and per kind of server (`cognee-index-repo.sh <repo> --decline`), and indexing the
+  repository yourself lifts it. `COGNEE_CODE_AUTOINDEX` is now `ask` (default),
+  `always` (index without asking) or `off` (never ask, never index); `auto` is read as
+  `ask`. Repositories already indexed keep refreshing as before.
+
+### Fixed
+
+- **Indexing a checkout works on Cognee Cloud.** A remote server cannot read your disk,
+  and a checkout was either skipped there or submitted as a local path the server
+  rejected. It is now indexed by its git remote: the server is sent the `https` URL
+  (`git@github.com:org/repo.git` becomes `https://github.com/org/repo`, a token in the
+  remote URL is dropped) and clones it, so no file is uploaded. The checkout stays
+  linked to that graph, so `--code` searches, the per-prompt code lane and file context
+  on `Read` resolve it from the folder, and it is re-indexed at the first session start
+  after a push. The server must be able to clone the URL without credentials; a
+  checkout with no git remote is reported as such instead of being submitted.
+- **A code graph is refreshed only on the server that built it.** A repository indexed
+  on a local server is no longer re-submitted, as a path, to a remote one (and the
+  other way round); on the other server it counts as not indexed, and is asked about.
+
 ## [1.8.11]
 
 **This release takes back versions 1.8.2 to 1.8.10.** The plugin is the code on `dev`

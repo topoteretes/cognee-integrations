@@ -125,6 +125,13 @@ class Suite:
     #: local path's ``sync_bridge_done`` / ``final_sync_once_*`` events. codex and
     #: Antigravity still talk to the tenant from the hooks.
     has_cloud_worker: bool
+    #: Behaviour: indexing a repository the session opened in is the user's
+    #: decision. SessionStart has the agent ask (``_code_graph.index_offer``), a
+    #: "never" is recorded per repository, and nothing is submitted without a
+    #: yes; against a remote server a checkout is indexed by its git remote URL,
+    #: which the server clones. The other suites index a new repository unasked
+    #: on a local server and skip a remote one.
+    asks_before_code_index: bool
 
 
 CLAUDE = Suite(
@@ -150,6 +157,7 @@ CLAUDE = Suite(
     cites_memory_by_default=True,
     injects_empty_recall=True,
     has_cloud_worker=True,
+    asks_before_code_index=True,
 )
 
 CODEX = Suite(
@@ -180,6 +188,7 @@ CODEX = Suite(
     cites_memory_by_default=True,
     injects_empty_recall=False,
     has_cloud_worker=False,
+    asks_before_code_index=False,
 )
 
 ANTIGRAVITY = Suite(
@@ -205,6 +214,7 @@ ANTIGRAVITY = Suite(
     cites_memory_by_default=False,
     injects_empty_recall=True,
     has_cloud_worker=False,
+    asks_before_code_index=False,
 )
 
 #: Cursor runs a copy of the codex runtime behind ``cursor_hook.py``, the adapter
@@ -236,6 +246,7 @@ CURSOR = Suite(
     cites_memory_by_default=False,
     injects_empty_recall=False,
     has_cloud_worker=False,
+    asks_before_code_index=False,
 )
 
 ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY, CURSOR]

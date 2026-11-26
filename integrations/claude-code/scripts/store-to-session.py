@@ -47,6 +47,7 @@ from _plugin_common import (
     resolve_session_key_from_payload,
     run_session_improve_detailed,
     server_usable,
+    service_url_is_local,
     set_session_key,
     touch_activity,
     write_outcome_ambiguous,
@@ -536,7 +537,7 @@ async def _store_assistant_stop(payload: dict) -> None:
 def _maybe_reingest_code_repo(payload: dict) -> None:
     """Freshness pass for indexed code repos (runs on the Stop hook only).
 
-    When this turn's cwd sits inside a repo indexed via cognee-index-repo.sh
+    When this turn's cwd sits inside a repo indexed on this server
     and the working tree's git fingerprint changed since the last index, the
     repo is re-submitted (background) so the code graph reflects the turn's
     edits by the next prompt. The fingerprint is only a cheap client-side
@@ -558,7 +559,14 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
             # next Stop retries once the server is back.
             hook_log("code_reingest_skipped_server", {"base_url": service_url})
             return
-        outcome = reingest_if_changed(cwd, service_url, os.environ.get("COGNEE_API_KEY", ""))
+        outcome = reingest_if_changed(
+            cwd,
+            service_url,
+            os.environ.get("COGNEE_API_KEY", ""),
+            # A checkout indexed on Cognee Cloud has a graph built from a clone:
+            # this server never saw it, and its URL is not this server's to pull.
+            is_local_server=service_url_is_local(service_url),
+        )
         if not outcome:
             return
         if outcome.get("changed") and outcome.get("submitted"):

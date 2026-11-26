@@ -3,11 +3,19 @@
 #
 # Usage:
 #   cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+#   cognee-index-repo.sh <repo-path> --decline
 #
-# <repo-path-or-git-url>: a local repository path (works when the Cognee
-#                         server shares this filesystem — the default local
-#                         plugin server does) or a remote git URL (the server
-#                         shallow-clones it; required for cloud servers).
+# <repo-path-or-git-url>: a local repository path or a remote git URL (the
+#                         server shallow-clones it). A local server reads the
+#                         path in place. A remote server (Cognee Cloud) cannot
+#                         read this disk, so for a path it is sent the
+#                         checkout's git remote as an https URL and clones
+#                         that: no file is uploaded, no local credential is
+#                         sent, and a checkout with no remote is an error.
+# --decline:       index nothing; record that this repository must not be
+#                  offered for indexing at session start again (per kind of
+#                  server: declining Cognee Cloud leaves a local server free
+#                  to ask). Indexing the repository later lifts it.
 # --dataset:       target dataset (default: codebase-<repo-name>-<digest> —
 #                  one narrow dataset per repo keeps CODE searches fast. The
 #                  digest is the indexed path: two checkouts often share a
@@ -31,11 +39,13 @@
 #     fingerprint and re-submits in the background after any turn that changed
 #     a file, keeping the graph current per turn.
 #   * git URL     -> the server clones the repo and can only ever see PUSHED
-#     commits. Local edits are invisible to it, so the plugin does NOT
-#     re-submit these on edits (a re-pull would change nothing); the graph
-#     advances when you push and re-run this command. Normal behavior, but the
-#     results look identical to the local case, so it is worth saying out loud
-#     when answering from a cloud-indexed graph.
+#     commits on the default branch. Local edits are invisible to it, so the
+#     plugin does NOT re-submit these on edits (a re-pull would change
+#     nothing). A checkout indexed on a remote server is re-submitted at the
+#     next session start after a push; a bare URL advances when you re-run
+#     this command. Normal behavior, but the results look identical to the
+#     local case, so it is worth saying out loud when answering from a
+#     cloud-indexed graph.
 
 set -euo pipefail
 
@@ -99,6 +109,7 @@ REPO="${1:-}"
 DATASET=""
 INDEX_VECTORS="false"
 WAIT_SECONDS="0"
+COMMAND="index"
 
 shift || true
 while [ $# -gt 0 ]; do
@@ -114,6 +125,9 @@ while [ $# -gt 0 ]; do
             shift
             WAIT_SECONDS="${1:-0}"
             ;;
+        --decline)
+            COMMAND="decline"
+            ;;
         *)
             ;;
     esac
@@ -122,11 +136,11 @@ done
 
 if [ -z "$REPO" ]; then
     echo "Error: no repository path or git URL provided" >&2
-    echo "Usage: cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]" >&2
+    echo "Usage: cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>] | <repo-path> --decline" >&2
     exit 1
 fi
 
-RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
+RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" "$COMMAND" "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"
