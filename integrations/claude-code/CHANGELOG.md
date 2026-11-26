@@ -57,6 +57,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   hands the worker the values its own SessionStart read, and a value the plugin does
   not know means `ask`. A pass that runs only after the session's registration had to
   be retried indexes nothing new: the standing yes may have been withdrawn by then.
+- **A repository under a path with non-ASCII characters is found on Windows.** git's
+  output was read in the console code page instead of UTF-8, so such a checkout's root
+  came back as a path that does not exist, and it was never indexed or refreshed.
 
 ### Upgrade note
 

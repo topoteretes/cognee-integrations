@@ -260,7 +260,9 @@ def _run_git(args, cwd: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str:
             cwd=cwd,
             capture_output=True,
             timeout=timeout,
-            text=True,
+            # git writes paths as UTF-8 (Git for Windows too); the console code
+            # page would turn a non-ASCII checkout path into one that does not exist.
+            encoding="utf-8",
             errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
@@ -278,7 +280,9 @@ def _git_output_or_none(args, cwd: str, timeout: float):
             cwd=cwd,
             capture_output=True,
             timeout=timeout,
-            text=True,
+            # git writes paths as UTF-8 (Git for Windows too); the console code
+            # page would turn a non-ASCII checkout path into one that does not exist.
+            encoding="utf-8",
             errors="replace",
         )
     except subprocess.TimeoutExpired:

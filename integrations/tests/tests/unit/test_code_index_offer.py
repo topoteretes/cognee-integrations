@@ -212,6 +212,7 @@ def test_the_startup_pass_decides_by_the_sessions_settings(
     assert os.environ["COGNEE_CODE_AUTOINDEX"] == "always"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="reaches the mock server through the 127.1 shorthand")
 def test_a_session_that_does_not_share_files_is_cloned_by_the_worker(
     start, repo, mock_server, monkeypatch
 ):
@@ -227,6 +228,7 @@ def test_a_session_that_does_not_share_files_is_cloned_by_the_worker(
     assert os.environ["COGNEE_CODE_SERVER_SHARES_FILES"] == "true"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="reaches the mock server through the 127.1 shorthand")
 def test_a_session_that_shares_files_is_read_in_place_by_the_worker(
     start, repo, mock_server, monkeypatch
 ):
