@@ -82,6 +82,7 @@ Maintained by the community in their own repos — tracked here in
 | Integration | Package | Install |
 |---|---|---|
 | [Pi coding agent](https://github.com/kerryhatcher/pi-cognee) | `@kerryhatcher/pi-cognee` | `pi install npm:@kerryhatcher/pi-cognee` |
+| [RocketRide](https://github.com/rocketride-org/rocketride-server/tree/develop/nodes/src/nodes/tool_cognee) | n/a | node docs: [docs.rocketride.ai/nodes/tool_cognee](https://docs.rocketride.ai/nodes/tool_cognee/) |
 
 ## Claude Code Quickstart
 

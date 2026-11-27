@@ -349,6 +349,24 @@ integrations:
       Cognee MCP server (/cognee-mode mcp). Install with
       `pi install npm:@kerryhatcher/pi-cognee`. Code stays in the author's repo.
 
+  - slug: rocketride
+    name: "RocketRide Cognee Tool Node"
+    owner: rocketride
+    language: python
+    registry: none
+    package_name: null
+    cognee_dependency: http-api
+    current_version: "n/a"
+    migration_status: skipped
+    source_repo: https://github.com/rocketride-org/rocketride-server/tree/develop/nodes/src/nodes/tool_cognee
+    notes: >-
+      Community-maintained RocketRide tool node (MIT, RocketRide), part of the
+      open source RocketRide AI meta-harness. Gives pipeline agents persistent
+      semantic memory through a Cognee server's REST API with cognee.remember,
+      cognee.recall and cognee.memory_status tools. Docs:
+      https://docs.rocketride.ai/nodes/tool_cognee/. Code stays in the
+      RocketRide repository.
+
   # ── Pending migrations ─────────────────────────────────────────────
 
   - slug: vercel-ai-sdk
