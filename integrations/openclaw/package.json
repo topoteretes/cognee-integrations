@@ -61,6 +61,7 @@
       ]
     },
     "moduleNameMapper": {
+      "^openclaw/plugin-sdk/agent-runtime$": "<rootDir>/__mocks__/openclaw-agent-runtime.cjs",
       "^openclaw/plugin-sdk/sandbox$": "<rootDir>/__mocks__/openclaw-sandbox.cjs",
       "^(\\.\\.?/.*)\\.js$": "$1"
     },
