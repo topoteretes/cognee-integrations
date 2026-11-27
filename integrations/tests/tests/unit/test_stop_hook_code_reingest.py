@@ -75,6 +75,36 @@ def test_unchanged_tree_logs_but_submits_nothing(store, monkeypatch):
     assert any(name == "code_reingest_unchanged" for name, _ in events)
 
 
+def test_a_refresh_that_cannot_run_logs_why(store, suite, monkeypatch):
+    """A cloned graph whose checkout does not know the remote's default branch
+    is not refreshed; the log says so instead of calling the tree unchanged."""
+    if not suite.asks_before_code_index:
+        pytest.skip("this host's graphs are never cloned from the remote")
+    events = _seams(store, monkeypatch)
+    module = types.ModuleType("_code_graph")
+    skipped = {"skipped": "no_default_branch", "repo_root": "/work/proj"}
+    module.reingest_if_changed = lambda *a, **k: dict(skipped)
+    monkeypatch.setitem(sys.modules, "_code_graph", module)
+
+    store._maybe_reingest_code_repo({"cwd": "/work/proj"})
+    assert events == [("code_reingest_skipped", skipped)]
+
+
+def test_an_error_the_refresh_returns_is_logged_as_one(store, suite, monkeypatch):
+    """reingest_if_changed never raises: what went wrong (a state file that
+    could not be saved, say) comes back as its outcome, and is not "unchanged"."""
+    if suite.name != "claude-code":
+        pytest.skip("only this host's Stop hook tells a returned error apart")
+    events = _seams(store, monkeypatch)
+    module = types.ModuleType("_code_graph")
+    failed = {"changed": None, "error": "No space left on device"}
+    module.reingest_if_changed = lambda *a, **k: dict(failed)
+    monkeypatch.setitem(sys.modules, "_code_graph", module)
+
+    store._maybe_reingest_code_repo({"cwd": "/work/proj"})
+    assert events == [("code_reingest_error", failed)]
+
+
 def test_unreachable_server_is_skipped_quietly(store, monkeypatch, spy):
     """The stale fingerprint is kept on purpose: the next Stop retries rather
     than treating this turn's edits as already indexed."""

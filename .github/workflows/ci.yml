@@ -136,7 +136,9 @@ jobs:
     # Pinned: ubuntu-latest is Ubuntu 26.04, for which setup-python has no
     # 3.9 build (3.9 is end-of-life; builds stop at 24.04).
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # The whole shared suite on one runner takes close to 20 minutes now, and
+    # a run cut off at 99% says nothing about the code.
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

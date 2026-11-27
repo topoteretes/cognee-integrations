@@ -46,6 +46,7 @@ from _plugin_common import (
     PRESENCE_READY,
     _https_context,
     _is_loopback_host,
+    _local_api_url,
     _reexec_into_venv,
     apply_cognee_env,
     clear_server_pidfile,
@@ -1781,6 +1782,7 @@ async def _run_heavy(
     managed_endpoint: bool,
     boot_timeout: float,
     on_registered: Callable[[], None] | None = None,
+    code_settings: dict | None = None,
 ) -> tuple[str, str, bool]:
     """Slow session bootstrap shared by the inline (legacy) path and the
     detached worker: server boot wait, cognee init, agent registration, dataset
@@ -1789,6 +1791,11 @@ async def _run_heavy(
     ``on_registered`` runs once the session is registered and the connection
     state recorded, before the code-graph pass: memory is usable from then on,
     and the worker uses it to say so without waiting for the index.
+
+    ``code_settings`` are the code-graph settings as the session's own
+    SessionStart read them (``_code_graph_settings``). The long-lived cloud
+    worker passes them from the session's record: its own environment is the
+    one it started with.
 
     Returns ``(user_id, agent_api_key, ok)``. ``ok`` is False only on a hard
     cloud-registration failure (mirrors the legacy early-abort).
@@ -1946,21 +1953,11 @@ async def _run_heavy(
     # detached worker — it must never delay the first prompt — and best-effort:
     # a failure here costs code facts, not the session.
     try:
-        from _code_graph import autoindex_on_session_start
-
-        if coding_memory_enabled():
-            # Coding memory (SDK-1336) leaves the code graph alone.
-            raise _SkipAutoindex()
-        code_outcome = autoindex_on_session_start(
-            cwd,
-            service_url,
-            os.environ.get("COGNEE_API_KEY", ""),
-            is_local_server=service_url_is_local(service_url),
+        code_outcome = _startup_code_graph_pass(
+            cwd, service_url, os.environ.get("COGNEE_API_KEY", ""), code_settings
         )
         if code_outcome:
             hook_log("code_autoindex", code_outcome)
-    except _SkipAutoindex:
-        pass
     except Exception as exc:
         hook_log("code_autoindex_error", {"error": str(exc)[:200]})
 
@@ -2709,6 +2706,9 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
                 "dataset": dataset,
                 "agent_session_name": agent_session_name,
                 "base_url": target_url,
+                # The worker is shared and long-lived: it indexes by this
+                # session's settings, not the ones it inherited when it started.
+                "code_settings": _code_graph_settings(),
             }
         )
         # The cloud worker retries registration and prepares on success.
@@ -3100,6 +3100,205 @@ def _apply_recall_mode_notice(output: dict, payload: dict | None = None) -> dict
     return result
 
 
+_CODE_INDEX_QUESTION = "Index this repository in Cognee's code graph?"
+
+
+def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
+    """The instruction that has the agent ask the user about indexing ``offer``.
+
+    The plugin never answers for the user: a hook cannot put a question, so the
+    agent puts it, and each answer maps to one command (or to nothing).
+    """
+    import shlex
+
+    root = str(offer.get("repo_root") or "")
+    server = "remote" if offer.get("server") == "remote" else "local"
+    script = Path(__file__).resolve().parent / "cognee-index-repo.sh"
+    # Quoted: the plugin root can contain a space (topoteretes/cognee#5154).
+    # --server names the server this question describes, so a yes indexes there
+    # and nowhere else, whatever the shell the command runs in would resolve.
+    # --expect-server carries how the question says that server reads the repo
+    # (in place, or by cloning), so the command stops rather than do the other.
+    command = (
+        f'"{script}" {shlex.quote(root)} --server {shlex.quote(service_url)} '
+        f"--expect-server {server}"
+    )
+    host = urllib.parse.urlparse(service_url).hostname or "the Cognee server"
+    if server == "remote":
+        where = (
+            f"the Cognee server ({host}) cannot read this folder, so it would clone "
+            f"{offer.get('clone_url')} itself: only commits pushed to the default branch are "
+            "indexed, no local file is uploaded, and the server must be able to clone the "
+            "repository without credentials (a private repository fails)"
+        )
+        after = (
+            "If the result has `wait_outcome` `errored`, the server could not clone or "
+            "parse the repository: say so, and that a private repository is the usual "
+            "cause. The graph follows later pushes; if the result has a `note`, tell the "
+            "user what it says."
+        )
+    elif service_url_is_local(service_url):
+        where = "Cognee's local server reads the folder in place and the code stays on this machine"
+        after = "The graph follows later edits on its own."
+    else:
+        # COGNEE_CODE_SERVER_SHARES_FILES: a server elsewhere that mounts this disk.
+        where = (
+            f"the Cognee server ({host}) is set up as sharing this filesystem, so it reads "
+            "the folder in place and no file is uploaded"
+        )
+        after = "The graph follows later edits on its own."
+    count = offer.get("source_files")
+    if count is None:
+        files = "size unknown: git did not count its files in time"
+    elif isinstance(count, str):
+        # Counting stops past a limit; the offer says so as ">N".
+        files = f"more than {count.lstrip('>')} source files"
+    else:
+        files = "1 source file" if count == 1 else f"{count} source files"
+    # The path is a value, not prose: quoted, so nothing in a directory name reads
+    # as part of the instruction.
+    shown = json.dumps(root, ensure_ascii=False)
+    return (
+        f"Cognee code graph: this session opened in a code repository that is not indexed "
+        f"on this Cognee server yet: {shown} ({files}). Whether to index it is the "
+        "user's decision, so ask them once: at the start of your reply to their first "
+        "message, with AskUserQuestion (single select), then carry on with what they "
+        "asked, whatever the answer. With no AskUserQuestion tool, or nobody to answer "
+        "(a run with no person at the keyboard), do not ask, and do not mention it.\n"
+        f'Question: "{_CODE_INDEX_QUESTION}" Say in it that {where}.\n'
+        "Options, and what each one means for you:\n"
+        f'- "Index it": run `{command} --wait 60` and tell the user in one line whether it '
+        f"worked (`wait_outcome` `timeout` means it is still indexing in the background; an "
+        f"`error` saying the server is not the one described means nothing was sent). "
+        f"{after}\n"
+        '- "Not now": do nothing. A later session asks again.\n'
+        f'- "Never for this repository": run `{command} --decline`. It is not asked again; '
+        "asking you to index the repository still works.\n"
+        "Never index it without a yes, and do not ask twice in one session."
+    )
+
+
+# What the startup code-graph pass decides by: whether a new repository is
+# indexed without asking, whether the server reads this disk, and whether the
+# pass runs at all (coding memory, SDK-1336, leaves the code graph alone).
+_CODE_GRAPH_SETTINGS = (
+    "COGNEE_CODE_AUTOINDEX",
+    "COGNEE_CODE_SERVER_SHARES_FILES",
+    "COGNEE_CODING_MEMORY",
+)
+
+
+def _code_graph_settings() -> dict:
+    """The code-graph settings as this session reads them, "" for unset.
+
+    Handed to the cloud worker with the session: the worker is shared and
+    long-lived, and its own environment holds whatever these were when it
+    started.
+    """
+    return {name: str(os.environ.get(name, "") or "") for name in _CODE_GRAPH_SETTINGS}
+
+
+def _startup_code_graph_pass(
+    cwd: str, service_url: str, api_key: str, code_settings: dict | None = None
+) -> dict:
+    """Refresh, or index when the setting says so, the repository the session opened in.
+
+    ``code_settings`` (see ``_code_graph_settings``) stand in for those
+    settings in the environment for this call only, so the pass decides by
+    the session's own; a setting it does not name is left as it is, and so is
+    every other variable. None leaves the environment untouched.
+    """
+    from _code_graph import autoindex_on_session_start
+
+    saved: dict = {}
+    for name in _CODE_GRAPH_SETTINGS:
+        if code_settings is None or name not in code_settings:
+            continue
+        saved[name] = os.environ.get(name)
+        value = str(code_settings.get(name) or "")
+        if value:
+            os.environ[name] = value
+        else:
+            os.environ.pop(name, None)
+    try:
+        if coding_memory_enabled():
+            return {}
+        return autoindex_on_session_start(
+            cwd, service_url, api_key, is_local_server=service_url_is_local(service_url)
+        )
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+# What Claude Code sets CLAUDE_CODE_ENTRYPOINT to for a run nobody answers in:
+# print mode (`claude -p`, "sdk-cli"), the Agent SDK, the GitHub Action,
+# `claude mcp serve`, and scheduled remote triggers. Only these: an unset or
+# unknown value counts as interactive, so a surface with a person at it (the
+# terminal's "cli", the desktop app's "claude-desktop", VS Code's
+# "claude-vscode", or one added later) is still asked.
+_HEADLESS_ENTRYPOINTS = frozenset(
+    {
+        "sdk-cli",
+        "sdk-ts",
+        "sdk-py",
+        "claude-code-github-action",
+        "mcp",
+        "remote_trigger",
+        "remote_cowork_trigger",
+    }
+)
+
+
+def _apply_code_index_offer(output: dict, payload: dict | None = None) -> dict:
+    """Have the agent ask whether to index the repository this session opened in.
+
+    Indexing a new repository is the user's decision (``_code_graph.index_offer``
+    says when there is one to ask about), on a local server and on Cognee Cloud
+    alike. Asked when a conversation starts, not on a resume or a compaction,
+    which land in the middle of one, and not in a run with nobody to answer
+    (``_HEADLESS_ENTRYPOINTS``): the question would land in its output, and
+    the next run would get it again. The instruction leads the context, so it
+    survives the host cutting an oversized SessionStart output down to its head.
+
+    The server asked about is the one the per-turn hooks talk to
+    (``_local_api_url``), since recall is what reads the graph; the question
+    names it, and the command it gives indexes there and nowhere else.
+    """
+    if str((payload or {}).get("source") or "") in ("resume", "compact"):
+        return output
+    entrypoint = str(os.environ.get("CLAUDE_CODE_ENTRYPOINT") or "").strip()
+    if entrypoint in _HEADLESS_ENTRYPOINTS:
+        hook_log("code_index_offer_skipped", {"reason": "headless", "entrypoint": entrypoint})
+        return output
+    try:
+        from _code_graph import index_offer
+
+        cwd = str((payload or {}).get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
+        service_url = _normalize_service_url(_local_api_url())
+        offer = index_offer(cwd, service_url=service_url)
+        if not offer:
+            return output
+        text = _code_index_offer_text(offer, service_url)
+    except Exception as exc:
+        hook_log("code_index_offer_failed", {"error": str(exc)[:200]})
+        return output
+    hook_log(
+        "code_index_offered",
+        {key: offer.get(key) for key in ("repo_root", "server", "source_files")},
+    )
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("additionalContext") or "").strip()
+    hso["additionalContext"] = f"{text}\n\n{existing}" if existing else text
+    result["hookSpecificOutput"] = hso
+    return result
+
+
 def main():
     if is_observer_child():
         return
@@ -3215,11 +3414,8 @@ def main():
         output = _coding_session_start(output, payload)
     else:
         output = _apply_recall_mode_notice(output, payload)
+        output = _apply_code_index_offer(output, payload)
     print(json.dumps(output or {}))
-
-
-class _SkipAutoindex(Exception):
-    """Raised to skip the code-graph auto-index in coding memory mode."""
 
 
 def _coding_session_start(output: dict, payload: dict) -> dict:
