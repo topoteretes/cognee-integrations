@@ -62,3 +62,58 @@ def test_unset_floor_keeps_the_stock_gate_exactly(suite, hook_module, monkeypatc
     hook = hook_module(suite, "session-context-lookup.py")
     monkeypatch.delenv("COGNEE_RECALL_MIN_PROMPT_CHARS", raising=False)
     assert _run(hook, monkeypatch, "1234 ") == ["1234 "]
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "<task-notification><summary>Tests finished</summary></task-notification>",
+        "<system-reminder>Use the task tool</system-reminder>",
+        "<system-reminder>Incomplete notification",
+        "[SUGGESTION MODE: Suggest the user's next message]",
+        "[Request interrupted by user for tool use]",
+        "# Files mentioned by the user\n/path/to/file.py",
+    ],
+)
+def test_machine_only_prompts_do_not_recall(suite, hook_module, monkeypatch, prompt):
+    hook = hook_module(suite, "session-context-lookup.py")
+    assert _run(hook, monkeypatch, prompt) == []
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        (
+            "<system-reminder>Context</system-reminder>\nFind the earlier decision",
+            "Find the earlier decision",
+        ),
+        (
+            "# Files mentioned by the user\n/path.py\n"
+            "## My request for Codex:\nExplain this decision",
+            "Explain this decision",
+        ),
+        ("Explain what <system-reminder> means", "Explain what <system-reminder> means"),
+        ("Try again", "Try again"),
+    ],
+)
+def test_user_text_is_preserved(suite, hook_module, monkeypatch, prompt, expected):
+    hook = hook_module(suite, "session-context-lookup.py")
+    assert _run(hook, monkeypatch, prompt) == [expected]
+
+
+def test_non_user_role_is_not_recalled(suite, isolated_modules):
+    gate = isolated_modules(suite, "_recall_prompt")
+    assert gate.recall_user_prompt({"role": "assistant", "prompt": "The task is finished"}) == ""
+
+
+def test_machine_notification_does_not_consume_coding_memory_turn(suite, hook_module, monkeypatch):
+    hook = hook_module(suite, "session-context-lookup.py")
+    if not hasattr(hook, "coding_memory_enabled"):
+        pytest.skip("This host has no coding-memory delivery mode")
+    monkeypatch.setattr(hook, "coding_memory_enabled", lambda: True)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("machine notification reached coding-memory delivery")
+
+    monkeypatch.setattr(hook, "_coding_prompt", unexpected)
+    assert _run(hook, monkeypatch, "<task-notification>Done</task-notification>") == []

@@ -1407,6 +1407,13 @@ def main():
     except json.JSONDecodeError:
         return
 
+    from _recall_prompt import recall_user_prompt
+
+    prompt = recall_user_prompt(payload)
+    if not prompt:
+        return
+    payload = {**payload, "prompt": prompt}
+
     session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
     if session_key_candidate:
         set_session_key(session_key_candidate)
