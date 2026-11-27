@@ -1347,24 +1347,6 @@ def parse_autoindex_mode(value) -> str:
     return "ask"
 
 
-def _source_file_count(root: str, cap: int) -> int:
-    """Count code files under ``root``, stopping once ``cap`` is exceeded.
-
-    Bounded on purpose: this runs at session start, so it must cost the same
-    on a monorepo as on a small service.
-    """
-    skip = {".git", "node_modules", ".venv", "venv", "dist", "build", "target", "__pycache__"}
-    seen = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip and not d.startswith(".")]
-        for name in filenames:
-            if name.rsplit(".", 1)[-1].lower() in CODE_EXTENSIONS:
-                seen += 1
-                if seen > cap:
-                    return seen
-    return seen
-
-
 def _shown_count(count):
     """A code-file count as it is reported: past ``_SIZE_COUNT_CAP``, ``">N"``."""
     if isinstance(count, int) and count > _SIZE_COUNT_CAP:
@@ -1466,7 +1448,8 @@ def _close_quietly(stream) -> None:
 def _git_code_file_count(root: str, *, tracked_only: bool, deadline=None):
     """Code files git tracks in ``root``, read from the index with no tree walk.
 
-    The number sizes the question, so tracked files are enough for it, and the
+    The number sizes the question (and tells ``always`` whether there is any
+    code to index), so tracked files are enough for it, and the
     index answers in the same time on a monorepo as on a small service. It is
     counted as git lists it, up to ``_SIZE_COUNT_CAP`` (a count past it is
     ``_SIZE_COUNT_CAP + 1``, see ``_shown_count``). A checkout that tracks
@@ -1644,9 +1627,11 @@ def autoindex_on_session_start(
             # The question is SessionStart's to put; an unanswered one indexes nothing.
             return {"skipped": "awaiting_consent", "repo_root": root}
 
-        # Counted to tell "no code here" apart and to log the size; any size is
-        # indexed (the count stops past _SIZE_COUNT_CAP).
-        count = _source_file_count(root, _SIZE_COUNT_CAP)
+        # Counted as the question counts, from git's index within its time
+        # budget (the cloud worker serves every terminal, so no tree walk), to
+        # tell "no code here" apart and to log the size. Any size is indexed,
+        # an unknown one (None: git did not answer in time) included.
+        count = _git_code_file_count(root, tracked_only=not is_local_server)
         if count == 0:
             return {"skipped": "no_code_files", "repo_root": root}
 

@@ -1249,6 +1249,7 @@ def test_the_standing_yes_indexes_a_repository_of_any_size(
     monkeypatch.setattr(cg, "_SIZE_COUNT_CAP", 2)
     for i in range(5):
         (git_repo / f"mod{i}.py").write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
 
     outcome = cg.autoindex_on_session_start(
         str(git_repo), mock_server.url, "", is_local_server=True
@@ -1259,7 +1260,24 @@ def test_the_standing_yes_indexes_a_repository_of_any_size(
     )
 
 
-def test_vendored_directories_do_not_count_toward_the_cap(cg, git_repo):
+def test_the_standing_yes_counts_without_walking_the_tree(
+    cg, mock_server, git_repo, monkeypatch, asking
+):
+    """On Cognee Cloud this pass runs in the worker every terminal shares, so
+    the count is git's, within its time budget, and never a tree walk. A size
+    git could not count in time is still indexed."""
+    monkeypatch.setenv("COGNEE_CODE_AUTOINDEX", "always")
+    monkeypatch.setattr(cg.os, "walk", lambda *a, **k: pytest.fail("the tree was walked"))
+    monkeypatch.setattr(cg, "_count_listed_code_files", lambda args, cwd, timeout: None)
+
+    outcome = cg.autoindex_on_session_start(
+        str(git_repo), mock_server.url, "", is_local_server=True
+    )
+    assert (outcome["indexed"], outcome["source_files"]) == (True, None)
+    mock_server.assert_called("POST", REMEMBER)
+
+
+def test_vendored_directories_do_not_count_toward_the_cap(cg, git_repo, not_asking):
     """node_modules/.venv would blow the cap on an otherwise small repo."""
     vendor = git_repo / "node_modules" / "pkg"
     vendor.mkdir(parents=True)
