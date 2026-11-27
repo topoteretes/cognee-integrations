@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 // Fix #2: Import the shared HTTP client from the memory plugin package
 import { CogneeHttpClient } from "@cognee/cognee-openclaw";
 
