@@ -47,6 +47,7 @@ from _plugin_common import (
     resolve_session_key_from_payload,
     run_session_improve_detailed,
     server_usable,
+    service_url_is_local,
     set_session_key,
     touch_activity,
     write_outcome_ambiguous,
@@ -536,14 +537,15 @@ async def _store_assistant_stop(payload: dict) -> None:
 def _maybe_reingest_code_repo(payload: dict) -> None:
     """Freshness pass for indexed code repos (runs on the Stop hook only).
 
-    When this turn's cwd sits inside a repo indexed via cognee-index-repo.sh
+    When this turn's cwd sits inside a repo indexed on this server
     and the working tree's git fingerprint changed since the last index, the
     repo is re-submitted (background) so the code graph reflects the turn's
     edits by the next prompt. The fingerprint is only a cheap client-side
     gate — the server re-hashes every covered file anyway, so a false
-    positive costs one skipped submission. Repos indexed by git URL are NOT
-    re-submitted here: the server's clone only sees pushed commits, so local
-    edits cannot reach it. Never raises: this must not disturb the hook.
+    positive costs one skipped submission. A checkout a remote server cloned
+    by its git URL is gated on the pushed commit instead: the clone only sees
+    pushed commits, so it is re-submitted when that commit moved and never for
+    a local edit. Never raises: this must not disturb the hook.
     """
     try:
         from _code_graph import reingest_if_changed
@@ -558,7 +560,14 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
             # next Stop retries once the server is back.
             hook_log("code_reingest_skipped_server", {"base_url": service_url})
             return
-        outcome = reingest_if_changed(cwd, service_url, os.environ.get("COGNEE_API_KEY", ""))
+        outcome = reingest_if_changed(
+            cwd,
+            service_url,
+            os.environ.get("COGNEE_API_KEY", ""),
+            # A checkout indexed on Cognee Cloud has a graph built from a clone:
+            # this server never saw it, and its URL is not this server's to pull.
+            is_local_server=service_url_is_local(service_url),
+        )
         if not outcome:
             return
         if outcome.get("changed") and outcome.get("submitted"):
@@ -566,6 +575,13 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
             notify(f"code graph re-index submitted ({outcome.get('dataset', '')})")
         elif outcome.get("changed"):
             hook_log("code_reingest_failed", outcome)
+        elif outcome.get("error"):
+            # reingest_if_changed never raises; it returns what went wrong.
+            hook_log("code_reingest_error", outcome)
+        elif outcome.get("skipped"):
+            # Nothing could be compared: a cloned graph whose remote's default
+            # branch this checkout does not know (no_default_branch).
+            hook_log("code_reingest_skipped", outcome)
         else:
             hook_log("code_reingest_unchanged", {"repo_root": outcome.get("repo_root", "")})
     except Exception as exc:

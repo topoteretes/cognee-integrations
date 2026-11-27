@@ -823,14 +823,50 @@ imports, endpoints, dependencies) via cognee's enola-backed pipeline. Indexing m
 **no LLM or embedding calls** — it is fast and costs no tokens. Requires a cognee
 server >= 1.5.3.
 
-Opening the agent inside a git repository indexes it automatically at session start
-(background, never blocking the first prompt), and re-indexes it after any turn that
-changed the working tree. Index one explicitly — a different repo, a git URL, or one
-automation declined — with:
+**You decide whether a repository is indexed.** When a session opens inside a git
+repository that holds code and is not indexed yet, Claude asks once, with your first
+message: index it, not now, or never for this repository. Nothing is submitted without
+a yes. "Not now" asks again in a later session; "never" is remembered for that
+repository and is not asked again. This holds on a local server and on Cognee Cloud;
+the question says what each one does with the code:
+
+- **Local server**: it reads the folder in place. The code stays on the machine, and
+  the graph is re-indexed after any turn that changed the working tree.
+- **Cognee Cloud, or any remote server**: it cannot read your disk, so it is sent the
+  repository's git remote as an `https` URL and clones it itself. No file is uploaded
+  and no credential from your git config is sent (`git@github.com:org/repo.git`
+  becomes `https://github.com/org/repo`; a token in the remote URL is dropped). The
+  server must be able to clone that URL without credentials, so a private repository
+  fails, and a checkout with no remote is not offered. The graph is the default
+  branch as last pushed, and it is re-indexed at the first session start after a push.
+  Which branch that is comes from the checkout: `origin/HEAD`, which a full `git clone`
+  writes; without it, the remote's only branch (in a checkout that fetches all of them),
+  `main` or `master`. A checkout that cannot tell, such as a single-branch clone of
+  another branch, is not re-indexed, and says so in the index result and the log
+  (`code.reingest_skipped`, `no_default_branch`) until the default branch is fetched
+  and `git remote set-head origin --auto` is run in it.
+
+Index one yourself — this repository, a different one, a git URL, or one you answered
+"never" for — with:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-index-repo.sh" <repo-path-or-git-url> [--server <url>] [--dataset <name>] [--index-vectors] [--wait <seconds>]
 ```
+
+Given a path while the server is remote, the command indexes the repository that path
+is a checkout of, by its git remote. `--server` picks the server instead of
+`COGNEE_BASE_URL`; the session-start question passes the server it named, so a yes
+indexes there, and `--expect-server local|remote` with it, so the command stops
+rather than clone a repository the question said would be read in place (or the
+other way round). The command reads `~/.cognee/.env` as the hooks do. `cognee-index-repo.sh <repo-path> --decline` records a "never" without
+indexing; the answers are kept per kind of server, so declining Cognee Cloud leaves a
+local server free to ask.
+
+A graph belongs to the server that built it. Switching to another server (another
+Cognee tenant, Cloud after a local index, another local port) makes the repository
+count as not indexed there: the session asks again, and nothing is submitted to that
+server until it gets its own yes. Each server's graph is kept and refreshed on its
+own.
 
 Query it with `cognee-search.sh ... --code` (see the `cognee-code` skill for the
 operations: `query_facts`, `explore`, `traverse`, `find_path`, `impact_analysis`,
@@ -860,7 +896,7 @@ are using, because the output looks identical either way.
 | Server | Indexed from | Graph reflects | Updated by |
 |---|---|---|---|
 | **Local** (default) | The repository path on this machine | Your working tree, **including uncommitted and untracked changes** | Every turn that changes a file |
-| **Cloud / remote** | A git URL the server clones | The **last pushed commit** on the cloned branch | Pushing, then re-indexing |
+| **Cloud / remote** | A git URL the server clones (for a checkout: its git remote) | The **last pushed commit** on the default branch | Pushing; a checkout is re-indexed at the next session start, a bare URL when you index it again |
 
 A remote server cannot read your disk. It only ever sees code you have pushed, so a
 local edit — however recent — is invisible to it until it lands on the remote. The
@@ -876,10 +912,21 @@ knows.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_CODE_AUTOINDEX` | `auto` | `auto`: auto-index new repositories only when the server is local (code never leaves the machine) · `always`: also auto-index against a remote server · `off`: never auto-index new repositories (explicitly indexed ones still refresh) |
+| `COGNEE_CODE_AUTOINDEX` | `ask` | `ask`: ask before indexing a new repository, on a local or a remote server · `always`: index new repositories without asking, on a local or a remote server (not one answered "never") · `off`: never ask and never index new repositories (indexed ones still refresh) |
+| `COGNEE_CODE_SERVER_SHARES_FILES` | unset | `true`: the Cognee server is not on `localhost` but mounts this machine's files at the same paths (a container, a LAN host), so a repository is indexed by its path, as on a local server, instead of being cloned from its git remote. Without it, any server that is not on `localhost` is treated as unable to read this disk |
 
-Automatic indexing skips directories that are not git repositories, hold no source
-files, or exceed 3000 source files. Explicit indexing has no size cap.
+No question is asked for a directory that is not a git repository or holds no source
+files, or in a run with nobody to answer it: print mode (`claude -p`), the Agent SDK,
+the GitHub Action and scheduled triggers (`code.index_offer_skipped` in the log). There
+is no size cap: a repository you said yes to, one `always` indexes, and one you index
+yourself are indexed whatever their size (the question states the file count, or "more
+than 10000").
+
+A repository counts as indexed once the server has built its graph, not when it takes
+the request. An index whose run fails (a repository the server cannot clone, say) is
+not recorded: the question comes again in a later session, and `always` retries it
+after a backoff. Whether a run the command did not wait for succeeded is checked at the
+next session start; a refresh that failed is submitted again.
 
 ### File context on Read
 
@@ -1642,6 +1689,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST |
 | recall minimum prompt length | `COGNEE_RECALL_MIN_PROMPT_CHARS` | `5` | Prompts shorter than this (surrounding whitespace not counted) skip the per-prompt recall. Values below `5` or non-numeric fall back to `5`. Capture is unaffected. |
+| recall answer | `COGNEE_RECALL_ANSWER` | `false` | `true` makes the per-prompt graph recall ask the server for its answer with sources (`only_context=false`, `include_references=true`) instead of the retrieved context. For a server whose retrieved context is far larger than the injection limit, so the agent would otherwise see a fragment of it. Every prompt that reaches recall then costs one server-side completion and waits for it: raise `COGNEE_RECALL_BUDGET` to cover the answer time and `COGNEE_RECALL_MIN_PROMPT_CHARS` to skip short prompts. An answer over the injection limit loses its last lines first. The guidance request, `cognee-search` and the other recalls are unchanged. |
 
 ### Per-operation timeouts
 

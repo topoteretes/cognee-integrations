@@ -208,6 +208,44 @@ def _line_entries(text: str) -> list[str]:
     return entries
 
 
+def _answer_entries(text: str) -> list[str]:
+    """A server answer as its lines, to be joined back with a single newline.
+
+    An answer is one text, not a list of records: ``_line_entries`` would make
+    every line its own entry and the section would join them with a blank line,
+    which breaks a table or a list. Here a line that follows a blank line
+    carries that blank line with it, so the entries joined with ``"\n"`` read
+    as the answer the server wrote, and the budget still drops whole lines
+    from the end. Fenced code stays one entry.
+    """
+    entries, pending = [], []
+    fence = ""
+    gap = False
+
+    def push(entry):
+        entries.append("\n" + entry if gap and entries else entry)
+
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        marker = re.match(r"^(`{3,}|~{3,})", stripped)
+        if fence:
+            pending.append(line)
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                push("\n".join(pending))
+                pending, fence, gap = [], "", False
+        elif marker:
+            pending.append(line)
+            fence = marker[1]
+        elif stripped:
+            push(line)
+            gap = False
+        else:
+            gap = True
+    if pending:
+        push("\n".join(pending))
+    return entries
+
+
 def _entry_origin(source: str, entry: dict) -> str:
     """Where a non-graph recall item came from, in a few words for its tag."""
     if source == "code":
@@ -226,8 +264,14 @@ def _injection_sections(
     by_source: dict,
     marks: bool = False,
     keys: list | None = None,
+    answer: bool = False,
 ) -> list[dict]:
     """Expose bare records; shared labels belong to one section heading.
+
+    With ``answer`` (COGNEE_RECALL_ANSWER) a graph result that is not a
+    retrieved context is the server's answer: it is one text, not a list of
+    records, so it keeps its line breaks and is never deduplicated against
+    what earlier prompts injected.
 
     With ``marks``, every item carries a mark saying where it came from
     (SDK-1071): an evidence item, passage, session turn or trace on its own
@@ -259,7 +303,7 @@ def _injection_sections(
         remember(marked)
         return marked
 
-    def add_block(source, kind, title, priority, entries, result_id, mark):
+    def add_block(source, kind, title, priority, entries, result_id, mark, **section):
         """One mark for a block of entries: on the heading, or on the block's first
         entry when an earlier result already gave the section its heading."""
         if mark and entries:
@@ -271,9 +315,9 @@ def _injection_sections(
                 # ``fit_sections`` renders a section as its title, a newline and
                 # its entries: the block opens the section.
                 remember(f"{title}\n{entries[0]}")
-        add(source, kind, title, priority, entries, result_id)
+        add(source, kind, title, priority, entries, result_id, **section)
 
-    def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
+    def add(source, kind, title, priority, entries, result_id, separator="\n\n", dedupe=True):
         section = grouped.setdefault(
             (source, kind),
             {
@@ -285,6 +329,11 @@ def _injection_sections(
                 "kind": kind,
                 "entry_ids": {},
                 "separator": separator,
+                # False for an answer: the injection ledger drops an entry an
+                # earlier prompt already injected, which would take the lines
+                # two answers share (a conclusion, "Evidence:", a source) out
+                # of the later one.
+                "dedupe": dedupe,
             },
         )
         for entry in entries:
@@ -365,6 +414,19 @@ def _injection_sections(
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
+                    continue
+                if answer:
+                    add_block(
+                        source,
+                        "answer",
+                        title + "\n[cognee-memory]",
+                        priority,
+                        _answer_entries(text),
+                        result_id,
+                        label(_entry_origin(source, entry)),
+                        separator="\n",
+                        dedupe=False,
+                    )
                     continue
             formatted = _format_entry(entry)
             origin = _entry_origin(source, entry)
@@ -614,7 +676,9 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     try:
         from _code_graph import auto_code_lane
 
-        code_lane = auto_code_lane(prompt, cwd) or {}
+        # A graph lives on the server that built it, so the lane fires only for
+        # one built on the server this recall goes to.
+        code_lane = auto_code_lane(prompt, cwd, service_url=service_url) or {}
     except Exception as exc:
         hook_log("code_lane_gate_error", {"error": str(exc)[:200]})
     if code_lane:
@@ -723,6 +787,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             auto_route = auto_recall_active()
         except Exception as exc:
             hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
+    answer_mode = _recall_answer_enabled()
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.
@@ -744,6 +809,9 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         # history it would add is the agent's own conversation. Only the
         # guidance request needs the session.
         scope_session_id = "" if scope_list == ["graph"] else session_id
+        # Answer mode (COGNEE_RECALL_ANSWER): the graph request asks the server
+        # for its completion with sources instead of the retrieved context.
+        scope_answer = answer_mode and scope_list == ["graph"]
         part, exc = None, None
         t0 = time.monotonic()
         try:
@@ -756,7 +824,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 session_id=scope_session_id,
                 top_k=TOP_K,
                 scope=scope_list,
-                only_context=True,
+                only_context=not scope_answer,
                 search_type=qtype,
                 context_profile=context_profile,
                 dataset=scope_dataset,
@@ -764,8 +832,10 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 code_query=scope_code_query,
                 timeout=scope_timeout,
                 # Only this hook renders evidence items; other graph callers skip the cost.
-                evidence_mode="context" if "graph" in scope_list else None,
+                # An answer carries its own sources, and evidence items would replace it.
+                evidence_mode="context" if "graph" in scope_list and not scope_answer else None,
                 auto_route=auto_route and scope_list == ["graph"],
+                include_references=scope_answer,
             )
         except Exception as caught:
             exc = caught
@@ -952,8 +1022,13 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             # Keep the retrieved context only (SDK-904): the question template
             # goes, own-session passages go, the rest is capped and pruned.
             # Unparsed text (a pre-1.6.0 bare context, an unknown template)
-            # is injected whole — fail-open, logged.
-            if r.get("text") and not any(render_item(i) for i in evidence_items(r) or []):
+            # is injected whole — fail-open, logged. In answer mode the text is
+            # the server's answer, not a context: the trimmer does not run.
+            if (
+                not answer_mode
+                and r.get("text")
+                and not any(render_item(i) for i in evidence_items(r) or [])
+            ):
                 trimmed, guidance, stats = trim_recall_text(
                     str(r.get("text") or ""), prompt, session_id
                 )
@@ -1021,7 +1096,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # holds the text each one opens with, to count the ones that are injected.
     cite = credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
     marked: list = []
-    memory_sections = _injection_sections(by_source, cite, marked)
+    memory_sections = _injection_sections(by_source, cite, marked, answer=answer_mode)
     # Reserve the largest possible drop notice before fitting. Replacing it
     # with the actual smaller count (or removing it) can only shrink output.
     entry_count = sum(len(section["entries"]) for section in memory_sections)
@@ -1292,6 +1367,18 @@ def _coding_prompt(payload: dict) -> dict | None:
             "additionalContext": block,
         }
     }
+
+
+def _recall_answer_enabled() -> bool:
+    """Whether the per-prompt graph recall asks the server for its answer.
+
+    Off by default: the hook asks for the retrieved context and the agent writes
+    the answer. COGNEE_RECALL_ANSWER=true asks the server for its completion
+    with sources instead, for a deployment whose retrieved context is far larger
+    than the injection limit. Every prompt that reaches recall then costs one
+    server-side completion.
+    """
+    return os.environ.get("COGNEE_RECALL_ANSWER", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _recall_min_prompt_chars() -> int:

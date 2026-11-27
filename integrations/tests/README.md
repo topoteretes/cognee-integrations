@@ -66,6 +66,7 @@ Divergences are named by a declared flag on `Suite`, never inferred from
 | `host_stem` | `claude` | `codex` | `agy` | `_proc`'s Windows ancestry match |
 | `has_local_sdk_recall` | `False` | `False` | `True` | `session-context-lookup.py` keeps an in-process `cognee.recall` branch next to HTTP; its concurrent fan-out is driven in both modes |
 | `has_cross_dataset_search` | `True` | `True` | `False` | the cross-dataset search flow: `list_readable_datasets`, `list-datasets.py`, `cognee-search.sh --dataset-id` reading a foreign dataset graph-only, without the session id (the prompt hook no longer offers other datasets: recall is auto, SDK-1393) |
+| `asks_before_code_index` | `True` | `False` | `False` | session start asks before a new repository is indexed (`_code_graph.index_offer`, the recorded "never", `cognee-index-repo.sh --decline`), and a remote server is sent the checkout's git remote URL instead of a path; the other hosts index a new repository unasked on a local server and skip a remote one |
 
 A flag is retired once every registered suite agrees on it. `has_background_remember`,
 `has_improve_pipeline_polling` and `has_elapsed_ms_helper` were all `True` everywhere
