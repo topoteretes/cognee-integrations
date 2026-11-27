@@ -29,6 +29,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **`always` indexes a repository of any size.** A repository of more than 3000 source
   files used to be skipped without a word. A yes and the index command already indexed
   any size; the question states the size, counting up to 10000 files.
+- **A failed index is not recorded as indexed.** A repository counted as indexed as soon
+  as the server took the request, even when the run then failed (a repository the
+  server cannot clone), so it was never asked about again and recall queried an empty
+  dataset. A run that fails while the command waits records nothing; one it did not wait
+  for is checked at the next session start. A failed first index is then forgotten and
+  asked about again (`always` retries it after a backoff), and a failed refresh is
+  submitted again.
+- **Runs with nobody to answer are not asked.** Print mode (`claude -p`), the Agent
+  SDK, the GitHub Action and scheduled triggers skip the question
+  (`code.index_offer_skipped`), and the agent no longer falls back to asking in prose
+  when it has no `AskUserQuestion` tool.
 
 ### Fixed
 

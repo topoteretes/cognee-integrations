@@ -41,6 +41,7 @@ import subprocess
 import time
 
 import pytest
+from utils.mock_cognee import STATUS_ERRORED, STATUS_PROCESSING
 
 REMEMBER = "/api/v1/remember"
 # Servers the offer is asked about without any request being made.
@@ -295,6 +296,110 @@ def test_a_failure_on_this_machine_is_printed_not_read_as_unreachable(
     cg.main([mock_server.url, "", command, str(git_repo)])
     result = json.loads(capsys.readouterr().out)
     assert "No space left on device" in result["error"]
+
+
+# ── a repository counts as indexed once its graph is built (hosts that ask) ─
+
+STATUS = "/api/v1/datasets/status"
+PROMPT = "what calls process_payment?"
+
+
+def test_a_run_that_errors_while_waited_for_records_nothing(cg, mock_server, git_repo, asking):
+    """The server takes the request, then cannot build the graph: a private
+    repository it cannot clone, say. Nothing is recorded as indexed, so the
+    question still comes and recall does not query an empty dataset."""
+    mock_server.set_dataset_status(STATUS_ERRORED)
+    result = cg.index_repo(mock_server.url, "", str(git_repo), wait_seconds=5)
+    assert (result["ok"], result["wait_outcome"]) == (True, "errored")
+    assert cg.load_repo_states() == []
+    offer = cg.index_offer(str(git_repo), service_url=mock_server.url)
+    assert offer["repo_root"] == str(git_repo.resolve())
+    assert cg.auto_code_lane(PROMPT, str(git_repo), service_url=mock_server.url) == {}
+
+
+def test_a_run_that_errors_keeps_an_earlier_never(cg, mock_server, git_repo, asking):
+    cg.decline_repo(str(git_repo), service_url=mock_server.url)
+    mock_server.set_dataset_status(STATUS_ERRORED)
+    cg.index_repo(mock_server.url, "", str(git_repo), wait_seconds=5)
+    assert cg.is_declined(str(git_repo.resolve()), True)
+
+
+def test_a_run_that_errors_keeps_the_graph_built_before(cg, mock_server, git_repo, asking):
+    cg.index_repo(mock_server.url, "", str(git_repo), wait_seconds=5)
+    before = cg.load_repo_states()
+    mock_server.set_dataset_status(STATUS_ERRORED)
+    cg.index_repo(mock_server.url, "", str(git_repo), wait_seconds=5)
+    assert cg.load_repo_states() == before
+
+
+def test_an_index_not_waited_for_is_confirmed_at_the_next_session_start(
+    cg, mock_server, git_repo, asking
+):
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    assert cg.load_repo_states()[0]["pending"]["first"] is True
+    # Unconfirmed, it still counts: its run may be going, so nothing is asked.
+    assert cg.index_offer(str(git_repo), service_url=mock_server.url) == {}
+    mock_server.calls.clear()
+
+    outcome = cg.autoindex_on_session_start(
+        str(git_repo), mock_server.url, "", is_local_server=True
+    )
+    mock_server.assert_called("GET", STATUS)
+    assert outcome["changed"] is False
+    assert "pending" not in cg.load_repo_states()[0]
+    assert cg.auto_code_lane(PROMPT, str(git_repo), service_url=mock_server.url)["dataset"]
+
+
+def test_a_run_still_going_is_checked_again_later(cg, mock_server, git_repo, asking):
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    mock_server.set_dataset_status(STATUS_PROCESSING)
+    cg.autoindex_on_session_start(str(git_repo), mock_server.url, "", is_local_server=True)
+    assert cg.load_repo_states()[0]["pending"]["first"] is True
+
+
+def test_a_first_index_whose_run_errored_is_asked_about_again(
+    cg, mock_server, git_repo, monkeypatch, asking
+):
+    """Found out at the next session start: the state goes, so the question
+    comes back. The standing yes waits out a backoff before submitting the
+    repository again, instead of doing so at every session start."""
+    cg.index_repo(mock_server.url, "", str(git_repo))
+    mock_server.set_dataset_status(STATUS_ERRORED)
+    mock_server.calls.clear()
+
+    outcome = cg.autoindex_on_session_start(
+        str(git_repo), mock_server.url, "", is_local_server=True
+    )
+    assert (outcome["index_failed"], outcome["reason"]) == (True, "run_errored")
+    assert cg.load_repo_states() == []
+    offer = cg.index_offer(str(git_repo), service_url=mock_server.url)
+    assert offer["repo_root"] == str(git_repo.resolve())
+
+    monkeypatch.setenv("COGNEE_CODE_AUTOINDEX", "always")
+    outcome = cg.autoindex_on_session_start(
+        str(git_repo), mock_server.url, "", is_local_server=True
+    )
+    assert outcome["skipped"] == "index_failed"
+    mock_server.assert_not_called("POST", REMEMBER)
+
+
+def test_a_refresh_whose_run_errored_is_submitted_again(cg, mock_server, git_repo, asking):
+    """A refresh that failed left the earlier graph in place: the state stays,
+    and the refresh runs again."""
+    cg.index_repo(mock_server.url, "", str(git_repo), wait_seconds=5)
+    assert "pending" not in cg.load_repo_states()[0]
+    (git_repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    assert cg.reingest_if_changed(str(git_repo), mock_server.url, "")["submitted"] is True
+    assert cg.load_repo_states()[0]["pending"]["first"] is False
+
+    mock_server.set_dataset_status(STATUS_ERRORED)
+    mock_server.calls.clear()
+    outcome = cg.autoindex_on_session_start(
+        str(git_repo), mock_server.url, "", is_local_server=True
+    )
+    assert (outcome["previous_run"], outcome["submitted"]) == ("errored", True)
+    assert len(cg.load_repo_states()) == 1
+    mock_server.assert_called("POST", REMEMBER)
 
 
 # ── a remote server clones the repository (hosts that ask first) ───────────

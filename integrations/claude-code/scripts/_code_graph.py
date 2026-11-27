@@ -1115,6 +1115,7 @@ def index_repo(
     if result == UNREACHABLE or (isinstance(result, dict) and result.get("error")):
         return result
 
+    outcome = ""
     if wait_seconds > 0 and isinstance(result, dict) and result.get("dataset_id"):
         outcome = poll_code_graph_status(
             service_url, api_key, result["dataset_id"], wait_seconds, opener=opener
@@ -1122,22 +1123,46 @@ def index_repo(
         result["wait_outcome"] = outcome
         result["queryable"] = outcome == "completed"
 
+    server = server_identity(service_url)
+    spec_kind = "url" if remote else "path"
+    if outcome == "errored":
+        # The server took the request, then could not build the graph: a
+        # clone it could not make (a private repository), a tree enola could
+        # not parse. Nothing is recorded as indexed, so the session-start
+        # question still comes; an earlier graph's state and an earlier
+        # "never" both stay as they were.
+        if repo_root:
+            _record_index_failure(repo_root, server, spec_kind, "the server's run errored")
+        result["dataset"] = dataset
+        return result
+
     fingerprint = _state_fingerprint(repo_root, remote)
     state = {
         "spec": spec,
-        "spec_kind": "url" if remote else "path",
+        "spec_kind": spec_kind,
         "repo_root": repo_root,
-        "server": server_identity(service_url),
+        "server": server,
         "dataset": dataset,
         "index_vectors": bool(index_vectors),
         "fingerprint": fingerprint,
         "last_index_at": time.time(),
         "last_status": str(result.get("status") or "submitted") if isinstance(result, dict) else "",
     }
+    dataset_id = str(result.get("dataset_id") or "") if isinstance(result, dict) else ""
+    if dataset_id and outcome != "completed":
+        # Accepted, but whether the run built the graph is not known yet: the
+        # next session start asks the server (``confirm_pending_index``).
+        prior = find_indexed_repo(repo_root, service_url, is_local_server) if repo_root else {}
+        built_before = str(prior.get("repo_root") or "") == repo_root and not _pending_run(
+            prior
+        ).get("first")
+        state["pending"] = {"dataset_id": dataset_id, "first": not built_before}
     save_repo_state(state)
     if repo_root:
         # Indexing a repo is a yes, whatever was answered at an earlier session start.
         clear_declined(repo_root, is_local_server)
+        if outcome == "completed":
+            _clear_index_failure(repo_root, server, spec_kind)
     if remote and repo_root and not fingerprint:
         name = _remote_name(repo_root) or "origin"
         result["note"] = (
@@ -1216,6 +1241,92 @@ def _clear_retry_failure(state: dict) -> None:
         state.pop(field, None)
 
 
+# ---------------------------------------------------------------------------
+# Runs the server accepted but has not reported finished
+# ---------------------------------------------------------------------------
+#
+# A submission returns once the server has taken it; the run itself (the clone,
+# the enola pass) happens afterwards. A state whose last run is not known to
+# have built the graph carries ``pending`` ({"dataset_id", "first"}), and the
+# next session start asks the server how it ended (``confirm_pending_index``).
+# ``first`` says no graph was confirmed before on that server: a first index
+# that errored built nothing, while a refresh that errored left the earlier
+# graph in place. A state without ``pending`` is confirmed, which covers every
+# state written before runs were confirmed.
+
+_FAILED_DIR = _STATE_DIR / "failed"
+
+
+def _pending_run(state: dict) -> dict:
+    """The run ``state`` still waits to hear about, or {}."""
+    pending = state.get("pending") if isinstance(state, dict) else None
+    return pending if isinstance(pending, dict) and pending.get("dataset_id") else {}
+
+
+def _index_failure_path(root: str, server: str, spec_kind: str) -> Path:
+    """Where a failed first index of ``root`` on one server is remembered."""
+    return _FAILED_DIR / _state_path(root, server, spec_kind).name
+
+
+def _read_index_failure(root: str, server: str, spec_kind: str) -> dict:
+    try:
+        record = json.loads(
+            _index_failure_path(root, server, spec_kind).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _record_index_failure(root: str, server: str, spec_kind: str, error: str) -> None:
+    """Remember that indexing ``root`` on this server built no graph.
+
+    Only ``always`` reads it: the standing yes backs off a repository whose
+    index keeps failing (``retry_backoff_seconds``) instead of submitting it
+    at every session start. A question is still put; a person can answer it.
+    """
+    record = _read_index_failure(root, server, spec_kind)
+    try:
+        error_count = int(record.get("error_count") or 0) + 1
+    except (TypeError, ValueError):
+        error_count = 1
+    try:
+        _FAILED_DIR.mkdir(parents=True, exist_ok=True)
+        _index_failure_path(root, server, spec_kind).write_text(
+            json.dumps(
+                {
+                    "repo_root": root,
+                    "server": server,
+                    "error_count": error_count,
+                    "last_error_at": time.time(),
+                    "last_error": str(error)[:200],
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _clear_index_failure(root: str, server: str, spec_kind: str) -> None:
+    try:
+        _index_failure_path(root, server, spec_kind).unlink()
+    except OSError:
+        pass
+
+
+def _delete_repo_state(state: dict) -> None:
+    """Remove the state file ``state`` was saved to."""
+    key = state.get("repo_root") or state.get("spec") or ""
+    if not key:
+        return
+    path = _state_path(key, str(state.get("server") or ""), str(state.get("spec_kind") or ""))
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 def reingest_if_changed(
     cwd, service_url, api_key, *, opener=urllib.request.urlopen, is_local_server=None
 ) -> dict:
@@ -1282,6 +1393,13 @@ def reingest_if_changed(
             # A state that predates ``server`` belongs to the server that just
             # took the refresh.
             state["server"] = state.get("server") or server_identity(service_url)
+            if result.get("dataset_id"):
+                # Taken, not yet built: the next session start asks how the run
+                # ended. A first index still unconfirmed stays a first index.
+                state["pending"] = {
+                    "dataset_id": str(result["dataset_id"]),
+                    "first": bool(_pending_run(state).get("first")),
+                }
             _clear_retry_failure(state)
             save_repo_state(state)
             outcome["submitted"] = True
@@ -1561,6 +1679,48 @@ def decline_repo(cwd, *, service_url="", is_local_server=None) -> dict:
     return {"ok": True, "declined": root, "server": _server_kind(is_local_server)}
 
 
+def confirm_pending_index(
+    state: dict, service_url, api_key, *, opener=urllib.request.urlopen
+) -> dict:
+    """Ask the server once how ``state``'s pending run ended, and act on it.
+
+    ``completed`` confirms the state. ``errored`` after a first index means no
+    graph was built: the state is removed, so the repository counts as new
+    again (asked about, or retried by ``always`` after a backoff), and
+    ``{"index_failed": True}`` is returned. ``errored`` after a refresh keeps
+    the state, whose earlier graph is still there, and goes through the retry
+    backoff with the fingerprint cleared, so the refresh runs again:
+    ``{"refresh_failed": True}``. Anything else (still running, or the server
+    could not say) changes nothing, and the next session start asks again.
+    """
+    pending = _pending_run(state)
+    if not pending:
+        return {}
+    # One request, kept short: on Cognee Cloud this runs in the worker every
+    # terminal shares, and a slow answer only means asking at the next start.
+    outcome = poll_code_graph_status(
+        service_url, api_key, pending["dataset_id"], 0, opener=opener, request_timeout=5.0
+    )
+    root = str(state.get("repo_root") or "")
+    server = str(state.get("server") or "")
+    spec_kind = str(state.get("spec_kind") or "")
+    if outcome == "completed":
+        state.pop("pending", None)
+        save_repo_state(state)
+        _clear_index_failure(root, server, spec_kind)
+        return {"confirmed": True}
+    if outcome != "errored":
+        return {}
+    if pending.get("first"):
+        _delete_repo_state(state)
+        _record_index_failure(root, server, spec_kind, "the server's run errored")
+        return {"index_failed": True, "dataset": state.get("dataset")}
+    state.pop("pending", None)
+    state["fingerprint"] = ""
+    _record_retry_failure(state, "the server's run errored", time.time())
+    return {"refresh_failed": True, "dataset": state.get("dataset")}
+
+
 def autoindex_on_session_start(
     cwd,
     service_url,
@@ -1598,6 +1758,16 @@ def autoindex_on_session_start(
             return {}
 
         indexed = find_indexed_repo(root, service_url, is_local_server)
+        checked: dict = {}
+        if indexed and _pending_run(indexed):
+            # The last submission was taken but never reported finished: ask
+            # the server how its run ended before trusting the graph.
+            checked = confirm_pending_index(indexed, service_url, api_key, opener=opener)
+            if checked.get("index_failed"):
+                # No graph was built: the repository is new again, and the
+                # next session asks about it (``always`` retries after a backoff).
+                return {**checked, "repo_root": root, "reason": "run_errored"}
+            indexed = find_indexed_repo(root, service_url, is_local_server)
         if indexed:
             # A session start is the gesture a user makes after fixing what
             # broke indexing (a corrected API key, a restarted/upgraded
@@ -1612,6 +1782,8 @@ def autoindex_on_session_start(
             )
             if outcome:
                 outcome["reason"] = "refresh"
+            if checked.get("refresh_failed"):
+                outcome = {**outcome, "previous_run": "errored", "reason": "refresh"}
             return outcome
 
         mode = autoindex_mode()
@@ -1626,6 +1798,18 @@ def autoindex_on_session_start(
         if mode == "ask":
             # The question is SessionStart's to put; an unanswered one indexes nothing.
             return {"skipped": "awaiting_consent", "repo_root": root}
+        failure = _read_index_failure(
+            root, server_identity(service_url), "path" if is_local_server else "url"
+        )
+        if _retry_suppressed(failure, time.time()):
+            # This server could not build the graph last time (a repository it
+            # cannot clone, say): the standing yes waits out the backoff
+            # rather than submitting it again at every session start.
+            return {
+                "skipped": "index_failed",
+                "repo_root": root,
+                "error_count": failure.get("error_count"),
+            }
 
         # Counted as the question counts, from git's index within its time
         # budget (the cloud worker serves every terminal, so no tree walk), to

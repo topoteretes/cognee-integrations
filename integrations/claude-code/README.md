@@ -916,9 +916,17 @@ knows.
 | `COGNEE_CODE_SERVER_SHARES_FILES` | unset | `true`: the Cognee server is not on `localhost` but mounts this machine's files at the same paths (a container, a LAN host), so a repository is indexed by its path, as on a local server, instead of being cloned from its git remote. Without it, any server that is not on `localhost` is treated as unable to read this disk |
 
 No question is asked for a directory that is not a git repository or holds no source
-files. There is no size cap: a repository you said yes to, one `always` indexes, and
-one you index yourself are indexed whatever their size (the question states the file
-count, or "more than 10000").
+files, or in a run with nobody to answer it: print mode (`claude -p`), the Agent SDK,
+the GitHub Action and scheduled triggers (`code.index_offer_skipped` in the log). There
+is no size cap: a repository you said yes to, one `always` indexes, and one you index
+yourself are indexed whatever their size (the question states the file count, or "more
+than 10000").
+
+A repository counts as indexed once the server has built its graph, not when it takes
+the request. An index whose run fails (a repository the server cannot clone, say) is
+not recorded: the question comes again in a later session, and `always` retries it
+after a backoff. Whether a run the command did not wait for succeeded is checked at the
+next session start; a refresh that failed is submitted again.
 
 ### File context on Read
 

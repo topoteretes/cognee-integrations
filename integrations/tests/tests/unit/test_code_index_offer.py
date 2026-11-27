@@ -52,6 +52,8 @@ def start(suite, hook_module, monkeypatch):
         "COGNEE_CODE_SERVER_SHARES_FILES",
         "COGNEE_BASE_URL",
         "COGNEE_LOCAL_API_URL",
+        # Set by Claude Code itself; a test run from `claude -p` must not skip the offer.
+        "CLAUDE_CODE_ENTRYPOINT",
     ):
         monkeypatch.delenv(name, raising=False)
     module.events = events
@@ -126,6 +128,51 @@ def test_the_question_is_about_the_server_recall_uses(
     local = asked_about == LOCAL
     assert ("the code stays on this machine" in text) is local
     assert ("(tenant.cognee.example) cannot read this folder" in text) is not local
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        "sdk-cli",  # claude -p
+        "sdk-ts",
+        "sdk-py",
+        "claude-code-github-action",
+        "mcp",
+        "remote_trigger",
+        "remote_cowork_trigger",
+    ],
+)
+def test_a_run_with_nobody_to_answer_is_not_asked(start, repo, monkeypatch, entrypoint):
+    """Print mode, the SDK, CI and scheduled runs have no person to answer:
+    the question would land in the run's output, and come back next run."""
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", entrypoint)
+    out = start._apply_code_index_offer({"a": 1}, {**STARTUP, "cwd": str(repo)})
+    assert out == {"a": 1}
+    assert start.events == [
+        ("code_index_offer_skipped", {"reason": "headless", "entrypoint": entrypoint})
+    ]
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["", "cli", "claude-desktop", "claude-desktop-3p", "local-agent", "claude-vscode", "new-ui"],
+)
+def test_an_interactive_or_unknown_run_is_asked(start, repo, monkeypatch, entrypoint):
+    """Only known headless runs are skipped: the terminal, the desktop app, VS
+    Code, and a surface nobody listed yet still get the question."""
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", entrypoint)
+    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
+    assert "Index this repository in Cognee's code graph?" in text
+
+
+def test_the_question_is_never_put_in_prose(start, repo):
+    """With no AskUserQuestion tool there may be nobody to answer either."""
+    text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
+    assert "plain sentence" not in text
+    assert (
+        "With no AskUserQuestion tool, or nobody to answer (a run with no person at the "
+        "keyboard), do not ask, and do not mention it." in text
+    )
 
 
 def test_a_size_past_the_count_limit_is_more_than_it(start, repo):

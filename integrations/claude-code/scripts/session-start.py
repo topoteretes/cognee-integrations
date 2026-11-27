@@ -3162,8 +3162,9 @@ def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
         f"Cognee code graph: this session opened in a code repository that is not indexed "
         f"on this Cognee server yet: {shown} ({files}). Whether to index it is the "
         "user's decision, so ask them once: at the start of your reply to their first "
-        "message, with AskUserQuestion (single select; with no such tool, ask in one plain "
-        "sentence), then carry on with what they asked, whatever the answer.\n"
+        "message, with AskUserQuestion (single select), then carry on with what they "
+        "asked, whatever the answer. With no AskUserQuestion tool, or nobody to answer "
+        "(a run with no person at the keyboard), do not ask, and do not mention it.\n"
         f'Question: "{_CODE_INDEX_QUESTION}" Say in it that {where}.\n'
         "Options, and what each one means for you:\n"
         f'- "Index it": run `{command} --wait 60` and tell the user in one line whether it '
@@ -3233,13 +3234,34 @@ def _startup_code_graph_pass(
                 os.environ[name] = value
 
 
+# What Claude Code sets CLAUDE_CODE_ENTRYPOINT to for a run nobody answers in:
+# print mode (`claude -p`, "sdk-cli"), the Agent SDK, the GitHub Action,
+# `claude mcp serve`, and scheduled remote triggers. Only these: an unset or
+# unknown value counts as interactive, so a surface with a person at it (the
+# terminal's "cli", the desktop app's "claude-desktop", VS Code's
+# "claude-vscode", or one added later) is still asked.
+_HEADLESS_ENTRYPOINTS = frozenset(
+    {
+        "sdk-cli",
+        "sdk-ts",
+        "sdk-py",
+        "claude-code-github-action",
+        "mcp",
+        "remote_trigger",
+        "remote_cowork_trigger",
+    }
+)
+
+
 def _apply_code_index_offer(output: dict, payload: dict | None = None) -> dict:
     """Have the agent ask whether to index the repository this session opened in.
 
     Indexing a new repository is the user's decision (``_code_graph.index_offer``
     says when there is one to ask about), on a local server and on Cognee Cloud
     alike. Asked when a conversation starts, not on a resume or a compaction,
-    which land in the middle of one. The instruction leads the context, so it
+    which land in the middle of one, and not in a run with nobody to answer
+    (``_HEADLESS_ENTRYPOINTS``): the question would land in its output, and
+    the next run would get it again. The instruction leads the context, so it
     survives the host cutting an oversized SessionStart output down to its head.
 
     The server asked about is the one the per-turn hooks talk to
@@ -3247,6 +3269,10 @@ def _apply_code_index_offer(output: dict, payload: dict | None = None) -> dict:
     names it, and the command it gives indexes there and nowhere else.
     """
     if str((payload or {}).get("source") or "") in ("resume", "compact"):
+        return output
+    entrypoint = str(os.environ.get("CLAUDE_CODE_ENTRYPOINT") or "").strip()
+    if entrypoint in _HEADLESS_ENTRYPOINTS:
+        hook_log("code_index_offer_skipped", {"reason": "headless", "entrypoint": entrypoint})
         return output
     try:
         from _code_graph import index_offer

@@ -70,11 +70,13 @@ so re-running the command is always safe.
 A repository is never indexed on the plugin's own initiative. When a session
 opens inside a git repository that holds code and is not indexed yet, the
 session-start context tells you to ask the user once, with their first message
-(AskUserQuestion), and gives the command for each answer. Follow it as written:
+(AskUserQuestion), and gives the command for each answer. A run with nobody to
+answer (`claude -p`, the Agent SDK, CI) gets no question; without an
+AskUserQuestion tool, do not ask and do not mention it. Follow it as written:
 
 | Answer | What you do |
 |--------|-------------|
-| Index it | Run the index command the context gives (`cognee-index-repo.sh <repo> --server <url> --expect-server <local\|remote> --wait 60`) and report the outcome in one line |
+| Index it | Run the index command the context gives (`cognee-index-repo.sh <repo> --server <url> --expect-server <local\|remote> --wait 60`) and report the outcome in one line. `wait_outcome` `errored` means the server built no graph, so nothing is recorded and a later session asks again |
 | Not now | Nothing. A later session asks again |
 | Never for this repository | Run `cognee-index-repo.sh <repo> --server <url> --expect-server <local\|remote> --decline`. It is not asked again; "index this repo" still works |
 

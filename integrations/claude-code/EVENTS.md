@@ -80,6 +80,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:code_autoindex` | `code.autoindex` |
 | `hook:code_autoindex_error` | `code.autoindex_error` |
 | `hook:code_index_offer_failed` | `code.index_offer_failed` |
+| `hook:code_index_offer_skipped` | `code.index_offer_skipped` |
 | `hook:code_index_offered` | `code.index_offered` |
 | `hook:code_lane_armed` | `code.lane_armed` |
 | `hook:code_lane_gate_error` | `code.lane_gate_error` |
