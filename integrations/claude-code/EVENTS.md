@@ -227,6 +227,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_budget_reduced` | `recall.budget_reduced` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
+| `hook:recall_cited_check_failed` | `recall.cited_check_failed` |
+| `hook:recall_cited_refused` | `recall.cited_refused` |
+| `hook:server_capabilities_record_failed` | `server.capabilities_record_failed` |
 | `hook:recall_error` | `recall.error` |
 | `hook:recall_graph_not_built` | `recall.graph_not_built` |
 | `hook:recall_guidance_absent` | `recall.guidance_absent` |
@@ -414,6 +417,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.context_cache_refresh_dropped`: a pending digest refresh was removed (another account, older than the cache TTL, or too many failed attempts).
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+`recall.cited_refused`: the server refused the cited graph recall by name (for example, a searched dataset has no passages), so the regular recall was sent instead, untagged; `left_ms` is the time that remained for it. `recall.cited_check_failed`: reading the cached server capabilities failed, so the regular recall was sent. `server.capabilities_record_failed`: session start could not cache a local server's `/health` capabilities.
 
 `recall.injection_receipt_failed`: appending the body-free recall receipt to the session's `recall-receipts.jsonl` failed; recall output remains available. `context_lookup_hit` / `context_lookup_empty` carry the prompt's `receipt_id` (empty when the write failed).
 

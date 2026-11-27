@@ -74,8 +74,9 @@ Report per-item reasons (`injected`, `already_in_context`, `over_budget`,
 `own_session`, or source availability status), retrieval rank and priority, and
 each scope's status (`ok`, `timeout`, `error`, or a `skipped_*` reason).
 The report's per-session `receipts:` line totals these across the window.
-Versioned citations can be expanded through the search skill. Unaddressable
-legacy/guidance entries have hashes only; do not present those as source citations.
+A tagged memory's receipt item carries its tag, which the search skill can expand
+(`cognee-search.sh --expand`). Untagged entries (guidance, older servers) have
+hashes only; do not present those as source citations.
 The receipt describes delivery selection, not whether an item improved the answer.
 
 The default report leads with **What Cognee did for you**, **Where it helped**,

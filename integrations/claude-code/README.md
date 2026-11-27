@@ -497,6 +497,37 @@ session cache is written, never searched. The session id is bound to the active 
 wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
 addressed by UUID because a name only resolves among the datasets your identity owns.
 
+### Cited memory
+
+On a Cognee server that lists `recall_cited_v1` on `/health`, the per-prompt recall asks for
+cited recall, and every passage, entity and fact it injects is preceded by a tag line:
+
+```text
+[mem:passage/<dataset_id>/<record_id>@<version>]
+# Session learning (session claude_1fb0…)
+Pinning keeps recall on one dataset.
+```
+
+The tag names that one memory, and `version` is a hash of its full text. A server with
+access control off searches one shared store, so its tags leave the dataset out:
+`[mem:<kind>/<record_id>@<version>]`; they are handled the same way. A memory cut to fit
+the budget keeps its tag, and the budget never keeps a tag without its memory or the other way
+round. Each injected tag is recorded in that prompt's [recall receipt](#memory-value). Read
+memories back by their tags, up to 20 per call:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<the question recall answered>" --expand '<tag>,<tag>'
+```
+
+It prints each memory's full text, marks the ones that changed since they were cited, and lists
+tags whose memory is gone (`missing`) or whose dataset you cannot read (`forbidden`).
+
+The plugin learns the server's capabilities from `/health` when it refreshes the context cache
+(Cognee Cloud) or starts a local server, and keeps them in `server-capabilities.json` under the
+plugin state directory. On any other server recall is unchanged and shows no tags. If the server
+refuses a cited recall (for example, a searched dataset has no passages), the hook sends the
+regular recall instead within the same time budget.
+
 ## Coding memory (opt-in)
 
 `COGNEE_CODING_MEMORY=true` (in the environment or `~/.cognee/.env`) switches the plugin to a
@@ -599,8 +630,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-sessio
 
 Per-session counters live at `sessions/<host-session-id>/stats.json` under the
 plugin state directory. They count recalls, turns with hits, injected and deduped
-entries, entries cut to fit the budget (`entries_over_budget`), evidence the server
-returned unavailable (`entries_unavailable`), characters, accepted saves, completed
+entries, entries cut to fit the budget (`entries_over_budget`), characters, accepted saves, completed
 improves, and delivered digest items.
 “Digest items used” means supplied to context, not proven use in an answer. No prompt
 or memory text is stored in this file.
@@ -611,10 +641,10 @@ Every prompt that reaches recall also appends one **recall receipt** to
 the server's origin (scheme, host, port and path; no credentials or query), each
 scope's outcome (`ok`, `timeout`, `error`, or `skipped_outage` / `skipped_breaker` /
 `skipped_budget` when recall never reached the server), and one item per candidate
-entry: its text hash, source, section, size in characters, rank, priority, evidence
-`reference` when the server returned one, and the recorded `reason` — `injected`,
-`already_in_context` (deduplicated against an earlier prompt), `over_budget`, or the
-server's status for unavailable evidence. Receipts never contain recalled text. The
+entry: its text hash, source, section, size in characters, priority, the `reference`
+of a tagged memory (see [Cited memory](#cited-memory)), and the recorded `reason` —
+`injected`, `already_in_context` (deduplicated against an earlier prompt) or
+`over_budget`. Receipts never contain recalled text. The
 same `receipt_id` is on that prompt's `recall-audit.log` line and `context_lookup_*`
 event. The file is not size-capped; the state sweep removes the session folder after
 a week idle. `cognee-evidence.py explain` prints the newest receipt. A session-start notice summarizes the last
@@ -1829,7 +1859,7 @@ Delivery segments classify each recall once (zero hit, fully in transcript,
 fully repeated, then new graph/session context). Missing evidence is explicitly
 unmeasured. Historical clipped text gives a lower-bound novelty estimate.
 Each session also gets a `receipts:` line counted from the recall receipts recorded
-inside the window: injected, already in context, over budget and unavailable entries,
+inside the window: injected, already in context and over budget entries,
 plus scope failures such as `graph timed out on 1 of 3 recalls`.
 Delivery does not prove that memory changed an answer. Failed gates and low-n
 metrics are never hidden or converted to a positive grade.

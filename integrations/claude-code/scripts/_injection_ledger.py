@@ -11,10 +11,14 @@ from pathlib import Path
 
 from _file_lock import file_lock
 from _injection_budget import fit_sections
+from _recall_text import is_memory_tag
 
 
 def entry_hash(text: str) -> str:
-    return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()[:16]
+    # A cited record's tag line (SDK-1099) is not part of the memory: the same
+    # body under another dataset's tag, or with no tag, is the same entry.
+    words = [w for line in text.splitlines() if not is_memory_tag(line) for w in line.split()]
+    return hashlib.sha256(" ".join(words).encode("utf-8")).hexdigest()[:16]
 
 
 def session_dir(session_id: str) -> Path:

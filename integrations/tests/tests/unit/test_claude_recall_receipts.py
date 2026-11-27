@@ -177,20 +177,6 @@ def test_server_origin_drops_credentials_query_and_fragment(evidence):
     assert evidence.server_origin("not a url") == ""
 
 
-def test_citation_for_is_the_inverse_of_parse_citation(evidence):
-    reference = {
-        "dataset_id": "d1",
-        "kind": "edge",
-        "artifact_id": "a1",
-        "version": "v1",
-        "source_node_id": "s",
-        "target_node_id": "t",
-        "relationship_name": "uses",
-    }
-    assert evidence.parse_citation(evidence.citation_for(reference)) == reference
-    assert evidence.citation_for({"dataset_id": "d1"}) == ""
-
-
 def test_bad_lines_are_skipped_when_reading(evidence):
     path = evidence.receipts_path(KEY)
     path.parent.mkdir(parents=True, exist_ok=True)

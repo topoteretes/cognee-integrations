@@ -2124,12 +2124,14 @@ def receipt_totals(receipts):
 
 
 def _receipt_line(totals):
-    text = "  receipts: %d injected, %d already in context, %d over budget, %d unavailable" % (
+    text = "  receipts: %d injected, %d already in context, %d over budget" % (
         totals["injected"],
         totals["already_in_context"],
         totals["over_budget"],
-        totals["unavailable"],
     )
+    # Only receipts written before 1.8.12 carry unavailable evidence items.
+    if totals["unavailable"]:
+        text += ", %d unavailable" % totals["unavailable"]
     words = {"timeout": "timed out", "error": "failed"}
     failures = [
         "%s %s on %d of %d recalls"

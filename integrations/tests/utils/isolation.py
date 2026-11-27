@@ -51,6 +51,7 @@ ISOLATED_MODULES = (
     "_injection_budget",
     "_injection_ledger",
     "_evidence",
+    "_cited_recall",
     "_auto_memory",
     "_session_stats",
     "_cloud_worker",

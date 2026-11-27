@@ -46,6 +46,18 @@ FACTS_HEADING = "## Related facts"
 #: The hybrid retriever joins passages with this, no blank lines around it;
 #: a markdown rule inside an answer has them, which ``split_passages`` uses.
 PASSAGE_SEPARATOR = "\n---\n"
+#: The line cognee's cited recall (``result_mode="cited"``, SDK-1099) puts
+#: directly before every passage, entity and fact it returns. Only the tags the
+#: item lists in ``metadata["records"]`` are record boundaries: a captured answer
+#: that cited a memory carries tag-shaped lines in its own text. Functions below
+#: take that set as ``tags``; an empty set leaves them exactly as they were.
+#: A server with access control off searches one shared store, whose records
+#: belong to no dataset: their tags leave it out,
+#: ``[mem:<kind>/<record_id>@<version>]``, and ``dataset_id`` is None.
+MEMORY_TAG_RE = re.compile(
+    r"\[mem:(?P<kind>passage|entity|fact)/(?:(?P<dataset_id>[0-9a-fA-F-]{36})/)?"
+    r"(?P<record_id>[0-9a-fA-F-]{36})@(?P<version>[0-9a-f]{32})\]"
+)
 
 ENV_PASSAGE_CHARS = "COGNEE_RECALL_PASSAGE_CHARS"
 ENV_CONTEXT_CHARS = "COGNEE_RECALL_CONTEXT_CHARS"
@@ -145,7 +157,35 @@ def split_sections(context: str) -> dict:
     return sections
 
 
-def split_passages(block: str) -> list[str]:
+def is_memory_tag(line: str) -> bool:
+    """True when ``line`` is one whole cited-recall tag."""
+    return MEMORY_TAG_RE.fullmatch(line.strip()) is not None
+
+
+def cited_tags(item: dict) -> frozenset:
+    """The record tags a cited recall item lists in ``metadata["records"]``
+    (empty for any other item, so callers keep their untagged behaviour)."""
+    metadata = item.get("metadata") if isinstance(item, dict) else None
+    records = metadata.get("records") if isinstance(metadata, dict) else None
+    if not isinstance(records, list):
+        return frozenset()
+    return frozenset(
+        record["tag"]
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get("tag"), str)
+        and is_memory_tag(record["tag"])
+    )
+
+
+def _past_tag(text: str) -> str:
+    """``text`` without leading space and without the tag line it opens with."""
+    stripped = text.lstrip()
+    first, newline, rest = stripped.partition("\n")
+    return rest.lstrip() if newline and is_memory_tag(first) else stripped
+
+
+def split_passages(block: str, tags: frozenset = frozenset()) -> list[str]:
     """Passages of a ``## Relevant passages`` block.
 
     The server joins passages with exactly ``\\n---\\n`` — the next chunk's text
@@ -155,11 +195,20 @@ def split_passages(block: str) -> list[str]:
     newline. Such a piece is glued back onto the one before it, unless it
     opens with a document header. Documents without a header (remembered text,
     blog posts) start with their own text and stay separate.
+
+    With ``tags`` (a cited recall), every passage opens with one of them, so a
+    piece that does not is glued back instead: no guessing.
     """
     pieces = (block or "").strip("\n").split(PASSAGE_SEPARATOR)
     passages: list[str] = []
+    unused = set(tags)
     for piece in pieces:
-        continuation = piece.startswith("\n") and not _DOC_HEADER_RE.match(piece.lstrip())
+        if tags:
+            first = piece.partition("\n")[0].strip()
+            continuation = first not in unused
+            unused.discard(first)
+        else:
+            continuation = piece.startswith("\n") and not _DOC_HEADER_RE.match(piece.lstrip())
         if passages and continuation:
             passages[-1] = passages[-1] + PASSAGE_SEPARATOR + piece
         else:
@@ -170,12 +219,12 @@ def split_passages(block: str) -> list[str]:
 def is_session_transcript(passage: str) -> bool:
     """A bridged raw turn from another session, as opposed to a distilled
     ``# Session learning`` or a remembered document."""
-    return passage.lstrip().startswith("Session ID:")
+    return _past_tag(passage).startswith("Session ID:")
 
 
 def passage_session_id(passage: str) -> str:
     """The session a bridged chunk came from, or "" for any other document."""
-    head = passage.lstrip()[:400]
+    head = _past_tag(passage)[:400]
     match = _SESSION_ID_RE.search(head) or _SESSION_LEARNING_RE.search(head)
     return match.group(1) if match else ""
 
@@ -193,11 +242,12 @@ def cap_passage(passage: str, limit: int) -> str:
     return f"{head}\n…[+{len(passage) - len(head)} chars]"
 
 
-def prune_entities(block: str) -> tuple[str, int]:
+def prune_entities(block: str, tags: frozenset = frozenset()) -> tuple[str, int]:
     """Drop type and node-set bullets, then headings left without bullets.
 
     Returns ``(text, removed_lines)``; ``text`` is "" when nothing with content
-    survives.
+    survives. With ``tags`` (a cited recall), an entity's tag goes with its
+    heading, so no tag is left naming an entity that is no longer shown.
     """
     lines = (block or "").strip("\n").split("\n")
     kept: list[str] = []
@@ -215,6 +265,14 @@ def prune_entities(block: str) -> tuple[str, int]:
                 removed += 1
                 continue
         pruned.append(line)
+    if tags:
+        pruned = [
+            line
+            for i, line in enumerate(pruned)
+            if line.strip() not in tags
+            or pruned[i + 1 : i + 2]
+            and pruned[i + 1].startswith("### ")
+        ]
     text = "\n".join(pruned).strip("\n")
     if not any(line.startswith("- ") for line in pruned):
         return "", removed
@@ -227,6 +285,7 @@ def minimize_context(
     *,
     passage_chars: int | None = None,
     context_chars: int | None = None,
+    tags: frozenset = frozenset(),
 ) -> tuple[str, dict]:
     """Shrink a parsed context. Returns ``(text, stats)``.
 
@@ -258,7 +317,7 @@ def minimize_context(
 
     passages: list[str] = []
     if sections["passages"] is not None:
-        raw = split_passages(sections["passages"])
+        raw = split_passages(sections["passages"], tags)
         stats["passages_in"] = len(raw)
         for passage in raw:
             if session_id and passage_session_id(passage) == session_id:
@@ -271,7 +330,7 @@ def minimize_context(
 
     entities = ""
     if sections["entities"] is not None:
-        entities, removed = prune_entities(sections["entities"])
+        entities, removed = prune_entities(sections["entities"], tags)
         stats["entity_lines_removed"] = removed
 
     facts = (sections["facts"] or "").strip("\n") if sections["facts"] is not None else ""
@@ -301,6 +360,7 @@ def trim_recall_text(
     *,
     passage_chars: int | None = None,
     context_chars: int | None = None,
+    tags: frozenset = frozenset(),
 ) -> tuple[str, str, dict]:
     """Steps 2 and 3 together. Returns ``(context, guidance, stats)``.
 
@@ -308,7 +368,8 @@ def trim_recall_text(
     server's trailing guidance block when one came with the item (empty when
     the request carried no session id and no durable preferences exist).
     ``stats`` carries ``parsed``, ``chars_in``, ``chars_out``, ``history_chars``
-    and the minimizer's counters. Unparsed text is returned whole.
+    and the minimizer's counters. Unparsed text is returned whole. ``tags`` are
+    a cited item's record tags (``cited_tags``); each stays with its record.
     """
     text = str(text or "")
     layers = split_only_context(text, prompt)
@@ -325,6 +386,7 @@ def trim_recall_text(
         session_id,
         passage_chars=passage_chars,
         context_chars=context_chars,
+        tags=tags,
     )
     stats.update(more)
     stats["chars_out"] = len(context)
@@ -453,7 +515,7 @@ def passage_origin(passage: str) -> str:
     if not session_id:
         return "document"
     agent = _agent_name(session_id)
-    date = _LEARNING_DATE_RE.search(passage.lstrip()[:400])
+    date = _LEARNING_DATE_RE.search(_past_tag(passage)[:400])
     if date:
         return f"{agent} session learning, {date.group(1)}"
     return f"{agent} session"

@@ -10,6 +10,41 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.12]
+
+### Added
+
+- **Cited memory** (SDK-1099). On a Cognee server that lists `recall_cited_v1` on
+  `/health`, the per-prompt recall asks for `result_mode="cited"`: every injected
+  passage, entity and fact is preceded by its tag,
+  `[mem:<kind>/<dataset_id>/<record_id>@<version>]`, or
+  `[mem:<kind>/<record_id>@<version>]` from a server with access control off. A tag
+  stays with its memory
+  through trimming and the budget, an entity pruned to nothing takes its tag with
+  it, and a tag quoted inside a captured answer never splits a passage. Recall
+  receipts name each injected memory by its tag, and `cognee-evidence.py explain`
+  prints it as `citation`. On any other server the request and the injected text
+  are unchanged. If the server refuses a cited recall, the regular recall is sent
+  instead within the same time budget.
+- **`cognee-search.sh --expand <tag>,…`** reads up to 20 cited memories back by
+  their tags: each memory's full text, whether it changed since it was cited, and
+  the tags whose memory is missing or whose dataset cannot be read.
+- Session start records a local server's `/health` capabilities in
+  `server-capabilities.json`, as the Cloud context-cache refresh already did.
+
+### Changed
+
+- Deduplication ignores a memory's tag: the same text under another dataset's tag,
+  or without one, is already in context.
+
+### Removed
+
+- The unused evidence protocol: recall no longer sends `evidence_mode`, and
+  `cognee-evidence.py` keeps only `explain` (`index` and `details` needed a server
+  route that no release provides). Receipts no longer carry `unavailable` items and
+  `stats.json` no longer counts `entries_unavailable`; `cognee-report` prints the
+  unavailable count only for older receipts that have one.
+
 ## [1.8.11]
 
 **This release takes back versions 1.8.2 to 1.8.10.** The plugin is the code on `dev`
