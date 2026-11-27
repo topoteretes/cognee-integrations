@@ -1,0 +1,1 @@
+{"status":401,"body":{"detail":"Authentication required (auth posture: default (no env vars set)). For single-user local use, set ENABLE_BACKEND_ACCESS_CONTROL=false and restart. To keep authentication and log in instead, set DEFAULT_USER_PASSWORD to make the default account loginable — see docs/minimal-docker-compose.md."}}

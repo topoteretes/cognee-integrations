@@ -4,6 +4,7 @@
 |---|---|---|
 | Claude Code / Codex / Antigravity | active launch dataset selection → exported environment → `~/.cognee/.env` → defaults | A launch dataset switch overrides the configured dataset for that launch. `COGNEE_CLAUDE_BACKEND` / `COGNEE_CODEX_BACKEND` / `COGNEE_ANTIGRAVITY_BACKEND` overrides shared `COGNEE_BACKEND`. Empty env values use defaults. Legacy `config.json` is ignored and removed at startup. |
 | Hermes | non-null `HERMES_HOME/cognee.json` → environment → defaults | `COGNEE_BASE_URL` beats deprecated `COGNEE_SERVICE_URL`; `COGNEE_PLUGIN_DATASET` beats `COGNEE_DATASET`. Saved config intentionally wins over exports. Some empty string settings are retained; the provider defaults an empty dataset at use time. |
+| Browser Use adapter | explicit `resolve_config()` / constructor keywords → environment → defaults | `COGNEE_BASE_URL` / `COGNEE_API_KEY` for the backend; `COGNEE_BROWSER_USE_*` for the adapter (`DATASET`, `RECALL`, `RECALL_TOP_K`, `RECALL_MAX_CHARS`, `RECALL_TIMEOUT_S`, `CAPTURE`, `REMEMBER_TOOL`, `RECEIPTS_PATH`, timeouts). A run needs a trusted `MemoryScope` or a configured dataset; the model never derives one. Unknown keys and malformed values fail at construction. See [`browser-use/README.md`](browser-use/README.md#configuration). |
 | OpenClaw | explicit plugin config → supported environment fallbacks → defaults | Credentials accept `${ENV_VAR}` interpolation, which errors for missing variables. `COGNEE_MODE=cloud` forces cloud even with `mode: local`. Boolean plugin settings such as `autoRecall: false` are honored. Arbitrary env names do not override plugin settings. |
 
 Default session dataset: `agent_sessions`. Default local server port: `8011`.
@@ -54,6 +55,7 @@ integration depends on whether it imports cognee in-process or only talks to a s
 | Claude Code / Codex / Antigravity plugins | **3.9+** for the hooks; a **3.10–3.14** interpreter installed on the machine for local mode | Hooks are stdlib HTTP clients. In local mode the plugin builds the Cognee server's venv from a Python already installed — through uv if present (interpreter downloads disabled), else the stdlib `venv` with the newest `python3.x` on PATH — and installs the exact pinned `cognee` release. It downloads no installers or interpreters (plugin-directory policy). With no 3.10+ Python it refuses with `host_python_too_old_for_venv` in `hook.log` and a session-start message. |
 | OpenClaw | **3.9+** for the bootstrap script; **3.10+** only for the uv-less fallback | Same runtime scheme, driven from TypeScript. A refused fallback is recorded in `~/.cognee-plugin/.venv-error.json` and quoted in the gateway's "server did not become ready" warning. |
 | Hermes, LangGraph, CrewAI, Strands, Google ADK, Aider, Obsidian, chat-memory, Slack, Telegram, second-brain, web-widget | **3.10+** | `requires-python = ">=3.10"`; `pip`/`uv` refuse to install on 3.9. |
+| Browser Use | **3.11+** | Follows `browser-use`'s own floor; the adapter talks HTTP to a cognee server and does not import cognee. |
 | Dify, Dify SDK | **3.12+** | Dify plugin runtime requirement. |
 | Claude Agent SDK | **3.13+** | Follows `claude-agent-sdk`. |
 

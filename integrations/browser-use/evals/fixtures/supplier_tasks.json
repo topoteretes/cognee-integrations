@@ -1,0 +1,18 @@
+[
+  {
+    "id": "lead-time",
+    "task": "Open https://fixture.example/page and report the standard pallet lead time.",
+    "hints": ["fixture supplier pallet"],
+    "expected": "4 business days",
+    "baseline_steps": 6,
+    "max_steps": 20
+  },
+  {
+    "id": "min-order",
+    "task": "Open https://fixture.example/page and report the minimum order quantity.",
+    "hints": ["fixture supplier pallet"],
+    "expected": "25 units",
+    "baseline_steps": 5,
+    "max_steps": 20
+  }
+]
