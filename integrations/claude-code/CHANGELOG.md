@@ -10,6 +10,87 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.13]
+
+### Changed
+
+- **You are asked before a repository is indexed.** A session that opens inside a git
+  repository holding code that is not in the code graph yet has Claude ask once, with
+  your first message: index it, not now, or never for this repository. Nothing is
+  submitted without a yes, on a local server or on Cognee Cloud. Until now a local
+  server indexed a new repository without asking. The question names the server, and
+  a yes covers that server only: the command it gives says which, and how the server
+  reads the repository
+  (`cognee-index-repo.sh <repo> --server <url> --expect-server local|remote`).
+  "Never" is remembered per repository and per kind of server (`--decline`), holds
+  against `always` too, and indexing the repository yourself lifts it. `COGNEE_CODE_AUTOINDEX` is now `ask` (default),
+  `always` (index without asking) or `off` (never ask, never index); `auto` is read as
+  `ask`. Repositories already indexed keep refreshing as before.
+- **`always` indexes a repository of any size.** A repository of more than 3000 source
+  files used to be skipped without a word. A yes and the index command already indexed
+  any size; the question states the size, counting up to 10000 files.
+- **A failed index is not recorded as indexed.** A repository counted as indexed as soon
+  as the server took the request, even when the run then failed (a repository the
+  server cannot clone), so it was never asked about again and recall queried an empty
+  dataset. A run that fails while the command waits records nothing; one it did not wait
+  for is checked at the next session start. A failed first index is then forgotten and
+  asked about again (`always` retries it after a backoff), and a failed refresh is
+  submitted again.
+- **Runs with nobody to answer are not asked.** Print mode (`claude -p`), the Agent
+  SDK, the GitHub Action and scheduled triggers skip the question
+  (`code.index_offer_skipped`), and the agent no longer falls back to asking in prose
+  when it has no `AskUserQuestion` tool.
+
+### Fixed
+
+- **Indexing a checkout works on Cognee Cloud.** A remote server cannot read your disk,
+  and a checkout was either skipped there or submitted as a local path the server
+  rejected. It is now indexed by its git remote: the server is sent the `https` URL
+  (`git@github.com:org/repo.git` becomes `https://github.com/org/repo`, a token in the
+  remote URL is dropped) and clones it, so no file is uploaded. The checkout stays
+  linked to that graph, so `--code` searches, the per-prompt code lane and file context
+  on `Read` resolve it from the folder, and it is re-indexed at the first session start
+  after a push to the default branch (`origin/HEAD`; without it, the remote's only
+  branch, `main` or `master`). A checkout that cannot tell which branch that is, such as
+  a single-branch clone of another branch, says so instead of silently never
+  refreshing; fetching the default branch and `git remote set-head origin --auto` fix it.
+  The server must be able to clone the URL without credentials; a
+  checkout with no git remote is reported as such instead of being submitted.
+- **A code graph is used and refreshed only on the server that built it.** Each graph
+  records its server (the URL's scheme, host and port; `localhost` and `127.0.0.1`
+  count as one). On any other server (Cognee Cloud after a local index, a second Cloud
+  tenant, another local port) the repository counts as not indexed: it is asked about
+  there, and nothing is submitted to that server, not even a refresh after a push,
+  until it gets its own yes. Code recall, file context on `Read` and `--code` searches
+  no longer ask one server for another's dataset. A checkout indexed on several
+  servers keeps every graph. Graphs indexed before this release match any server of
+  their kind, and are bound to the server of their next refresh.
+- **`cognee-index-repo.sh` reads `~/.cognee/.env` the way the hooks do.** A setting kept
+  there (`COGNEE_CODE_SERVER_SHARES_FILES`) now decides how the command reads a
+  repository just as it decides what the session-start question says.
+- **Code-graph settings take effect from the next session on Cognee Cloud.** The
+  background worker that runs the startup pass there kept the `COGNEE_CODE_AUTOINDEX`,
+  `COGNEE_CODE_SERVER_SHARES_FILES` and `COGNEE_CODING_MEMORY` it was started with, so
+  removing `always` could still index a new repository without asking. Each session now
+  hands the worker the values its own SessionStart read, and a value the plugin does
+  not know means `ask`. A pass that runs only after the session's registration had to
+  be retried indexes nothing new: the standing yes may have been withdrawn by then.
+- **A repository under a path with non-ASCII characters is found on Windows.** git's
+  output was read in the console code page instead of UTF-8, so such a checkout's root
+  came back as a path that does not exist, and it was never indexed or refreshed.
+- **`cognee-index-repo.sh` no longer reports a local failure as an unreachable
+  server.** An error on this machine (the index state or a "never" that could not be
+  saved) printed nothing, which the script read as "server unreachable, nothing was
+  submitted". It now prints the error.
+
+### Upgrade note
+
+- **A server that is not on `localhost` but reads your files.** Until now such a server
+  (a container, a LAN host that mounts the same paths) was sent a repository's path.
+  It is now treated like Cognee Cloud and sent the git remote to clone, and a graph it
+  built from a path is no longer used or refreshed. Set
+  `COGNEE_CODE_SERVER_SHARES_FILES=true` to keep indexing by path there.
+
 ## [1.8.12]
 
 ### Added

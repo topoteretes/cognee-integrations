@@ -733,6 +733,31 @@ def start_improve_pass(*, spawn=None) -> bool:
     return True
 
 
+def record_code_settings(state: dict) -> dict:
+    """The code-graph settings the session's own SessionStart read.
+
+    The worker serves every terminal and outlives edits of ~/.cognee/.env, so
+    its own environment says nothing about this session. A record written
+    before sessions carried their settings indexes nothing new ("ask").
+
+    The settings are a snapshot of the session's start. Once its registration
+    has had to be retried, time has passed since then, and a standing yes
+    (``always``) may have been withdrawn: such a pass indexes nothing new. It
+    still refreshes the graphs the user said yes to.
+    """
+    settings = state.get("code_settings")
+    if not isinstance(settings, dict):
+        return {"COGNEE_CODE_AUTOINDEX": "ask"}
+    settings = {str(name): str(value or "") for name, value in settings.items()}
+    deferred = bool(state.get("next_attempt")) or int(state.get("attempts") or 0) > 0
+    if deferred:
+        from _code_graph import parse_autoindex_mode
+
+        if parse_autoindex_mode(settings.get("COGNEE_CODE_AUTOINDEX")) == "always":
+            settings["COGNEE_CODE_AUTOINDEX"] = "ask"
+    return settings
+
+
 def _bootstrap_sessions() -> None:
     from _plugin_common import set_session_key
     from config import load_config
@@ -781,6 +806,7 @@ def _bootstrap_sessions() -> None:
                     state["dataset"],
                     managed_endpoint=True,
                     boot_timeout=4,
+                    code_settings=record_code_settings(state),
                 )
             )
             if not result[2]:

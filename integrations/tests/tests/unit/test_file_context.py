@@ -98,7 +98,9 @@ def wire(fc, repo, monkeypatch, isolated_modules, suite):
     calls: list[dict] = []
     state = {"repo_root": str(repo), "dataset": "codebase-repo-1234"}
     monkeypatch.setattr(
-        code_graph, "find_indexed_repo", lambda cwd: state if str(cwd).startswith(str(repo)) else {}
+        code_graph,
+        "find_indexed_repo",
+        lambda cwd, **_kw: state if str(cwd).startswith(str(repo)) else {},
     )
 
     def fake_recall(query, **kw):
@@ -273,7 +275,7 @@ def test_edit_after_index_flags_line_numbers(fc, repo, wire, capsys, monkeypatch
     state = {"repo_root": str(repo), "dataset": "codebase-repo-1234"}
     if offset is not None:
         state["last_index_at"] = mtime + offset
-    monkeypatch.setattr(sys.modules["_code_graph"], "find_indexed_repo", lambda cwd: state)
+    monkeypatch.setattr(sys.modules["_code_graph"], "find_indexed_repo", lambda cwd, **_kw: state)
     _run(fc, monkeypatch, _payload(target, cwd=repo))
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "Widget:10" in ctx  # the map is still served either way
@@ -378,3 +380,28 @@ class _Stdin:
 
     def read(self):
         return self._text
+
+
+@pytest.mark.parametrize(
+    ("server", "found"), [("https://cloud.example", True), ("https://other.example", False)]
+)
+def test_the_code_lane_reads_only_a_graph_on_the_server_it_asks(
+    suite, fc, repo, isolated_modules, monkeypatch, server, found
+):
+    """File context asks the server the hooks talk to, so only a graph built on
+    that server answers for the file."""
+    cg = isolated_modules(suite, "_code_graph")
+    monkeypatch.setenv("COGNEE_LOCAL_API_URL", "https://cloud.example")
+    root = repo.resolve()
+    cg.save_repo_state(
+        {
+            "spec": "https://github.com/acme/repo",
+            "spec_kind": "url",
+            "repo_root": str(root),
+            "server": cg.server_identity(server),
+            "dataset": "codebase-repo-1234",
+            "fingerprint": "seed",
+        }
+    )
+    lane = fc.code_lane_for(str(root / "pkg" / "mod.py"))
+    assert (lane.get("dataset") == "codebase-repo-1234") is found

@@ -2,12 +2,20 @@
 # Index a code repository into Cognee's code graph (enola pipeline).
 #
 # Usage:
-#   cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]
+#   cognee-index-repo.sh <repo-path-or-git-url> [--server <url> [--expect-server local|remote]] [--dataset <name>] [--index-vectors] [--wait <seconds>]
+#   cognee-index-repo.sh <repo-path> [--server <url> [--expect-server local|remote]] --decline
 #
-# <repo-path-or-git-url>: a local repository path (works when the Cognee
-#                         server shares this filesystem — the default local
-#                         plugin server does) or a remote git URL (the server
-#                         shallow-clones it; required for cloud servers).
+# <repo-path-or-git-url>: a local repository path or a remote git URL (the
+#                         server shallow-clones it). A local server reads the
+#                         path in place. A remote server (Cognee Cloud) cannot
+#                         read this disk, so for a path it is sent the
+#                         checkout's git remote as an https URL and clones
+#                         that: no file is uploaded, no local credential is
+#                         sent, and a checkout with no remote is an error.
+# --decline:       index nothing; record that this repository must not be
+#                  offered for indexing at session start again (per kind of
+#                  server: declining Cognee Cloud leaves a local server free
+#                  to ask). Indexing the repository later lifts it.
 # --dataset:       target dataset (default: codebase-<repo-name>-<digest> —
 #                  one narrow dataset per repo keeps CODE searches fast. The
 #                  digest is the indexed path: two checkouts often share a
@@ -17,7 +25,17 @@
 #                  --code resolves it from the checkout automatically).
 # --index-vectors: also embed the extracted code facts so semantic search can
 #                  see them (needs an embedding provider; default off — the
-#                  code graph pipeline makes no LLM/embedding calls).
+#                  code graph pipeline makes no LLM/embedding calls). Automatic
+#                  refreshes keep it, and embed only the facts that changed.
+# --server:        the Cognee server to index on, instead of the one the
+#                  environment names (COGNEE_BASE_URL, then
+#                  COGNEE_LOCAL_API_URL). The session-start question passes the
+#                  server it named, so a yes indexes there and nowhere else. A
+#                  graph belongs to the server it was built on.
+# --expect-server: "local" or "remote", what the question told the user about
+#                  how the server reads the repository (in place, or by cloning
+#                  its remote). The command stops, changing nothing, when it
+#                  would read it the other way.
 # --wait:          seconds to poll the code_graph_pipeline status before
 #                  returning (default 0: submit in background and return).
 #
@@ -31,17 +49,58 @@
 #     fingerprint and re-submits in the background after any turn that changed
 #     a file, keeping the graph current per turn.
 #   * git URL     -> the server clones the repo and can only ever see PUSHED
-#     commits. Local edits are invisible to it, so the plugin does NOT
-#     re-submit these on edits (a re-pull would change nothing); the graph
-#     advances when you push and re-run this command. Normal behavior, but the
-#     results look identical to the local case, so it is worth saying out loud
-#     when answering from a cloud-indexed graph.
+#     commits on the default branch. Local edits are invisible to it, so the
+#     plugin does NOT re-submit these on edits (a re-pull would change
+#     nothing). A checkout indexed on a remote server is re-submitted at the
+#     next session start after a push; a bare URL advances when you re-run
+#     this command. Normal behavior, but the results look identical to the
+#     local case, so it is worth saying out loud when answering from a
+#     cloud-indexed graph.
 
 set -euo pipefail
 
+REPO="${1:-}"
+DATASET=""
+INDEX_VECTORS="false"
+WAIT_SECONDS="0"
+COMMAND="index"
+SERVER=""
+EXPECTED_SERVER=""
+
+shift || true
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dataset|-d)
+            shift
+            DATASET="${1:-}"
+            ;;
+        --index-vectors)
+            INDEX_VECTORS="true"
+            ;;
+        --wait)
+            shift
+            WAIT_SECONDS="${1:-0}"
+            ;;
+        --decline)
+            COMMAND="decline"
+            ;;
+        --server)
+            shift
+            SERVER="${1:-}"
+            ;;
+        --expect-server)
+            shift
+            EXPECTED_SERVER="${1:-}"
+            ;;
+        *)
+            ;;
+    esac
+    shift || true
+done
+
 PLUGIN_DIR="${HOME}/.cognee-plugin/claude-code"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
-runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
+runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" "${SERVER}" 2>/dev/null || true
 import json
 import pathlib
 import sys
@@ -55,7 +114,7 @@ try:
     load_env_file()
 except Exception:
     pass
-service_url = (os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
+service_url = (sys.argv[3] or os.environ.get("COGNEE_BASE_URL") or os.environ.get("COGNEE_LOCAL_API_URL") or "http://localhost:8011").strip()
 api_key = (os.environ.get("COGNEE_API_KEY") or "").strip()
 
 if not api_key:
@@ -92,41 +151,16 @@ except Exception:
 PY
 )"
 
-[ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
+[ -z "$SERVICE_URL" ] && SERVICE_URL="${SERVER:-${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}}"
 [ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
-
-REPO="${1:-}"
-DATASET=""
-INDEX_VECTORS="false"
-WAIT_SECONDS="0"
-
-shift || true
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --dataset|-d)
-            shift
-            DATASET="${1:-}"
-            ;;
-        --index-vectors)
-            INDEX_VECTORS="true"
-            ;;
-        --wait)
-            shift
-            WAIT_SECONDS="${1:-0}"
-            ;;
-        *)
-            ;;
-    esac
-    shift || true
-done
 
 if [ -z "$REPO" ]; then
     echo "Error: no repository path or git URL provided" >&2
-    echo "Usage: cognee-index-repo.sh <repo-path-or-git-url> [--dataset <name>] [--index-vectors] [--wait <seconds>]" >&2
+    echo "Usage: cognee-index-repo.sh <repo-path-or-git-url> [--server <url> [--expect-server local|remote]] [--dataset <name>] [--index-vectors] [--wait <seconds>] | <repo-path> [--server <url>] --decline" >&2
     exit 1
 fi
 
-RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" index "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" || true)"
+RESULT="$(python3 "${SELF_DIR}/_code_graph.py" "$SERVICE_URL" "$API_KEY" "$COMMAND" "$REPO" "$DATASET" "$INDEX_VECTORS" "$WAIT_SECONDS" "$EXPECTED_SERVER" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
     printf '%s\n' "$RESULT"

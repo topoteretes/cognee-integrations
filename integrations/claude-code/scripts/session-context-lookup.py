@@ -676,7 +676,9 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     try:
         from _code_graph import auto_code_lane
 
-        code_lane = auto_code_lane(prompt, cwd) or {}
+        # A graph lives on the server that built it, so the lane fires only for
+        # one built on the server this recall goes to.
+        code_lane = auto_code_lane(prompt, cwd, service_url=service_url) or {}
     except Exception as exc:
         hook_log("code_lane_gate_error", {"error": str(exc)[:200]})
     if code_lane:
