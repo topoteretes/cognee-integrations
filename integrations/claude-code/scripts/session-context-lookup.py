@@ -208,6 +208,44 @@ def _line_entries(text: str) -> list[str]:
     return entries
 
 
+def _answer_entries(text: str) -> list[str]:
+    """A server answer as its lines, to be joined back with a single newline.
+
+    An answer is one text, not a list of records: ``_line_entries`` would make
+    every line its own entry and the section would join them with a blank line,
+    which breaks a table or a list. Here a line that follows a blank line
+    carries that blank line with it, so the entries joined with ``"\n"`` read
+    as the answer the server wrote, and the budget still drops whole lines
+    from the end. Fenced code stays one entry.
+    """
+    entries, pending = [], []
+    fence = ""
+    gap = False
+
+    def push(entry):
+        entries.append("\n" + entry if gap and entries else entry)
+
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        marker = re.match(r"^(`{3,}|~{3,})", stripped)
+        if fence:
+            pending.append(line)
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                push("\n".join(pending))
+                pending, fence, gap = [], "", False
+        elif marker:
+            pending.append(line)
+            fence = marker[1]
+        elif stripped:
+            push(line)
+            gap = False
+        else:
+            gap = True
+    if pending:
+        push("\n".join(pending))
+    return entries
+
+
 def _entry_origin(source: str, entry: dict) -> str:
     """Where a non-graph recall item came from, in a few words for its tag."""
     if source == "code":
@@ -226,8 +264,14 @@ def _injection_sections(
     by_source: dict,
     marks: bool = False,
     keys: list | None = None,
+    answer: bool = False,
 ) -> list[dict]:
     """Expose bare records; shared labels belong to one section heading.
+
+    With ``answer`` (COGNEE_RECALL_ANSWER) a graph result that is not a
+    retrieved context is the server's answer: it is one text, not a list of
+    records, so it keeps its line breaks and is never deduplicated against
+    what earlier prompts injected.
 
     With ``marks``, every item carries a mark saying where it came from
     (SDK-1071): an evidence item, passage, session turn or trace on its own
@@ -259,7 +303,7 @@ def _injection_sections(
         remember(marked)
         return marked
 
-    def add_block(source, kind, title, priority, entries, result_id, mark):
+    def add_block(source, kind, title, priority, entries, result_id, mark, **section):
         """One mark for a block of entries: on the heading, or on the block's first
         entry when an earlier result already gave the section its heading."""
         if mark and entries:
@@ -271,9 +315,9 @@ def _injection_sections(
                 # ``fit_sections`` renders a section as its title, a newline and
                 # its entries: the block opens the section.
                 remember(f"{title}\n{entries[0]}")
-        add(source, kind, title, priority, entries, result_id)
+        add(source, kind, title, priority, entries, result_id, **section)
 
-    def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
+    def add(source, kind, title, priority, entries, result_id, separator="\n\n", dedupe=True):
         section = grouped.setdefault(
             (source, kind),
             {
@@ -285,6 +329,11 @@ def _injection_sections(
                 "kind": kind,
                 "entry_ids": {},
                 "separator": separator,
+                # False for an answer: the injection ledger drops an entry an
+                # earlier prompt already injected, which would take the lines
+                # two answers share (a conclusion, "Evidence:", a source) out
+                # of the later one.
+                "dedupe": dedupe,
             },
         )
         for entry in entries:
@@ -365,6 +414,19 @@ def _injection_sections(
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
+                    continue
+                if answer:
+                    add_block(
+                        source,
+                        "answer",
+                        title + "\n[cognee-memory]",
+                        priority,
+                        _answer_entries(text),
+                        result_id,
+                        label(_entry_origin(source, entry)),
+                        separator="\n",
+                        dedupe=False,
+                    )
                     continue
             formatted = _format_entry(entry)
             origin = _entry_origin(source, entry)
@@ -1032,7 +1094,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # holds the text each one opens with, to count the ones that are injected.
     cite = credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
     marked: list = []
-    memory_sections = _injection_sections(by_source, cite, marked)
+    memory_sections = _injection_sections(by_source, cite, marked, answer=answer_mode)
     # Reserve the largest possible drop notice before fitting. Replacing it
     # with the actual smaller count (or removing it) can only shrink output.
     entry_count = sum(len(section["entries"]) for section in memory_sections)

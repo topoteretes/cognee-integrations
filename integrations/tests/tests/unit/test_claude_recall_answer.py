@@ -17,7 +17,7 @@ request is the one sent before.
 from __future__ import annotations
 
 import pytest
-from utils.recall import drive_recall
+from utils.recall import drive_recall, load_lookup
 
 PROMPT = "what did the parties agree about the exit amount?"
 
@@ -151,3 +151,84 @@ def test_include_references_reaches_the_wire_only_when_asked(suite, isolated_mod
     assert "include_references" not in recall()
     body = recall(only_context=False, include_references=True)
     assert body["include_references"] is True and body["only_context"] is False
+
+
+#: Two answers to two prompts of one session that share their conclusion, their
+#: table header, the "Evidence:" heading and a source line.
+TABLE_ANSWER = (
+    "The fee is not payable.\n\n"
+    + "It is the accrued delay damages for the whole delay period. " * 30
+    + "\n\n| Item | Amount |\n|---|---|\n| Daily rate | 5,500 |\n| Days | 141 |\n\n"
+    "Evidence:\n\n"
+    '- chunk 2 of document 7.1: "SOURCE: 7.1 TITLE: Suspension Agreement"\n'
+    '- chunk 4 of document 7.1: "SOURCE: 7.1 TITLE: Suspension Agreement"'
+)
+SECOND_ANSWER = (
+    "The fee is not payable.\n\n"
+    + "The cap applies to the sum of all delay damages under the agreement. " * 30
+    + "\n\n| Item | Amount |\n|---|---|\n| Cap | 10% |\n\n"
+    "Evidence:\n\n"
+    '- chunk 2 of document 7.1: "SOURCE: 7.1 TITLE: Suspension Agreement"'
+)
+
+
+@pytest.fixture
+def session_lookup(suite, hook_module, monkeypatch):
+    """The hook with its session key set, so the cloud injection ledger runs."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude Code answer mode")
+    module = load_lookup(suite, hook_module, monkeypatch)
+    monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")
+    monkeypatch.setenv("COGNEE_RECALL_ANSWER", "true")
+    return module
+
+
+def _answer(module, monkeypatch, prompt, text) -> str:
+    item = {"source": "graph", "text": text}
+    return _context(drive_recall(module, monkeypatch, prompt=prompt, recall={"graph": [item]}))
+
+
+def test_the_answer_keeps_its_line_breaks(session_lookup, monkeypatch):
+    # A table row per line and a source per line: joined with a blank line
+    # between every line they are no longer a table or a list.
+    context = _answer(session_lookup, monkeypatch, PROMPT, TABLE_ANSWER)
+
+    assert TABLE_ANSWER in context
+
+
+def test_a_later_answer_keeps_the_lines_it_shares_with_an_earlier_one(session_lookup, monkeypatch):
+    first = _answer(session_lookup, monkeypatch, PROMPT, TABLE_ANSWER)
+    second = _answer(session_lookup, monkeypatch, PROMPT + " and the cap?", SECOND_ANSWER)
+
+    assert TABLE_ANSWER in first
+    # The ledger drops entries an earlier prompt injected; an answer is not a
+    # list of entries, so its conclusion, table header and sources stay.
+    assert SECOND_ANSWER in second
+
+
+def test_the_same_answer_twice_is_injected_twice(session_lookup, monkeypatch):
+    _answer(session_lookup, monkeypatch, PROMPT, TABLE_ANSWER)
+
+    assert TABLE_ANSWER in _answer(session_lookup, monkeypatch, PROMPT, TABLE_ANSWER)
+
+
+def test_fenced_code_in_an_answer_stays_whole(session_lookup, monkeypatch):
+    fenced = "```python\ndef exit_amount():\n\n    return 5_500 * 141\n```"
+    text = "Computed as follows.\n\n" + fenced + "\n\n" + "The delay period ran. " * 60
+
+    assert text.strip() in _answer(session_lookup, monkeypatch, PROMPT, text)
+
+
+def test_a_context_returned_in_answer_mode_is_still_rendered_as_a_context(
+    session_lookup, monkeypatch
+):
+    # A server without an LLM answers a completion request with the context.
+    context = (
+        "## Relevant entities\n### exit amount (concept)\n- the amount due on exit\n\n"
+        "## Relevant passages\nThe parties agreed an exit amount of 775,500."
+    )
+
+    injected = _answer(session_lookup, monkeypatch, PROMPT, context)
+
+    assert "=== Cognee memory: entities ===" in injected
+    assert "=== Cognee memory: passages ===" in injected

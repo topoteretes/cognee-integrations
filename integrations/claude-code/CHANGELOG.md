@@ -21,7 +21,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   is dropped to fit and the agent answers from a fragment. With
   `COGNEE_RECALL_ANSWER=true` the request asks for the server's completion with its
   sources (`only_context=false`, `include_references=true`) and the answer is injected
-  without the context trimming. Off by default; with the variable unset every request
+  without the context trimming. It is injected as one text: it keeps its line breaks,
+  so a table or a source list arrives as the server wrote it, and it is not
+  deduplicated against what earlier prompts of the session injected. Off by default; with the variable unset every request
   is unchanged. Each prompt that reaches recall then costs one server-side completion
   and waits for it, so set `COGNEE_RECALL_BUDGET` to cover the answer time and
   `COGNEE_RECALL_MIN_PROMPT_CHARS` to skip short prompts. The guidance request,
