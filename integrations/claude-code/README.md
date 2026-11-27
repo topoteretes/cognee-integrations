@@ -504,11 +504,12 @@ session cache is written, never searched. The session id is bound to the active 
 wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
 addressed by UUID because a name only resolves among the datasets your identity owns.
 
-## Coding memory (opt-in)
+## Coding memory (on by default)
 
-`COGNEE_CODING_MEMORY=true` (in the environment or `~/.cognee/.env`) switches the plugin to a
-mode built for the server's coding distillation (`DISTILLATION_MODE=coding`, cognee PR #6568).
-With the setting unset, nothing below applies.
+Coding memory is the plugin's default mode, built for the server's coding distillation
+(`DISTILLATION_MODE=coding`, cognee PR #6568). `COGNEE_CODING_MEMORY=false` (in the
+environment or `~/.cognee/.env`) turns it off and restores per-call capture and per-prompt
+recall; with it off, nothing below applies.
 
 **Nothing happens while the agent works.** No trace per tool call, no recall per prompt,
 no file context on `Read`, no pre-compact anchor, no session-start steer or recap, no
@@ -603,7 +604,7 @@ delays the send, never the session. Events are logged as `coding.*` (see `EVENTS
 | `UserPromptSubmit` | dataset-scoped context lookup + async prompt staging |
 | `PreToolUse` (`Read`) | [file-scoped context](#file-context-on-read): code-graph facts about the file about to be read, injected as `additionalContext` |
 | `PostToolUse` | async trace write |
-| `Stop` | assistant answer write + credits refresh; in [coding memory](#coding-memory-opt-in), `send-unit.py` sends the request instead |
+| `Stop` | assistant answer write + credits refresh; in [coding memory](#coding-memory-on-by-default), `send-unit.py` sends the request instead |
 | `PreCompact` | memory anchor build before compaction |
 | `SessionEnd` | trigger detached final sync worker |
 
@@ -736,7 +737,7 @@ A **failed** attempt arms the same window as a **backoff**: if the submit timed 
 |---|---|---|
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
 | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session; persisted per session |
-| `COGNEE_CODING_MEMORY` | unset (off) | `true` switches to [coding memory](#coding-memory-opt-in): capture once per request, one lesson block per session |
+| `COGNEE_CODING_MEMORY` | unset (on) | [coding memory](#coding-memory-on-by-default): capture once per request, one lesson block per session; `false` turns it off |
 | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST (agent-context extraction and distillation run inside the request) |
 

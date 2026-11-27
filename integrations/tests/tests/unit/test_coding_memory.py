@@ -91,11 +91,29 @@ def _transcript(cm, tmp_path: Path, calls=None) -> Path:
 # -- Setting --------------------------------------------------------------------------
 
 
-def test_setting_unset_keeps_every_hook_as_before(
-    suite, hook_module, isolated_modules, monkeypatch
-):
+def test_the_default_is_on_in_claude_code_and_off_in_codex(suite, isolated_modules, monkeypatch):
+    """Unset or blank: Claude Code runs coding memory, Codex keeps it opt-in. An
+    explicit value wins on both."""
     require_coding(suite)
-    monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+    config = isolated_modules(suite, "config")
+    default = suite.name == "claude-code"
+    for unset in (None, "", "  "):
+        if unset is None:
+            monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+        else:
+            monkeypatch.setenv("COGNEE_CODING_MEMORY", unset)
+        assert config.coding_memory_enabled() is default
+    for value in ("false", "0", "no", "off", "OFF"):
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", value)
+        assert config.coding_memory_enabled() is False
+    for value in ("true", "1", "yes", "on"):
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", value)
+        assert config.coding_memory_enabled() is True
+
+
+def test_setting_off_keeps_every_hook_as_before(suite, hook_module, isolated_modules, monkeypatch):
+    require_coding(suite)
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "false")
     config = isolated_modules(suite, "config")
     assert config.coding_memory_enabled() is False
     send_unit = hook_module(suite, "send-unit.py")

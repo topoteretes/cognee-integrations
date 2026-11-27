@@ -948,7 +948,7 @@ def test_the_coding_agent_gets_delete_on_its_write_target_only(pc, suite, monkey
     if coding:
         monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
     else:
-        monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", "false")
     calls = _recording_control(pc, monkeypatch)
     marker = {}
     pc._grant_agent_delete(PRINCIPAL_KEY, "agent-1", "ds-write", marker)
