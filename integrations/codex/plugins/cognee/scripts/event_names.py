@@ -354,6 +354,7 @@ EVENT_NAMES = {
     "hook:coding_drain_failed": "coding.drain_failed",
     "hook:coding_lesson_fetch_failed": "coding.lesson_fetch_failed",
     "hook:coding_lessons_warmed": "coding.lessons_warmed",
+    "hook:coding_graph_warm_failed": "coding.graph_warm_failed",
     "hook:coding_memory_server_unsupported": "coding.memory_server_unsupported",
     "hook:coding_memory_support_check_failed": "coding.memory_support_check_failed",
     "hook:coding_payload_unreadable": "coding.payload_unreadable",

@@ -339,6 +339,30 @@ def test_a_lesson_is_marked_by_its_stamped_symbols(env):
     }
 
 
+def test_lessons_are_compared_with_a_graph_that_holds_the_working_tree(env, monkeypatch):
+    """A tree edited since the last index is loaded before the stamps are compared;
+    a graph that cannot be brought up to date marks nothing."""
+    commit = git(env.repo, "rev-parse", "HEAD")
+    (env.repo / "src" / "app.py").write_text("def line_total(price, qty):\n    return 1\n")
+    env.server.on("POST", RECALL, located({**LINE_TOTAL, "body_hash": "cccc3333"}))
+    lessons = [stamped("line_total multiplies.", LINE_TOTAL, commit=commit)]
+    assert env.stamps.mark_changed(lessons, env.root) is True
+    assert len(env.reindexed) == 1 and env.reindexed[0]["run_in_background"] is False
+    assert lessons[0]["symbol_state"] == {"changed": ["line_total"], "gone": []}
+
+    (env.repo / "src" / "app.py").write_text("def line_total(price, qty):\n    return 2\n")
+    monkeypatch.setattr(
+        env.stamps._code_graph,
+        "do_index_repo",
+        lambda *a, **k: {"error": "HTTP 403", "status": 403},
+    )
+    stale = [stamped("line_total multiplies.", LINE_TOTAL, commit=commit)]
+    env.logged.clear()
+    assert env.stamps.mark_changed(stale, env.root) is False
+    assert "symbol_state" not in stale[0]
+    assert env.logged == [("symbol_marks_skipped", {"reason": "graph_not_current", "stamps": 1})]
+
+
 def test_an_unchanged_stamped_symbol_leaves_the_lesson_unmarked(env):
     commit = git(env.repo, "rev-parse", "HEAD")
     (env.repo / "src" / "app.py").write_text("# a comment elsewhere in the file\n")

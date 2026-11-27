@@ -2089,6 +2089,26 @@ def last_request(session_key: str) -> str:
     return str(turn.get("prompt") or "") if isinstance(turn, dict) else ""
 
 
+def warm_code_graph(project_cwd: str):
+    """Bring the indexed repository's code graph up to the working tree (SessionStart,
+    in the background). True when it is current, False when it could not be made so,
+    None where the plugin ships no symbol stamps or the checkout is not indexed by path."""
+    stamps = _stamps()
+    if stamps is None:
+        return None
+    try:
+        import _code_graph
+
+        root = git_root(project_cwd) or project_cwd
+        state = _code_graph.find_indexed_repo(root)
+        if state.get("spec_kind") != "path":
+            return None
+        return stamps._graph_current(str(state["repo_root"]), 60.0)
+    except Exception as exc:
+        hook_log("coding_graph_warm_failed", {"error": str(exc)[:200]})
+        return False
+
+
 def warm_lessons(project_cwd: str) -> int:
     """Fill the lesson cache in the background (SessionStart), so the first prompt
     only lists the dataset and fetches nothing. Returns the lessons cached."""

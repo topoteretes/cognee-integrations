@@ -242,7 +242,23 @@ def mark_changed(lessons: list, root: str, timeout: float = LOCATE_TIMEOUT_SECON
         for _, stamps in stamped:
             for stamp in stamps:
                 wanted[tuple(stamp[k] for k in _STAMP_KEYS)] = {k: stamp[k] for k in _STAMP_KEYS}
-        raw, reason = _locate(root, {"symbols": list(wanted.values())}, timeout, opener)
+        import time
+
+        # The stamps are compared with the graph, so the graph has to hold the
+        # working tree: a tree edited since the last index is loaded first, and
+        # a graph that cannot be brought up to date marks nothing.
+        started = time.monotonic()
+        state = _code_graph.find_indexed_repo(root)
+        if state.get("spec_kind") == "path" and not _graph_current(
+            str(state["repo_root"]), timeout, opener
+        ):
+            hook_log("symbol_marks_skipped", {"reason": "graph_not_current", "stamps": len(wanted)})
+            return False
+        left = timeout - (time.monotonic() - started)
+        if left < 0.5:
+            hook_log("symbol_marks_skipped", {"reason": "deadline", "stamps": len(wanted)})
+            return False
+        raw, reason = _locate(root, {"symbols": list(wanted.values())}, left, opener)
         if raw is None:
             hook_log("symbol_marks_skipped", {"reason": reason, "stamps": len(wanted)})
             return False

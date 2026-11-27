@@ -118,7 +118,11 @@ def main() -> None:
             cwd = sys.argv[index + 1] if len(sys.argv) > index + 1 else os.getcwd()
             with quiet_hook_output("send-unit"):
                 cached = _coding_memory.warm_lessons(cwd)
-            hook_log("coding_lessons_warmed", {"lessons": cached})
+                # The first prompt compares lessons' symbol stamps with the code
+                # graph: load a tree edited since the last index now, off the
+                # prompt's clock.
+                graph_current = _coding_memory.warm_code_graph(cwd) if cached else None
+            hook_log("coding_lessons_warmed", {"lessons": cached, "graph_current": graph_current})
             return
         raw = sys.stdin.read()
         if not raw.strip():
