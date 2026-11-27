@@ -5033,6 +5033,7 @@ def recall_via_http(
     timeout: float = 10.0,
     evidence_mode: str | None = None,
     auto_route: bool = False,
+    include_references: bool = False,
 ) -> list:
     payload = {
         "query": query,
@@ -5043,6 +5044,10 @@ def recall_via_http(
     }
     if evidence_mode:
         payload["evidence_mode"] = evidence_mode
+    # Sources appended to a completion's answer; sent only when asked for, so
+    # every other request stays byte-identical.
+    if include_references:
+        payload["include_references"] = True
     # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
