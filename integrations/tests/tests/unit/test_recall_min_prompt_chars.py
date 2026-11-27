@@ -119,3 +119,35 @@ def test_machine_notification_does_not_consume_coding_memory_turn(suite, hook_mo
 
     monkeypatch.setattr(hook, "_coding_prompt", unexpected)
     assert _run(hook, monkeypatch, "<task-notification>Done</task-notification>") == []
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "<command-args>Find the previous deployment decision</command-args>",
+        "<command-name>/review</command-name>\n<command-message>review</command-message>\n"
+        "<command-args>Find the previous deployment decision</command-args>\n"
+        "<local-command-stdout>generated output</local-command-stdout>",
+    ],
+)
+def test_slash_command_arguments_are_recalled(suite, hook_module, monkeypatch, envelope):
+    hook = hook_module(suite, "session-context-lookup.py")
+    assert _run(hook, monkeypatch, envelope) == ["Find the previous deployment decision"]
+
+
+def test_skipped_notification_logs_only_fixed_reason(suite, hook_module, monkeypatch):
+    hook = hook_module(suite, "session-context-lookup.py")
+    events = []
+    monkeypatch.setattr(hook, "hook_log", lambda *args: events.append(args))
+    assert _run(hook, monkeypatch, "<task-notification>private payload</task-notification>") == []
+    assert events == [("context_lookup_machine_prompt_skipped", {"reason": "task-notification"})]
+
+
+def test_mixed_prompt_is_not_counted_as_skipped(suite, hook_module, monkeypatch):
+    hook = hook_module(suite, "session-context-lookup.py")
+    events = []
+    monkeypatch.setattr(hook, "hook_log", lambda event, *args: events.append(event))
+    assert _run(
+        hook, monkeypatch, "<system-reminder>private</system-reminder>Find my decision"
+    ) == ["Find my decision"]
+    assert "context_lookup_machine_prompt_skipped" not in events

@@ -967,7 +967,12 @@ def main():
 
     from _recall_prompt import recall_user_prompt
 
-    prompt = recall_user_prompt(payload)
+    prompt = recall_user_prompt(
+        payload,
+        on_skip=lambda reason: hook_log(
+            "context_lookup_machine_prompt_skipped", {"reason": reason}
+        ),
+    )
     if not prompt:
         return
     payload = {**payload, "prompt": prompt}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 EVENT_NAMES = {
+    "hook:context_lookup_machine_prompt_skipped": "recall.lookup_machine_prompt_skipped",
     "hook:users_me_lookup_failed": "config.users_me_lookup_failed",
     "hook:trace_skipped_low_signal": "capture.trace_skipped_low_signal",
     "clear-transcript-context:claude_context_cleared": "transcript.cleared",
