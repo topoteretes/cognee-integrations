@@ -91,6 +91,37 @@ def seed(session_id: str, hashes: list[str], guidance_hashes: list[str] = None) 
         atomic_json(directory / "injected.json", data)
 
 
+def lessons_shown(session_id: str) -> dict:
+    """What coding memory already put in this session's context in full:
+    ``{"ids": lesson data ids, "lines": lesson lines of a delivered block,
+    "at_start": True once the session-start list was shown}``. Cleared with the
+    ledger (``reset``), so a compaction or ``/clear`` starts over."""
+    try:
+        data = _read(session_dir(session_id) / "injected.json")
+    except ValueError:
+        data = {}
+    return {
+        "ids": [str(i) for i in data.get("lesson_ids") or []],
+        "lines": [str(line) for line in data.get("lesson_lines") or []],
+        "at_start": bool(data.get("lessons_at_start")),
+    }
+
+
+def mark_lessons_shown(session_id: str, ids=(), lines=(), at_start: bool = False) -> None:
+    directory = session_dir(session_id)
+    with file_lock(directory / "injected.lock", timeout=0.2) as acquired:
+        if not acquired:
+            raise OSError("injection ledger is busy")
+        data = _read(directory / "injected.json")
+        data["lesson_ids"] = sorted(set(data.get("lesson_ids") or []) | {str(i) for i in ids})
+        data["lesson_lines"] = sorted(
+            set(data.get("lesson_lines") or []) | {str(line) for line in lines}
+        )
+        if at_start:
+            data["lessons_at_start"] = True
+        atomic_json(directory / "injected.json", data)
+
+
 def is_guidance_section(section: dict) -> bool:
     """Active agent guidance, deduplicated by its whole current set rather than per entry."""
     return section.get("source") == "session_context"

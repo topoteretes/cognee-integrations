@@ -62,6 +62,8 @@ ISOLATED_MODULES = (
     "_symbol_stamps",
     "_trace",
     "_coding_memory",
+    "_coding_lessons",
+    "_review_gate",
     "_observer",
     "cognee_plugin",
     "cognee_statusline_render",

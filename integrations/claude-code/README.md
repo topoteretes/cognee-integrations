@@ -511,10 +511,46 @@ Coding memory is the plugin's default mode, built for the server's coding distil
 environment or `~/.cognee/.env`) turns it off and restores per-call capture and per-prompt
 recall; with it off, nothing below applies.
 
-**Nothing happens while the agent works.** No trace per tool call, no recall per prompt,
-no file context on `Read`, no pre-compact anchor, no session-start steer or recap, no
-code-graph indexing and no `improve` every 150 entries. In cloud mode Cognee still turns Claude's
-native auto memory off, as outside coding mode; set `COGNEE_DISABLE_AUTO_MEMORY=false` to keep it.
+**Nothing is written while the agent works; memory is read.** What is on and off during
+a session:
+
+| During the session | Coding mode |
+|---|---|
+| Lessons at session start | on: up to five, from the lesson cache |
+| Recall on every prompt, with the prompt's lessons | on, as outside coding mode (the first prompt gets the lessons block instead) |
+| File context on `Read` | on, as outside coding mode (`COGNEE_FILE_CONTEXT`) |
+| Automatic code review after a commit, a push or `gh pr create` | on ([below](#automatic-review)); `COGNEE_AUTO_REVIEW=false` turns it off |
+| Trace per tool call | off: the end-of-request capture sends every call, and capturing both would store each call twice |
+| `improve` every 150 entries | off: it counts per-call entries; `improve` runs at session end and once a day |
+| Pre-compact anchor | off: it is built from the per-call session entries, and it runs an `improve` |
+| Session-start steer and recap | off: the lessons list is what session start says |
+| Code-graph indexing at session start | off; a request that edited an indexed repository re-indexes it at its end |
+
+In cloud mode Cognee still turns Claude's native auto memory off, as outside coding mode; set
+`COGNEE_DISABLE_AUTO_MEMORY=false` to keep it.
+
+**Lessons at session start.** SessionStart lists up to five of the project's lessons, for
+the model (the hook's context) and for you (the session-start message): the newest
+`test-baseline`, the two newest pitfalls, then the newest lessons, each with its date, commit
+and what changed since. They are read from the lesson cache only, in at most three seconds;
+when the cache is cold (the first session after an install, or a lesson made since the last
+session) the list is shorter or absent, the cache is filled in the background, and the first
+prompt's block below covers the session. A resumed session is not given the list again.
+
+**Recall and lessons on every prompt.** A prompt that gets no lessons block is recalled for
+exactly as outside coding mode (same requests, deadline and injection budget), and gets a
+`Lessons for this prompt` list above the recall: at most five lessons, most relevant first.
+A lesson is relevant when the server's lesson recall for the prompt returns it (the recall
+and ranking the block uses) and it shares a word with the prompt: a word of three or more
+letters that is not a stopword, from the lesson's statement, files, stamped symbols or state
+key, where two words that start with the same five letters count as one. The second
+condition is there because the recall returns its nearest lessons at any distance and gives
+no score. A prompt with no relevant lesson gets no list. A lesson is printed in full once per
+session (the session-start list and the block count); when it is relevant again it is one
+line, its first sentence cut to 100 characters and `(shown earlier)`. A compaction or `/clear`
+starts over. When the budget cannot hold every line the header says how many were left out
+(`lessons 3 (2 left out to fit)`). Lesson documents never appear a second time among the
+recalled passages.
 
 **Each request is sent once, at its end.** The `Stop` hook (`send-unit.py`) reads the
 transcript and queues:
@@ -533,8 +569,9 @@ queue (the cloud spool in cloud mode, the replay buffer otherwise), so nothing i
 down. `improve` runs at session end (after the queue is drained) and once a day in long sessions
 (`COGNEE_IMPROVE_COOLDOWN`).
 
-**One memory block per session.** The first prompt of a session, and the first one after a
-compaction, gets a block of about 2,000 characters:
+**One memory block per session.** The first prompt of a session that got no list at session
+start, and the first one after a compaction, gets a block of about 2,000 characters instead
+of a recall:
 
 ```
 Project memory (Cognee), learned from 4 earlier sessions in the agent_sessions dataset. Check it before exploring: …
@@ -603,7 +640,7 @@ delays the send, never the session. Events are logged as `coding.*` (see `EVENTS
 | `SessionStart` | mode select, identity setup, dataset readiness, watcher bootstrap |
 | `UserPromptSubmit` | dataset-scoped context lookup + async prompt staging |
 | `PreToolUse` (`Read`) | [file-scoped context](#file-context-on-read): code-graph facts about the file about to be read, injected as `additionalContext` |
-| `PostToolUse` | async trace write |
+| `PostToolUse` | async trace write (off in coding memory); for `Bash` in coding memory, the gate of the [automatic review](#automatic-review) |
 | `Stop` | assistant answer write + credits refresh; in [coding memory](#coding-memory-on-by-default), `send-unit.py` sends the request instead |
 | `PreCompact` | memory anchor build before compaction |
 | `SessionEnd` | trigger detached final sync worker |
@@ -737,7 +774,8 @@ A **failed** attempt arms the same window as a **backoff**: if the submit timed 
 |---|---|---|
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
 | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session; persisted per session |
-| `COGNEE_CODING_MEMORY` | unset (on) | [coding memory](#coding-memory-on-by-default): capture once per request, one lesson block per session; `false` turns it off |
+| `COGNEE_CODING_MEMORY` | unset (on) | [coding memory](#coding-memory-on-by-default): capture once per request, lessons at session start and with every prompt; `false` turns it off |
+| `COGNEE_AUTO_REVIEW` | unset (on) | In coding mode, [review a change by itself](#automatic-review) after `git commit`, `git push` or `gh pr create` in a repository indexed by path; `false` turns it off |
 | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST (agent-context extraction and distillation run inside the request) |
 
@@ -893,8 +931,29 @@ the files that decide its own grade (`enola-intent.yaml`, `mcp-arch.yaml`,
 `enola/constraints/`). Nothing counts as a regression until `--fail-on` or
 `--max-spillover` says what should, and a `--fail-on` finding counts only when enola is
 certain of it: pass `--min-confidence 0.8` to count heuristic findings such as
-`dead-code` (the report says when findings fell below the floor). The plugin never runs enola itself and never runs
-a review on its own.
+`dead-code` (the report says when findings fell below the floor). The plugin never runs enola itself.
+
+After the verdict the report says **where to look**: at most five symbols, each with its
+file, line and reason, the most depended-on first.
+
+```
+Where to look:
+  1. inventory/pricing.compute_total (inventory/pricing.py:20): 7 symbol(s) depend on it (3 directly); changed by 1 fix commit(s) before
+  2. inventory/pricing.store_total (inventory/pricing.py:38): new finding [dead-code]
+```
+
+A symbol is listed when something depends on it (`impact`), a commit whose subject matches
+`fix` changed it before the merge-base (`touched`), a new finding names it, or the change
+removed it. The symbols are the ones the diff since the merge-base touches (`locate`); a
+changed symbol with none of those reasons is not listed. Resolved findings and removed
+symbols follow when the verdict has them, and with `--target` what the change reached
+outside it. The extra analyses are asked one after another (each takes the dataset lock on
+the server) within 60 seconds in all: one `locate`, one `impact` for each of the five
+largest changed symbols (the report says when more were left out) and one `touched`. One
+that fails or runs out of time costs its part and a `Not available:` line, never the
+review. A working tree edited since the last index is re-indexed first, so the symbols are
+those of the code under review. `--json` carries the pieces under `where_to_look`;
+`--no-where` skips the section and its calls.
 
 The server stores the verdict on the repository's code graph. After a review, the next
 prompt in that repository reads the stored verdict once and, when it reports a
@@ -902,6 +961,33 @@ regression or changed rule files, puts a short block in front of the prompt's me
 context: once per stored verdict, within the injection budget, and at most two seconds
 of waiting. `--stored` prints the stored verdict in full and says when the graph was
 reloaded since.
+
+#### Automatic review
+
+In coding mode the same review runs by itself after the agent publishes or records a change.
+A PostToolUse hook for Bash (`auto-review.py`, asynchronous) decides without an LLM and
+without a request, and starts a detached review only when all of this holds:
+
+1. `COGNEE_AUTO_REVIEW` is not `false` and coding memory is on.
+2. The Bash call did not fail, and its command runs `git commit`, `git push` or
+   `gh pr create`. The command line is parsed: `cd x && git commit`, `git -C path commit`,
+   environment prefixes and chained commands count; the words inside a quoted string, a
+   heredoc body, a comment, a command substitution or a `bash -c` script do not, and neither
+   do `--dry-run` and `--help` runs, `git push --delete` or `gh pr merge`.
+3. The directory the command ran in is inside a git repository indexed by path.
+4. The server is not known to lack the analysis API (the cached answer; no request).
+5. A base exists: the remote default branch, else the current branch's upstream.
+6. The change holds code files (the extensions the code graph indexes): the commit's own
+   files for `git commit`, the files since the merge-base for a push or a pull request. A
+   commit of documentation or a lockfile is not reviewed.
+7. No automatic review of this HEAD against this merge-base ran or is running.
+
+Anything else is one `code_review.auto_skipped` line in `hook.log` with the reason. The
+review calls the server like `cognee-review.sh <base>` does, with no `--fail-on` or
+`--max-spillover` policy. Its "Where to look" lines are shown once at the
+next prompt, in the same notice and also when the status is clean; a clean review with
+nothing to look at shows nothing. It never delays the agent's turn, and every failure is one
+line in `hook.log` (`code_review.auto_failed`).
 
 Reviews and the rule proposals below need a local Cognee server with the code analysis
 API (`POST /api/v1/code/analyze`, cognee 1.6.11 or later) and a repository indexed by

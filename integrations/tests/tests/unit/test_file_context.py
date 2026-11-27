@@ -378,3 +378,11 @@ class _Stdin:
 
     def read(self):
         return self._text
+
+
+def test_coding_memory_keeps_file_context(fc, repo, wire, capsys, monkeypatch):
+    """Coding mode reads again while the agent works: a Read gets its context."""
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
+    _run(fc, monkeypatch, _payload(repo / "pkg" / "mod.py", cwd=repo))
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "Widget:10" in context

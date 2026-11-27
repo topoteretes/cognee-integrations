@@ -84,7 +84,10 @@ change. Without them every finding is reported and the status stays clean. A
 fell below the floor.
 
 Report the status, the new findings with their files, the edges added and removed
-by kind, and what was reached outside the expected scope. Lead with the line about
+by kind, and what was reached outside the expected scope. Then relay the "Where to
+look" section: at most five symbols with file, line and the reason (how much depends
+on each, earlier fix commits, a new finding, removed), and any `Not available:` line
+as it is (that part of the section could not be computed; the verdict stands). Lead with the line about
 changed rule files when it appears: the change then alters the rules it is graded
 by, and those edits need the user's eyes first. When the report says the graph was
 reloaded since the review, run it again before relying on it.
@@ -93,4 +96,6 @@ The review needs a local Cognee server with the code analysis API and a
 repository indexed by path; the script says so in one line when the server is
 older, is Cognee Cloud, or holds only a clone of pushed commits. Relay that line
 and stop; do not substitute a review of your own. A stored regression or changed
-rule files are also shown once at the next prompt.
+rule files are also shown once at the next prompt. In coding mode the plugin runs
+this review by itself after a commit, a push or `gh pr create`, and shows its
+"Where to look" lines at the next prompt.

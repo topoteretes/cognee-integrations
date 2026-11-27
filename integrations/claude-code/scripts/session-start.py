@@ -3236,9 +3236,11 @@ def _coding_session_start(output: dict, payload: dict) -> dict:
     The steer, recap and digest are skipped where they are added; what else is
     already in the output (an OFFLINE instruction, the sync notice) is kept.
     After a compaction the lessons block is appended again (the compaction
-    dropped it). Also checks once that the server takes the event times coding
-    mode needs, and says so when it does not (memory is then off), and starts
-    filling the lesson cache in the background.
+    dropped it). Any other start lists the project's top lessons, for the model
+    and for the user, when the lesson cache holds them; with a cold cache the
+    first prompt's block covers the session. Also checks once that the server
+    takes the event times coding mode needs, and says so when it does not
+    (memory is then off), and starts filling the lesson cache in the background.
     """
     import _coding_memory
 
@@ -3259,10 +3261,31 @@ def _coding_session_start(output: dict, payload: dict) -> dict:
             with quiet_hook_output("session-start"):
                 block = _coding_memory.deliver(key, _coding_memory.last_request(key), cwd)
             if block:
+                import _coding_lessons
+
+                _coding_lessons.mark_shown(key, block=block)
                 existing = str(hso.get("additionalContext") or "").strip()
                 hso["additionalContext"] = f"{existing}\n\n{block}" if existing else block
         elif key:
             import importlib.util
+
+            import _coding_lessons
+
+            # The project's top lessons, from the lesson cache only (nothing is
+            # fetched here). Once per context: a resumed session still holds them.
+            listed = {}
+            if not _coding_lessons.start_list_shown(key):
+                with quiet_hook_output("session-start"):
+                    listed = _coding_lessons.at_session_start(key, cwd)
+            if listed:
+                existing = str(hso.get("additionalContext") or "").strip()
+                hso["additionalContext"] = (
+                    f"{existing}\n\n{listed['context']}" if existing else listed["context"]
+                )
+                nested = str(hso.get("systemMessage") or "").strip()
+                hso["systemMessage"] = f"{nested}\n\n{listed['message']}".strip()
+                top = str(result.get("systemMessage") or "").strip()
+                result["systemMessage"] = f"{top}\n\n{listed['message']}".strip()
 
             spec = importlib.util.spec_from_file_location(
                 "send_unit", os.path.join(os.path.dirname(__file__), "send-unit.py")
