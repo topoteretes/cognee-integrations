@@ -93,6 +93,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -516,27 +517,58 @@ def remote_clone_url(root: str, timeout: float = _GIT_TIMEOUT_SECONDS, deadline=
     return _https_clone_url(_git_in_time(["remote", "get-url", name], root, timeout, deadline))
 
 
-def pushed_fingerprint(root: str) -> str:
-    """The commit a server-side clone of this checkout's remote would hold.
+def default_branch_ref(root: str) -> str:
+    """The remote-tracking ref of the branch a clone of this checkout's remote takes.
 
-    A clone takes the remote's default branch, so this is the remote-tracking
-    ref of that branch as the last fetch or push left it. Read locally, with no
-    network call: a hook must not hit the remote with the user's credentials.
-    "" when the remote has no known default branch; callers then skip the
-    freshness gate, as they do for an unreadable working tree.
+    A clone takes the remote's default branch. ``refs/remotes/<remote>/HEAD``
+    names it once a full ``git clone`` or ``git remote set-head`` has written
+    it. A checkout that got its remote another way (``git init``, ``git remote
+    add`` and a push) has no such ref, and the branch is told from the others:
+    the remote's only branch, else ``main``, else ``master``. The only branch
+    counts just when the checkout fetches every branch of the remote: a
+    single-branch clone (``--single-branch`` or ``--depth`` with ``-b``) holds
+    the branch it was cloned from, whatever the default is. Otherwise it is ""
+    rather than a guess, until the default branch is fetched and recorded
+    (``git remote set-head <remote> --auto``).
     """
     name = _remote_name(root) if root else ""
     if not name:
         return ""
-    for ref in (
-        f"refs/remotes/{name}/HEAD",
-        f"refs/remotes/{name}/main",
-        f"refs/remotes/{name}/master",
-    ):
-        commit = _run_git(["rev-parse", "--verify", "--quiet", ref], root).strip()
-        if commit:
-            return commit
+    head = f"refs/remotes/{name}/HEAD"
+    if _run_git(["rev-parse", "--verify", "--quiet", head], root).strip():
+        return head
+    listed = _run_git(["for-each-ref", "--format=%(refname)", f"refs/remotes/{name}/"], root)
+    branches = [ref for ref in (line.strip() for line in listed.splitlines()) if ref]
+    branches = [ref for ref in branches if ref != head]
+    if len(branches) == 1 and _fetches_every_branch(root, name):
+        return branches[0]
+    for branch in ("main", "master"):
+        if f"refs/remotes/{name}/{branch}" in branches:
+            return f"refs/remotes/{name}/{branch}"
     return ""
+
+
+def _fetches_every_branch(root: str, name: str) -> bool:
+    """Whether the remote's fetch refspecs take all of its branches (``refs/heads/*``)."""
+    refspecs = _run_git(["config", "--get-all", f"remote.{name}.fetch"], root)
+    return any(
+        line.strip().lstrip("+").split(":", 1)[0] == "refs/heads/*"
+        for line in refspecs.splitlines()
+    )
+
+
+def pushed_fingerprint(root: str) -> str:
+    """The commit a server-side clone of this checkout's remote would hold.
+
+    The tip of ``default_branch_ref`` as the last fetch or push left it, read
+    locally with no network call: a hook must not hit the remote with the
+    user's credentials. "" when the remote's default branch is unknown: the
+    cloned graph is then not refreshed, and ``reingest_if_changed`` says why.
+    """
+    ref = default_branch_ref(root)
+    if not ref:
+        return ""
+    return _run_git(["rev-parse", "--verify", "--quiet", ref], root).strip()
 
 
 def canonical_spec(spec: str) -> str:
@@ -1090,6 +1122,7 @@ def index_repo(
         result["wait_outcome"] = outcome
         result["queryable"] = outcome == "completed"
 
+    fingerprint = _state_fingerprint(repo_root, remote)
     state = {
         "spec": spec,
         "spec_kind": "url" if remote else "path",
@@ -1097,7 +1130,7 @@ def index_repo(
         "server": server_identity(service_url),
         "dataset": dataset,
         "index_vectors": bool(index_vectors),
-        "fingerprint": _state_fingerprint(repo_root, remote),
+        "fingerprint": fingerprint,
         "last_index_at": time.time(),
         "last_status": str(result.get("status") or "submitted") if isinstance(result, dict) else "",
     }
@@ -1105,6 +1138,13 @@ def index_repo(
     if repo_root:
         # Indexing a repo is a yes, whatever was answered at an earlier session start.
         clear_declined(repo_root, is_local_server)
+    if remote and repo_root and not fingerprint:
+        name = _remote_name(repo_root) or "origin"
+        result["note"] = (
+            "this checkout does not know which branch is its remote's default, so the graph "
+            "will not follow later pushes until it does: fetch that branch and run "
+            f"`git remote set-head {name} --auto` in the checkout"
+        )
     result["dataset"] = dataset
     return result
 
@@ -1188,7 +1228,9 @@ def reingest_if_changed(
     What "changed" means follows how the server reads the repo. A path is read
     in place, so the working tree is the gate. A URL is cloned, and a clone only
     ever holds pushed commits: a local edit would re-pull the same commits and
-    produce the same graph, so the gate there is the pushed commit.
+    produce the same graph, so the gate there is the pushed commit. When this
+    checkout cannot tell which branch that is (``default_branch_ref``), nothing
+    is submitted and the outcome says so: ``{"skipped": "no_default_branch"}``.
 
     Only the graph built on this server is refreshed (``state_serves``): a
     graph elsewhere is another server's, and submitting to this one would index
@@ -1200,8 +1242,14 @@ def reingest_if_changed(
         if not state or state.get("spec_kind") not in ("path", "url"):
             return {}
         root = str(state.get("repo_root") or "")
-        fingerprint = _state_fingerprint(root, state.get("spec_kind") == "url")
+        cloned = state.get("spec_kind") == "url"
+        fingerprint = _state_fingerprint(root, cloned)
         if not fingerprint:
+            if cloned:
+                # A clone follows the remote's default branch; with that branch
+                # unknown here there is no pushed commit to follow, and a graph
+                # that quietly stops following pushes is worse than a logged why.
+                return {"skipped": "no_default_branch", "repo_root": root}
             return {}
         if fingerprint == str(state.get("fingerprint") or ""):
             return {"changed": False, "repo_root": root}
@@ -1219,6 +1267,10 @@ def reingest_if_changed(
             api_key,
             state.get("spec") or root,
             str(state.get("dataset") or default_code_dataset(root)),
+            # Kept on a refresh, and it costs the change, not the repository:
+            # the server writes (and so embeds) a code fact again only when its
+            # content changed since the last load, and skips an unchanged
+            # snapshot outright.
             index_vectors=bool(state.get("index_vectors")),
             opener=opener,
         )
@@ -1255,12 +1307,11 @@ def reingest_if_changed(
 # Session-start indexing: ask first, then keep what was indexed fresh
 # ---------------------------------------------------------------------------
 
-# With COGNEE_CODE_AUTOINDEX=always a repo bigger than this many source files
-# is not indexed: the enola pass is CPU-bound over the whole tree, and silently
-# spending that on a monorepo nobody asked to index is worse than doing nothing.
-# A repo the user said yes to has no cap — the answer IS the consent, and the
-# question states the size.
-_AUTOINDEX_MAX_FILES = 3000
+# Counting a repository's code files stops past this many. The number only
+# describes the repository, in the session-start question and in the log; it
+# never decides whether the repository is indexed. A yes and the standing yes
+# (COGNEE_CODE_AUTOINDEX=always) both index a repository of any size.
+_SIZE_COUNT_CAP = 10000
 
 # The question is prepared inside the SessionStart hook itself, so the git
 # calls behind it share one short budget instead of the module-wide timeout.
@@ -1276,7 +1327,7 @@ def autoindex_mode() -> str:
       index the repository, and nothing is submitted without a yes. A "never"
       is remembered per repo, so it is not asked again.
     - ``always``: index a new repo without asking, on a local or a remote
-      server. Setting it is the standing yes.
+      server, whatever its size. Setting it is the standing yes.
     - ``off``: never ask and never index; only refresh repos indexed explicitly.
 
     Refreshing an ALREADY-indexed repo is not governed by this setting — that
@@ -1314,15 +1365,115 @@ def _source_file_count(root: str, cap: int) -> int:
     return seen
 
 
+def _shown_count(count):
+    """A code-file count as it is reported: past ``_SIZE_COUNT_CAP``, ``">N"``."""
+    if isinstance(count, int) and count > _SIZE_COUNT_CAP:
+        return f">{_SIZE_COUNT_CAP}"
+    return count
+
+
+_CODE_EXTENSIONS_BYTES = frozenset(ext.encode("ascii") for ext in CODE_EXTENSIONS)
+# How much of a git listing is read at a time.
+_LISTING_BLOCK_BYTES = 65536
+
+
+def _count_listed_code_files(args, cwd: str, timeout: float):
+    """Count, as git streams it, what a ``git ls-files -z`` listing names.
+
+    Returns ``(names, code_files)``. The listing is never held whole: it is
+    read a block at a time, and git is stopped as soon as the code files pass
+    ``_SIZE_COUNT_CAP``. A listing that is mostly something else (an asset or
+    data repository) has no such early end and is bounded by ``timeout``
+    alone, which the counting runs inside of. None when git got neither to the
+    end nor to the cap within ``timeout``; a git that fails (or is missing)
+    lists nothing, ``(0, 0)``.
+    """
+    end = time.monotonic() + timeout
+    try:
+        proc = subprocess.Popen(
+            ["git", *args],
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return (0, 0)
+    counted = [0, 0]
+    capped = threading.Event()
+
+    def count(name: bytes) -> bool:
+        """Count one listed name; True once the code files pass the cap."""
+        counted[0] += 1
+        if name.rsplit(b".", 1)[-1].lower() in _CODE_EXTENSIONS_BYTES:
+            counted[1] += 1
+        return counted[1] > _SIZE_COUNT_CAP
+
+    def read() -> None:
+        rest = b""
+        try:
+            while True:
+                block = proc.stdout.read1(_LISTING_BLOCK_BYTES)
+                if not block:
+                    break
+                *names, rest = (rest + block).split(b"\0")
+                for name in names:
+                    if name and count(name):
+                        capped.set()
+                        return
+            if rest:
+                count(rest)
+        except (OSError, ValueError):
+            pass
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(max(0.0, end - time.monotonic()))
+    if reader.is_alive():
+        # The reader may be blocked inside read1(): leave the pipe to it (closing
+        # a buffered file another thread is reading can block) and stop git.
+        _stop_git(proc)
+        return None
+    if capped.is_set():
+        _stop_git(proc)
+        _close_quietly(proc.stdout)
+        return (counted[0], counted[1])
+    try:
+        returncode = proc.wait(timeout=max(0.05, end - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        _stop_git(proc)
+        return None
+    finally:
+        _close_quietly(proc.stdout)
+    return (counted[0], counted[1]) if returncode == 0 else (0, 0)
+
+
+def _stop_git(proc) -> None:
+    try:
+        proc.kill()
+        proc.wait(timeout=1.0)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _close_quietly(stream) -> None:
+    try:
+        stream.close()
+    except (OSError, ValueError):
+        pass
+
+
 def _git_code_file_count(root: str, *, tracked_only: bool, deadline=None):
     """Code files git tracks in ``root``, read from the index with no tree walk.
 
     The number sizes the question, so tracked files are enough for it, and the
-    index answers in the same time on a monorepo as on a small service. A
-    checkout that tracks files but no code (a dotfiles repository in a home
-    directory) is 0, and nothing is walked to find that out. None when git did
-    not list the index in time: the size is unknown, which is no reason to keep
-    the question from the biggest repositories.
+    index answers in the same time on a monorepo as on a small service. It is
+    counted as git lists it, up to ``_SIZE_COUNT_CAP`` (a count past it is
+    ``_SIZE_COUNT_CAP + 1``, see ``_shown_count``). A checkout that tracks
+    files but no code (a dotfiles repository in a home directory) is 0, and
+    nothing is walked to find that out. None when git did not list the index
+    in time: the size is unknown, which is no reason to keep the question from
+    the biggest repositories.
 
     Only a checkout that tracks nothing at all, a fresh ``git init``, is listed
     with its untracked files, since a local server would read those; that walk
@@ -1330,23 +1481,18 @@ def _git_code_file_count(root: str, *, tracked_only: bool, deadline=None):
     nothing to offer (a tree that big that git tracks nothing of is not a code
     project anyone is working on).
     """
-
-    def code_files(listed: str) -> int:
-        return sum(
-            1 for name in listed.split("\0") if name.rsplit(".", 1)[-1].lower() in CODE_EXTENSIONS
-        )
-
     budget = _bounded_timeout(_OFFER_DEADLINE_SECONDS, deadline)
-    tracked = _git_output_or_none(["ls-files", "-z"], root, budget)
+    tracked = _count_listed_code_files(["ls-files", "-z"], root, budget)
     if tracked is None:
         return None
-    if tracked.strip("\0") or tracked_only:
-        return code_files(tracked)
+    names, code_files = tracked
+    if names or tracked_only:
+        return code_files
     walk = _bounded_timeout(_OFFER_WALK_TIMEOUT_SECONDS, deadline)
-    untracked = _git_output_or_none(
+    untracked = _count_listed_code_files(
         ["ls-files", "-z", "--others", "--exclude-standard"], root, walk
     )
-    return code_files(untracked or "")
+    return untracked[1] if untracked else 0
 
 
 # Format characters that stay in names people use: the joiners inside emoji
@@ -1383,9 +1529,9 @@ def index_offer(cwd, *, service_url, is_local_server=None) -> dict:
     ``COGNEE_CODE_AUTOINDEX`` not on ``ask``, a remote server with no git remote
     it could clone, or a path that cannot be put in the instruction as it is
     (``_fits_in_instruction``). Otherwise ``repo_root``,
-    ``source_files`` (None when git did not count them in time) and ``server``
-    ("local" or "remote"), plus ``clone_url`` for a remote server: the one thing
-    that would be sent.
+    ``source_files`` (None when git did not count them in time, ``">N"`` past
+    ``_SIZE_COUNT_CAP``) and ``server`` ("local" or "remote"), plus
+    ``clone_url`` for a remote server: the one thing that would be sent.
 
     Makes no request, and every git call shares one budget
     (``_OFFER_DEADLINE_SECONDS``): it runs inside the SessionStart hook. An
@@ -1410,8 +1556,8 @@ def index_offer(cwd, *, service_url, is_local_server=None) -> dict:
         offer["clone_url"] = remote_clone_url(root, _OFFER_DEADLINE_SECONDS, deadline)
         if not offer["clone_url"]:
             return {}
-    offer["source_files"] = _git_code_file_count(
-        root, tracked_only=not is_local_server, deadline=deadline
+    offer["source_files"] = _shown_count(
+        _git_code_file_count(root, tracked_only=not is_local_server, deadline=deadline)
     )
     return offer if offer["source_files"] != 0 else {}
 
@@ -1453,7 +1599,8 @@ def autoindex_on_session_start(
         the repo counts as new here;
       * the repo is NEW -> the user decides. In the default ``ask`` mode nothing
         is submitted here: SessionStart puts the question (``index_offer``) and
-        a yes runs the index command. Only ``always`` indexes from here.
+        a yes runs the index command. Only ``always`` indexes from here, and
+        whatever the repository's size, as a yes does.
 
     The settings are read from the environment. The long-lived cloud worker
     sets them, around this call, to what the session's own SessionStart read:
@@ -1497,15 +1644,11 @@ def autoindex_on_session_start(
             # The question is SessionStart's to put; an unanswered one indexes nothing.
             return {"skipped": "awaiting_consent", "repo_root": root}
 
-        count = _source_file_count(root, _AUTOINDEX_MAX_FILES)
+        # Counted to tell "no code here" apart and to log the size; any size is
+        # indexed (the count stops past _SIZE_COUNT_CAP).
+        count = _source_file_count(root, _SIZE_COUNT_CAP)
         if count == 0:
             return {"skipped": "no_code_files", "repo_root": root}
-        if count > _AUTOINDEX_MAX_FILES:
-            return {
-                "skipped": "too_large",
-                "repo_root": root,
-                "source_files": f">{_AUTOINDEX_MAX_FILES}",
-            }
 
         result = index_repo(
             service_url, api_key, root, opener=opener, is_local_server=is_local_server
@@ -1516,13 +1659,16 @@ def autoindex_on_session_start(
                 "repo_root": root,
                 "error": "unreachable" if result == UNREACHABLE else str(result.get("error"))[:200],
             }
-        return {
+        outcome = {
             "indexed": True,
             "reason": "first_seen",
             "repo_root": root,
             "dataset": result.get("dataset", ""),
-            "source_files": count,
+            "source_files": _shown_count(count),
         }
+        if result.get("note"):
+            outcome["note"] = result["note"]
+        return outcome
     except Exception as exc:  # never break session start
         return {"error": str(exc)[:200]}
 
@@ -1579,7 +1725,13 @@ def main(argv):
             return
 
     if command == "decline":
-        print(json.dumps(decline_repo(spec or os.getcwd(), service_url=service_url)))
+        try:
+            answer = decline_repo(spec or os.getcwd(), service_url=service_url)
+        except Exception as exc:
+            # No server is involved here: printed, this reaches the user as the
+            # answer that could not be kept, not as an unreachable server.
+            answer = {"error": f"could not record the answer: {str(exc)[:200]}", "status": 0}
+        print(json.dumps(answer))
         return
 
     if command != "index" or not spec:
@@ -1594,14 +1746,19 @@ def main(argv):
             )
         )
         return
-    result = index_repo(
-        service_url,
-        api_key,
-        spec,
-        dataset,
-        index_vectors=index_vectors,
-        wait_seconds=wait_seconds,
-    )
+    try:
+        result = index_repo(
+            service_url,
+            api_key,
+            spec,
+            dataset,
+            index_vectors=index_vectors,
+            wait_seconds=wait_seconds,
+        )
+    except Exception as exc:
+        # Printed rather than raised: an empty output reads as an unreachable
+        # server to the wrapper, and this may fail after the server took it.
+        result = {"error": f"indexing failed: {str(exc)[:200]}", "status": 0}
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
 
 

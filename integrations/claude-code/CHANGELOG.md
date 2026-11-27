@@ -26,6 +26,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   against `always` too, and indexing the repository yourself lifts it. `COGNEE_CODE_AUTOINDEX` is now `ask` (default),
   `always` (index without asking) or `off` (never ask, never index); `auto` is read as
   `ask`. Repositories already indexed keep refreshing as before.
+- **`always` indexes a repository of any size.** A repository of more than 3000 source
+  files used to be skipped without a word. A yes and the index command already indexed
+  any size; the question states the size, counting up to 10000 files.
 
 ### Fixed
 
@@ -36,7 +39,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   remote URL is dropped) and clones it, so no file is uploaded. The checkout stays
   linked to that graph, so `--code` searches, the per-prompt code lane and file context
   on `Read` resolve it from the folder, and it is re-indexed at the first session start
-  after a push. The server must be able to clone the URL without credentials; a
+  after a push to the default branch (`origin/HEAD`; without it, the remote's only
+  branch, `main` or `master`). A checkout that cannot tell which branch that is, such as
+  a single-branch clone of another branch, says so instead of silently never
+  refreshing; fetching the default branch and `git remote set-head origin --auto` fix it.
+  The server must be able to clone the URL without credentials; a
   checkout with no git remote is reported as such instead of being submitted.
 - **A code graph is used and refreshed only on the server that built it.** Each graph
   records its server (the URL's scheme, host and port; `localhost` and `127.0.0.1`
@@ -60,6 +67,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **A repository under a path with non-ASCII characters is found on Windows.** git's
   output was read in the console code page instead of UTF-8, so such a checkout's root
   came back as a path that does not exist, and it was never indexed or refreshed.
+- **`cognee-index-repo.sh` no longer reports a local failure as an unreachable
+  server.** An error on this machine (the index state or a "never" that could not be
+  saved) printed nothing, which the script read as "server unreachable, nothing was
+  submitted". It now prints the error.
 
 ### Upgrade note
 

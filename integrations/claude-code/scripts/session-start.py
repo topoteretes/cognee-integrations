@@ -3134,7 +3134,8 @@ def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
         after = (
             "If the result has `wait_outcome` `errored`, the server could not clone or "
             "parse the repository: say so, and that a private repository is the usual "
-            "cause. The graph follows later pushes."
+            "cause. The graph follows later pushes; if the result has a `note`, tell the "
+            "user what it says."
         )
     elif service_url_is_local(service_url):
         where = "Cognee's local server reads the folder in place and the code stays on this machine"
@@ -3149,6 +3150,9 @@ def _code_index_offer_text(offer: dict, service_url: str = "") -> str:
     count = offer.get("source_files")
     if count is None:
         files = "size unknown: git did not count its files in time"
+    elif isinstance(count, str):
+        # Counting stops past a limit; the offer says so as ">N".
+        files = f"more than {count.lstrip('>')} source files"
     else:
         files = "1 source file" if count == 1 else f"{count} source files"
     # The path is a value, not prose: quoted, so nothing in a directory name reads

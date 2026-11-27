@@ -25,7 +25,8 @@
 #                  --code resolves it from the checkout automatically).
 # --index-vectors: also embed the extracted code facts so semantic search can
 #                  see them (needs an embedding provider; default off — the
-#                  code graph pipeline makes no LLM/embedding calls).
+#                  code graph pipeline makes no LLM/embedding calls). Automatic
+#                  refreshes keep it, and embed only the facts that changed.
 # --server:        the Cognee server to index on, instead of the one the
 #                  environment names (COGNEE_BASE_URL, then
 #                  COGNEE_LOCAL_API_URL). The session-start question passes the

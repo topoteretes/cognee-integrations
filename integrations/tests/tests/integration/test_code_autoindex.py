@@ -27,15 +27,18 @@ Elsewhere (Codex, Cursor, Antigravity):
 
 On every host, an already-indexed repo is always refreshed regardless of the
 setting — its index was the consent, and a stale graph is the failure the
-freshness loop exists to prevent — and a directory that is not a git repo, holds
-no code, or is enormous is left alone.
+freshness loop exists to prevent — and a directory that is not a git repo or
+holds no code is left alone. Only where nobody is asked is an enormous repo
+left alone too; a yes, standing or not, indexes any size.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -276,6 +279,24 @@ def test_the_decline_command_submits_nothing(cg, mock_server, git_repo, asking, 
     mock_server.assert_not_called("POST", REMEMBER)
 
 
+@pytest.mark.parametrize("command", ["decline", "index"])
+def test_a_failure_on_this_machine_is_printed_not_read_as_unreachable(
+    cg, mock_server, git_repo, monkeypatch, asking, capsys, command
+):
+    """The wrapper reads an empty output as an unreachable server, so a
+    "never" or an index state that could not be saved must print its error:
+    otherwise the user is told the server is down, and that nothing was sent."""
+
+    def full_disk(*_args, **_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(cg, "record_declined", full_disk)
+    monkeypatch.setattr(cg, "save_repo_state", full_disk)
+    cg.main([mock_server.url, "", command, str(git_repo)])
+    result = json.loads(capsys.readouterr().out)
+    assert "No space left on device" in result["error"]
+
+
 # ── a remote server clones the repository (hosts that ask first) ───────────
 
 
@@ -397,6 +418,109 @@ def test_a_cloned_repo_follows_pushes_not_edits(cg, mock_server, pushed_repo, as
         str(pushed_repo), mock_server.url, "", is_local_server=False
     )
     assert (outcome["reason"], outcome["submitted"]) == ("refresh", True)
+    assert mock_server.assert_called("POST", REMEMBER)["form"]["raw_data"] == CLONE_URL
+
+
+@pytest.fixture
+def remote_added(git_repo):
+    """A checkout given its remote by hand (``git init``, ``git remote add``, a
+    push), so it has no ``origin/HEAD`` to name the remote's default branch."""
+    _git(git_repo, "remote", "add", "origin", "git@github.com:acme/proj.git")
+    return git_repo
+
+
+def _remote_branch(repo, name, target="HEAD"):
+    _git(repo, "update-ref", f"refs/remotes/origin/{name}", target)
+
+
+def _commit(repo, text):
+    (repo / "app.py").write_text(text, encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "edit")
+
+
+def test_without_origin_head_the_remotes_only_branch_is_followed(
+    cg, mock_server, remote_added, asking
+):
+    """A repository pushed with one branch, whatever its name, has that one as
+    its default: its graph follows pushes to it."""
+    _remote_branch(remote_added, "develop")
+    assert cg.default_branch_ref(str(remote_added)) == "refs/remotes/origin/develop"
+    assert "note" not in cg.index_repo(
+        mock_server.url, "", str(remote_added), is_local_server=False
+    )
+    mock_server.calls.clear()
+
+    _commit(remote_added, "x = 2\n")
+    _remote_branch(remote_added, "develop")  # pushed
+    outcome = cg.reingest_if_changed(str(remote_added), mock_server.url, "", is_local_server=False)
+    assert outcome["submitted"] is True
+
+
+def test_a_single_branch_clone_of_another_branch_cannot_tell(cg, mock_server, tmp_path, asking):
+    """`git clone --single-branch -b feature` (as `--depth 1 -b feature`)
+    writes no origin/HEAD and fetches only that branch, while a server clone
+    takes the default one. Its only branch is not the default branch."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(upstream, "init", "-q")
+    _git(upstream, "symbolic-ref", "HEAD", "refs/heads/trunk")
+    _git(upstream, "config", "user.email", "test@example.com")
+    _git(upstream, "config", "user.name", "Test")
+    _git(upstream, "config", "commit.gpgsign", "false")
+    (upstream / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(upstream, "add", ".")
+    _git(upstream, "commit", "-q", "-m", "init")
+    _git(upstream, "branch", "feature")
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--single-branch", "-b", "feature", str(upstream), str(clone)],
+        check=True,
+        capture_output=True,
+    )
+    _git(clone, "remote", "set-url", "origin", "git@github.com:acme/proj.git")
+
+    assert cg.default_branch_ref(str(clone)) == ""
+    result = cg.index_repo(mock_server.url, "", str(clone), is_local_server=False)
+    assert "`git remote set-head origin --auto`" in result["note"]
+
+
+def test_origin_head_wins_over_a_stale_main(cg, remote_added, asking):
+    _remote_branch(remote_added, "main")  # left behind by an old fetch
+    _commit(remote_added, "x = 2\n")
+    _remote_branch(remote_added, "develop")
+    _git(remote_added, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+    develop = subprocess.run(
+        ["git", "rev-parse", "refs/remotes/origin/develop"],
+        cwd=remote_added,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert cg.pushed_fingerprint(str(remote_added)) == develop
+
+
+def test_a_checkout_that_cannot_tell_its_default_branch_says_so(
+    cg, mock_server, remote_added, asking
+):
+    """Several branches, none of them main or master, and no origin/HEAD: the
+    default branch is not guessed. The index result says how to record it,
+    the refresh says why it did nothing, and recording it is enough."""
+    _remote_branch(remote_added, "develop")
+    _remote_branch(remote_added, "feature/x")
+    assert cg.default_branch_ref(str(remote_added)) == ""
+
+    result = cg.index_repo(mock_server.url, "", str(remote_added), is_local_server=False)
+    assert "`git remote set-head origin --auto`" in result["note"]
+    mock_server.calls.clear()
+
+    outcome = cg.reingest_if_changed(str(remote_added), mock_server.url, "", is_local_server=False)
+    assert outcome == {"skipped": "no_default_branch", "repo_root": str(remote_added.resolve())}
+    mock_server.assert_not_called("POST", REMEMBER)
+
+    # What `git remote set-head origin --auto` writes.
+    _git(remote_added, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+    outcome = cg.reingest_if_changed(str(remote_added), mock_server.url, "", is_local_server=False)
+    assert outcome["submitted"] is True
     assert mock_server.assert_called("POST", REMEMBER)["form"]["raw_data"] == CLONE_URL
 
 
@@ -653,13 +777,13 @@ def test_the_question_counts_tracked_files_without_walking_the_tree(
     """SessionStart waits for this count, so it comes from git's index. Only a
     checkout that tracks no code yet is listed with untracked files as well."""
     listings: list = []
-    real = cg._git_output_or_none
+    real = cg._count_listed_code_files
 
     def spy(args, cwd, timeout):
         listings.append(list(args))
         return real(args, cwd, timeout)
 
-    monkeypatch.setattr(cg, "_git_output_or_none", spy)
+    monkeypatch.setattr(cg, "_count_listed_code_files", spy)
     (git_repo / "scratch.py").write_text("x = 1\n", encoding="utf-8")  # untracked
     tracked = cg._git_code_file_count(str(git_repo), tracked_only=True)
     assert cg.index_offer(str(git_repo), service_url=LOCAL)["source_files"] == tracked == 1
@@ -689,13 +813,13 @@ def test_a_repository_that_tracks_no_code_is_not_walked(cg, tmp_path, monkeypatc
     (home / "untracked.py").write_text("x = 1\n", encoding="utf-8")
 
     listings: list = []
-    real = cg._git_output_or_none
+    real = cg._count_listed_code_files
 
     def spy(args, cwd, timeout):
         listings.append(list(args))
         return real(args, cwd, timeout)
 
-    monkeypatch.setattr(cg, "_git_output_or_none", spy)
+    monkeypatch.setattr(cg, "_count_listed_code_files", spy)
     assert cg.index_offer(str(home), service_url=LOCAL) == {}
     assert listings and all("--others" not in args for args in listings)
 
@@ -703,15 +827,57 @@ def test_a_repository_that_tracks_no_code_is_not_walked(cg, tmp_path, monkeypatc
 def test_a_repository_git_cannot_count_in_time_is_still_offered(cg, git_repo, monkeypatch, asking):
     """The biggest repositories are the ones whose index takes longest to list;
     an unknown size is no reason to keep the question from them."""
-    real = cg._git_output_or_none
-
-    def git(args, cwd, timeout):
-        return None if list(args[:1]) == ["ls-files"] else real(args, cwd, timeout)
-
-    monkeypatch.setattr(cg, "_git_output_or_none", git)
+    monkeypatch.setattr(cg, "_count_listed_code_files", lambda args, cwd, timeout: None)
     offer = cg.index_offer(str(git_repo), service_url=LOCAL)
     assert offer["repo_root"] == str(git_repo.resolve())
     assert offer["source_files"] is None
+
+
+def test_the_count_stops_past_its_limit(cg, git_repo, monkeypatch, asking):
+    """SessionStart holds the listing while it counts: past the limit the
+    question says "more than", and git is not read to the end."""
+    for i in range(5):
+        (git_repo / f"mod{i}.py").write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    monkeypatch.setattr(cg, "_SIZE_COUNT_CAP", 2)
+    assert cg.index_offer(str(git_repo), service_url=LOCAL)["source_files"] == ">2"
+    names, code = cg._count_listed_code_files(["ls-files", "-z"], str(git_repo), 10.0)
+    assert code == 3  # stopped at the first code file past the limit
+
+
+def test_a_listing_is_counted_across_reads(cg, git_repo, monkeypatch, asking):
+    """git's output arrives in blocks that split names anywhere."""
+    (git_repo / "lib.py").write_text("y = 2\n", encoding="utf-8")
+    (git_repo / "notes.md").write_text("# no code\n", encoding="utf-8")
+    (git_repo / "pkg").mkdir()
+    (git_repo / "pkg" / "mod.go").write_text("package pkg\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    monkeypatch.setattr(cg, "_LISTING_BLOCK_BYTES", 3)
+    assert cg._count_listed_code_files(["ls-files", "-z"], str(git_repo), 10.0) == (4, 3)
+
+
+def test_a_failing_git_lists_nothing(cg, tmp_path, asking):
+    assert cg._count_listed_code_files(["ls-files", "-z"], str(tmp_path), 10.0) == (0, 0)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a POSIX shell script stands in for git")
+def test_a_git_that_does_not_answer_is_stopped_in_time(cg, tmp_path, monkeypatch, asking):
+    """The budget holds even while git is silent, and git does not outlive it."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    marker = tmp_path / "pid"
+    script = fake / "git"
+    script.write_text(f'#!/bin/sh\necho $$ > "{marker}"\nexec sleep 30\n', encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    started = time.monotonic()
+    assert cg._count_listed_code_files(["ls-files", "-z"], str(tmp_path), 0.5) is None
+    assert time.monotonic() - started < 5
+    if marker.exists():  # the shell got that far before it was stopped
+        pid = int(marker.read_text(encoding="utf-8").strip())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 @pytest.mark.parametrize(
@@ -1058,9 +1224,10 @@ def test_repo_without_code_is_skipped(cg, mock_server, tmp_path, unasked):
     mock_server.assert_not_called("POST", REMEMBER)
 
 
-def test_huge_repo_is_skipped(cg, mock_server, git_repo, monkeypatch, unasked):
-    """The enola pass covers the whole tree; spending that on a monorepo
-    nobody asked about is worse than doing nothing. Explicit indexing has no cap."""
+def test_huge_repo_is_skipped(cg, mock_server, git_repo, monkeypatch, not_asking):
+    """Where a new repository is indexed without anyone asking, the enola pass
+    covers the whole tree; spending that on a monorepo nobody asked about is
+    worse than doing nothing. Explicit indexing has no cap."""
     monkeypatch.setattr(cg, "_AUTOINDEX_MAX_FILES", 2)
     for i in range(5):
         (git_repo / f"mod{i}.py").write_text("x = 1\n", encoding="utf-8")
@@ -1070,6 +1237,26 @@ def test_huge_repo_is_skipped(cg, mock_server, git_repo, monkeypatch, unasked):
     )
     assert outcome["skipped"] == "too_large"
     mock_server.assert_not_called("POST", REMEMBER)
+
+
+def test_the_standing_yes_indexes_a_repository_of_any_size(
+    cg, mock_server, git_repo, monkeypatch, asking
+):
+    """``always`` is a yes given in advance, and a yes has no size cap: a cap
+    would skip the biggest repositories without a word to anyone. The count
+    only describes the repository, and stops past its limit."""
+    monkeypatch.setenv("COGNEE_CODE_AUTOINDEX", "always")
+    monkeypatch.setattr(cg, "_SIZE_COUNT_CAP", 2)
+    for i in range(5):
+        (git_repo / f"mod{i}.py").write_text("x = 1\n", encoding="utf-8")
+
+    outcome = cg.autoindex_on_session_start(
+        str(git_repo), mock_server.url, "", is_local_server=True
+    )
+    assert (outcome["indexed"], outcome["source_files"]) == (True, ">2")
+    assert mock_server.assert_called("POST", REMEMBER)["form"]["raw_data"] == str(
+        git_repo.resolve()
+    )
 
 
 def test_vendored_directories_do_not_count_toward_the_cap(cg, git_repo):

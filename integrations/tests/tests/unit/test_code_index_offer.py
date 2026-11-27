@@ -95,6 +95,9 @@ def test_a_cloud_session_says_what_leaves_the_machine(start, repo, monkeypatch):
     assert "only commits pushed to the default branch are indexed" in text
     assert "no local file is uploaded" in text
     assert "a private repository fails" in text
+    # A checkout that cannot tell its remote's default branch is indexed with a
+    # note saying the graph will not follow pushes; the user hears it.
+    assert "if the result has a `note`, tell the user what it says" in text
     assert "the code stays on this machine" not in text
     # A yes covers this tenant only: the command is told which one.
     assert f"--server {CLOUD} --expect-server remote --wait 60`" in text
@@ -123,6 +126,14 @@ def test_the_question_is_about_the_server_recall_uses(
     local = asked_about == LOCAL
     assert ("the code stays on this machine" in text) is local
     assert ("(tenant.cognee.example) cannot read this folder" in text) is not local
+
+
+def test_a_size_past_the_count_limit_is_more_than_it(start, repo):
+    """The count stops at a limit; the question still says how big it is."""
+    offer = {"repo_root": str(repo), "server": "local", "source_files": ">10000"}
+    text = start._code_index_offer_text(offer, LOCAL)
+    shown = json.dumps(str(repo), ensure_ascii=False)
+    assert f"{shown} (more than 10000 source files)" in text
 
 
 def test_a_server_that_shares_the_filesystem_is_described_as_such(start, repo, monkeypatch):
@@ -245,12 +256,7 @@ def test_a_session_that_shares_files_is_read_in_place_by_the_worker(
 def test_a_size_git_could_not_count_is_said_to_be_unknown(start, repo, monkeypatch):
     import _code_graph
 
-    real = _code_graph._git_output_or_none
-
-    def git(args, cwd, timeout):
-        return None if list(args[:1]) == ["ls-files"] else real(args, cwd, timeout)
-
-    monkeypatch.setattr(_code_graph, "_git_output_or_none", git)
+    monkeypatch.setattr(_code_graph, "_count_listed_code_files", lambda args, cwd, timeout: None)
     text = _context(start._apply_code_index_offer({}, {**STARTUP, "cwd": str(repo)}))
     assert "(size unknown: git did not count its files in time)" in text
 

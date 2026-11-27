@@ -93,9 +93,9 @@ again. What the yes means depends on the server, and the question says so:
 | Already-indexed repo | Refreshed without asking — after a turn that changed the tree (local), or at the session start after a push (cloud) |
 | Not a git repo / no code files | Not offered |
 
-`COGNEE_CODE_AUTOINDEX=always` indexes new repos without asking (repos of
-more than 3000 source files are then skipped); `off` never asks and never
-indexes. Indexed repos keep refreshing either way.
+`COGNEE_CODE_AUTOINDEX=always` indexes new repos without asking, whatever
+their size; `off` never asks and never indexes. Indexed repos keep refreshing
+either way.
 
 ## What the graph reflects (freshness)
 

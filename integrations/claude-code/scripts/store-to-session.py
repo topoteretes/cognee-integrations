@@ -575,6 +575,13 @@ def _maybe_reingest_code_repo(payload: dict) -> None:
             notify(f"code graph re-index submitted ({outcome.get('dataset', '')})")
         elif outcome.get("changed"):
             hook_log("code_reingest_failed", outcome)
+        elif outcome.get("error"):
+            # reingest_if_changed never raises; it returns what went wrong.
+            hook_log("code_reingest_error", outcome)
+        elif outcome.get("skipped"):
+            # Nothing could be compared: a cloned graph whose remote's default
+            # branch this checkout does not know (no_default_branch).
+            hook_log("code_reingest_skipped", outcome)
         else:
             hook_log("code_reingest_unchanged", {"repo_root": outcome.get("repo_root", "")})
     except Exception as exc:

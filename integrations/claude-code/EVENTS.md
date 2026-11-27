@@ -85,6 +85,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:code_lane_gate_error` | `code.lane_gate_error` |
 | `hook:code_reingest_error` | `code.reingest_error` |
 | `hook:code_reingest_failed` | `code.reingest_failed` |
+| `hook:code_reingest_skipped` | `code.reingest_skipped` |
 | `hook:code_reingest_skipped_server` | `code.reingest_skipped_server` |
 | `hook:code_reingest_submitted` | `code.reingest_submitted` |
 | `hook:code_reingest_unchanged` | `code.reingest_unchanged` |

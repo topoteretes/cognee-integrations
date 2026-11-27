@@ -839,6 +839,12 @@ the question says what each one does with the code:
   server must be able to clone that URL without credentials, so a private repository
   fails, and a checkout with no remote is not offered. The graph is the default
   branch as last pushed, and it is re-indexed at the first session start after a push.
+  Which branch that is comes from the checkout: `origin/HEAD`, which a full `git clone`
+  writes; without it, the remote's only branch (in a checkout that fetches all of them),
+  `main` or `master`. A checkout that cannot tell, such as a single-branch clone of
+  another branch, is not re-indexed, and says so in the index result and the log
+  (`code.reingest_skipped`, `no_default_branch`) until the default branch is fetched
+  and `git remote set-head origin --auto` is run in it.
 
 Index one yourself — this repository, a different one, a git URL, or one you answered
 "never" for — with:
@@ -910,8 +916,9 @@ knows.
 | `COGNEE_CODE_SERVER_SHARES_FILES` | unset | `true`: the Cognee server is not on `localhost` but mounts this machine's files at the same paths (a container, a LAN host), so a repository is indexed by its path, as on a local server, instead of being cloned from its git remote. Without it, any server that is not on `localhost` is treated as unable to read this disk |
 
 No question is asked for a directory that is not a git repository or holds no source
-files. With `always`, a repository of more than 3000 source files is skipped; one you
-said yes to, or index yourself, has no size cap (the question states the file count).
+files. There is no size cap: a repository you said yes to, one `always` indexes, and
+one you index yourself are indexed whatever their size (the question states the file
+count, or "more than 10000").
 
 ### File context on Read
 
