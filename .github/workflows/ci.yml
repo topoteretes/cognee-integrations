@@ -174,11 +174,21 @@ jobs:
       # n8n's dev toolchain (@n8n/node-cli -> n8n-workflow 2.x -> @n8n/expression-runtime)
       # pulls in isolated-vm 7, a native module that requires Node >= 24 and compiles
       # from source at install time. Node 20 fails that compile, so n8n gets Node 24
-      # (the version n8n 2.x itself requires); the other integrations stay on 20.
+      # (the version n8n 2.x itself requires).
+      #
+      # vscode gets Node 22: its packaging tool @vscode/vsce 4.x and its dependency
+      # @azure/identity 4.14+ both declare Node >= 22. npm only warns about that on
+      # Node 20, so the job would stay green while running outside what they support.
+      #
+      # openclaw-skills gets Node 24: its dev dependency openclaw 2026.11+ has an install
+      # script that exits with an error on Node older than 24.16, so `npm install` fails
+      # on Node 20 and 22.
+      #
+      # The other integrations stay on 20.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.integration == 'n8n' && '24' || '20' }}
+          node-version: ${{ (matrix.integration == 'n8n' || matrix.integration == 'openclaw-skills') && '24' || matrix.integration == 'vscode' && '22' || '20' }}
 
       - name: Build local dependencies
         if: matrix.integration == 'openclaw-skills'
