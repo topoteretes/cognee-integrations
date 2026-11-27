@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 
 _CONTEXT_TAG = re.compile(
-    r"\A\s*<(system-reminder|task-notification|local-command-caveat|"
-    r"local-command-stdout|command-name|command-message|command-args)\b[^>]*>"
+    r"\A\s*<(system-reminder|task-notification|scheduled-task|cross-session-message|"
+    r"local-command-caveat|local-command-stdout|command-name|command-message|command-args)\b[^>]*>"
 )
 _CONTEXT_PREFIXES = (
     "[Request interrupted by user",

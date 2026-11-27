@@ -69,6 +69,8 @@ def test_unset_floor_keeps_the_stock_gate_exactly(suite, hook_module, monkeypatc
     [
         "<task-notification><summary>Tests finished</summary></task-notification>",
         "<system-reminder>Use the task tool</system-reminder>",
+        "<scheduled-task>Run the hourly summary</scheduled-task>",
+        "<cross-session-message>Another agent finished</cross-session-message>",
         "<system-reminder>Incomplete notification",
         "[SUGGESTION MODE: Suggest the user's next message]",
         "[Request interrupted by user for tool use]",
