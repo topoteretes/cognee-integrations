@@ -165,12 +165,12 @@
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^22.20.7",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^4.1.1",
-    "esbuild": "^0.21.5",
+    "esbuild": "^0.28.2",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
+    "vitest": "^5.1.2"
   },
   "dependencies": {
     "ignore": "^5.3.2"
