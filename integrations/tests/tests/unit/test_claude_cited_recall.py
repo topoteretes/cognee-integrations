@@ -434,3 +434,90 @@ def test_session_start_records_a_server_that_is_already_up(
         asyncio.run(module._start(payloads.session_start()))
         assert len(recorded) == expected, verdict
     assert recorded == [module._health_url(closed_port_url)]
+
+
+# -- tags without a dataset (a server with access control off) -----------------
+
+
+def shared(value):
+    """``value`` as a server with access control off writes it: one shared store,
+    so every tag leaves the dataset out, ``[mem:<kind>/<record_id>@<version>]``."""
+    if isinstance(value, str):
+        return value.replace(f"/{DS}/", "/")
+    if isinstance(value, list):
+        return [shared(v) for v in value]
+    if isinstance(value, dict):
+        return {k: shared(v) for k, v in value.items()}
+    return value
+
+
+def test_tags_without_a_dataset_stay_with_their_records(lookup, modules, monkeypatch):
+    run = cited(lookup, monkeypatch, {"graph": [shared(item(True))]})
+    text = injected(run)
+    assert DS not in text
+    for tag_, body in PASSAGES + ENTITIES[:1] + FACTS:
+        assert f"{shared(tag_)}\n{body.splitlines()[0]}" in text, tag_
+    # The entity pruned to nothing takes its tag with it.
+    assert shared(EMPTY) not in text
+    heading = text.index("## Passages from other sessions")
+    assert text.index(shared(TRANSCRIPT)) > heading > text.index(shared(LEARNING))
+
+    items = modules("_evidence").last_receipt(KEY)["items"]
+    references = [i["reference"] for i in items if i["addressable"]]
+    assert {r["tag"] for r in references} == set(shared(RECORDS)) - {shared(EMPTY)}
+    assert {r["dataset_id"] for r in references} == {None}
+    assert all(r["record_id"] and r["version"] for r in references)
+
+
+def test_long_sections_of_tags_without_a_dataset_drop_tag_and_record_together(lookup, monkeypatch):
+    monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "2500")
+    entities = [
+        (tag("entity", 20 + i), f"### entity {i} (thing)\n- entity {i} relates to " + "x" * 150)
+        for i in range(8)
+    ]
+    facts = [(tag("fact", 40 + i), f"- fact {i} says " + "y" * 150) for i in range(8)]
+    value = item(True)
+    start = value["text"].index("## Relevant entities")
+    end = value["text"].index("\n\n" + CONFLICTS)
+    value["text"] = (
+        value["text"][:start]
+        + "## Relevant entities\n"
+        + "\n\n".join(f"{t}\n{e}" for t, e in entities)
+        + "\n\n## Related facts\n"
+        + "\n".join(f"{t}\n{f}" for t, f in facts)
+        + value["text"][end:]
+    )
+    value["metadata"]["records"] += [{"tag": t} for t, _ in entities + facts]
+    text = injected(cited(lookup, monkeypatch, {"graph": [shared(value)]}))
+    records = entities + facts
+    kept = [t for t, _ in records if shared(t) in text]
+    assert 0 < len(kept) < len(records)
+    for t, body in records:
+        first = body.splitlines()[0]
+        # A tag is shown exactly when its record is, directly above it.
+        assert (shared(t) in text) == (first in text), t
+        if first in text:
+            assert f"{shared(t)}\n{first}" in text, t
+
+
+def test_expand_reads_tags_without_a_dataset(search, monkeypatch, capsys):
+    passage, entity = shared(LEARNING), shared(TENANT)
+    changed = shared(tag("passage", 1, "c"))
+    server = _Server(
+        ["recall_cited_v1"],
+        [
+            {"text": "Pinning.", "metadata": {"status": "available", "tag": changed}},
+            {"text": "", "metadata": {"status": "missing"}},
+        ],
+    )
+    monkeypatch.setattr(search, "_http_json", server)
+    # The same record under two versions is sent once; a tag with a dataset is
+    # another record than the same id without one.
+    code = search.main(["--expand", f"{passage},{entity},{changed}"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert server.posts[0]["expand_items"] == [passage, entity]
+    assert [r["tag"] for r in out["records"]] == [passage, changed]
+    assert [r["changed"] for r in out["records"]] == [True, False]
+    assert out["missing"] == [entity]
+    assert search._record_of(passage) != search._record_of(LEARNING)

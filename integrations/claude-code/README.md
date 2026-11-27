@@ -508,7 +508,9 @@ cited recall, and every passage, entity and fact it injects is preceded by a tag
 Pinning keeps recall on one dataset.
 ```
 
-The tag names that one memory, and `version` is a hash of its full text. A memory cut to fit
+The tag names that one memory, and `version` is a hash of its full text. A server with
+access control off searches one shared store, so its tags leave the dataset out:
+`[mem:<kind>/<record_id>@<version>]`; they are handled the same way. A memory cut to fit
 the budget keeps its tag, and the budget never keeps a tag without its memory or the other way
 round. Each injected tag is recorded in that prompt's [recall receipt](#memory-value). Read
 memories back by their tags, up to 20 per call:

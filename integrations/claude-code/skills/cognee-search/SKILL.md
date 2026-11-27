@@ -219,7 +219,8 @@ The session cache is never a search source; it reaches the graph through the syn
 
 On a server that lists `recall_cited_v1`, automatic recall shows a tag line before
 every passage, entity and fact it injects:
-`[mem:<kind>/<dataset_id>/<record_id>@<version>]`. The tag names that one memory;
+`[mem:<kind>/<dataset_id>/<record_id>@<version>]` (a server with access control off
+leaves the dataset out: `[mem:<kind>/<record_id>@<version>]`). The tag names that one memory;
 `version` is a hash of its full text, so it changes when the memory changes. A
 passage cut to fit (`…[+N chars]`) keeps its tag, which still names the full text.
 

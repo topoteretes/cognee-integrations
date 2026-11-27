@@ -17,7 +17,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Cited memory** (SDK-1099). On a Cognee server that lists `recall_cited_v1` on
   `/health`, the per-prompt recall asks for `result_mode="cited"`: every injected
   passage, entity and fact is preceded by its tag,
-  `[mem:<kind>/<dataset_id>/<record_id>@<version>]`. A tag stays with its memory
+  `[mem:<kind>/<dataset_id>/<record_id>@<version>]`, or
+  `[mem:<kind>/<record_id>@<version>]` from a server with access control off. A tag
+  stays with its memory
   through trimming and the budget, an entity pruned to nothing takes its tag with
   it, and a tag quoted inside a captured answer never splits a passage. Recall
   receipts name each injected memory by its tag, and `cognee-evidence.py explain`

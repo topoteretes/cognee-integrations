@@ -29,7 +29,8 @@ Usage:
 --expand:  cognee_search.py [<query>] --expand <tag>[,<tag>...]
            read cited memories back by their tags (SDK-1099), 1 to 20 per
            call, each exactly as recall showed it:
-           [mem:<kind>/<dataset_id>/<record_id>@<version>]. Prints each body
+           [mem:<kind>/<dataset_id>/<record_id>@<version>] (without the
+           dataset id on a server with access control off). Prints each body
            with its current version (a different version means the memory
            changed since it was cited) and lists missing and forbidden tags.
            The query, when given, ranks an entity's bullets as the original
@@ -242,11 +243,13 @@ def _http_json(rt: dict, path: str, payload: dict | None = None):
 
 
 def _record_of(tag: str) -> tuple:
-    """The record a tag names, whatever its version: (kind, dataset id, record id)."""
+    """The record a tag names, whatever its version: (kind, dataset id, record id).
+    The dataset id is None for a tag without one (a server with access control off)."""
     from _recall_text import MEMORY_TAG_RE
 
     match = MEMORY_TAG_RE.fullmatch(tag)
-    return (match["kind"], match["dataset_id"].lower(), match["record_id"].lower())
+    dataset_id = match["dataset_id"]
+    return (match["kind"], dataset_id.lower() if dataset_id else None, match["record_id"].lower())
 
 
 def _expand(rt: dict, argv: list[str]) -> int:
@@ -265,7 +268,8 @@ def _expand(rt: dict, argv: list[str]) -> int:
                 {
                     "error": f"--expand takes 1 to {MAX_EXPAND_TAGS} tags, comma-separated, "
                     "each exactly as recall showed it: "
-                    "[mem:<kind>/<dataset_id>/<record_id>@<version>]",
+                    "[mem:<kind>/<dataset_id>/<record_id>@<version>] "
+                    "(or [mem:<kind>/<record_id>@<version>])",
                     "not_tags": bad,
                 }
             )

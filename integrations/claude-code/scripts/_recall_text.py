@@ -51,9 +51,12 @@ PASSAGE_SEPARATOR = "\n---\n"
 #: item lists in ``metadata["records"]`` are record boundaries: a captured answer
 #: that cited a memory carries tag-shaped lines in its own text. Functions below
 #: take that set as ``tags``; an empty set leaves them exactly as they were.
+#: A server with access control off searches one shared store, whose records
+#: belong to no dataset: their tags leave it out,
+#: ``[mem:<kind>/<record_id>@<version>]``, and ``dataset_id`` is None.
 MEMORY_TAG_RE = re.compile(
-    r"\[mem:(?P<kind>passage|entity|fact)/(?P<dataset_id>[0-9a-fA-F-]{36})"
-    r"/(?P<record_id>[0-9a-fA-F-]{36})@(?P<version>[0-9a-f]{32})\]"
+    r"\[mem:(?P<kind>passage|entity|fact)/(?:(?P<dataset_id>[0-9a-fA-F-]{36})/)?"
+    r"(?P<record_id>[0-9a-fA-F-]{36})@(?P<version>[0-9a-f]{32})\]"
 )
 
 ENV_PASSAGE_CHARS = "COGNEE_RECALL_PASSAGE_CHARS"

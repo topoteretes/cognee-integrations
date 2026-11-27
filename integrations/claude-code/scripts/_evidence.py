@@ -3,7 +3,8 @@
 One receipt per prompt records which recalled entries were injected, already in
 context or over budget (SDK-1098). An entry from a cited recall (SDK-1099) opens
 with its record's tag, ``[mem:<kind>/<dataset_id>/<record_id>@<version>]``, so
-its receipt item names that record, keyed ``record_id@version``.
+its receipt item names that record, keyed ``record_id@version``. A tag without a
+dataset (a server with access control off) gives ``dataset_id`` None.
 """
 
 from __future__ import annotations
