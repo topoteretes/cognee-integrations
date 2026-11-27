@@ -91,6 +91,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
   built from a path is no longer used or refreshed. Set
   `COGNEE_CODE_SERVER_SHARES_FILES=true` to keep indexing by path there.
 
+## [1.8.12]
+
+### Added
+
+- **`COGNEE_RECALL_ANSWER` — recall the server's answer instead of the retrieved
+  context.** The per-prompt graph recall is an `only_context` request: the server
+  returns what it retrieved and the agent writes the answer. When a deployment's
+  retrieved context is far larger than the 9,000-character injection limit, most of it
+  is dropped to fit and the agent answers from a fragment. With
+  `COGNEE_RECALL_ANSWER=true` the request asks for the server's completion with its
+  sources (`only_context=false`, `include_references=true`) and the answer is injected
+  without the context trimming. It is injected as one text: it keeps its line breaks,
+  so a table or a source list arrives as the server wrote it, and it is not
+  deduplicated against what earlier prompts of the session injected. Off by default; with the variable unset every request
+  is unchanged. Each prompt that reaches recall then costs one server-side completion
+  and waits for it, so set `COGNEE_RECALL_BUDGET` to cover the answer time and
+  `COGNEE_RECALL_MIN_PROMPT_CHARS` to skip short prompts. The guidance request,
+  `cognee-search`, pre-compact and the recap skills keep asking for context.
+
 ## [1.8.11]
 
 **This release takes back versions 1.8.2 to 1.8.10.** The plugin is the code on `dev`

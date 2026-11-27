@@ -1689,6 +1689,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST |
 | recall minimum prompt length | `COGNEE_RECALL_MIN_PROMPT_CHARS` | `5` | Prompts shorter than this (surrounding whitespace not counted) skip the per-prompt recall. Values below `5` or non-numeric fall back to `5`. Capture is unaffected. |
+| recall answer | `COGNEE_RECALL_ANSWER` | `false` | `true` makes the per-prompt graph recall ask the server for its answer with sources (`only_context=false`, `include_references=true`) instead of the retrieved context. For a server whose retrieved context is far larger than the injection limit, so the agent would otherwise see a fragment of it. Every prompt that reaches recall then costs one server-side completion and waits for it: raise `COGNEE_RECALL_BUDGET` to cover the answer time and `COGNEE_RECALL_MIN_PROMPT_CHARS` to skip short prompts. An answer over the injection limit loses its last lines first. The guidance request, `cognee-search` and the other recalls are unchanged. |
 
 ### Per-operation timeouts
 
