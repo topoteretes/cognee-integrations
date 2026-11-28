@@ -61,6 +61,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A server that lists `coding_distillation_v1` in its `/health` capabilities is known to run
+  coding distillation, so a coding session joining a server it did not start is no longer
+  told to shut it down.
+
 - **Coding memory is on by default.** `COGNEE_CODING_MEMORY` unset now means on; set it to
   `false` to keep per-call capture. A server the plugin did not start
   must run with `DISTILLATION_MODE=coding`, and session start says so when it cannot tell.

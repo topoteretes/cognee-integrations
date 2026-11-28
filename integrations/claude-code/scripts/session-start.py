@@ -2948,9 +2948,14 @@ def _coding_server_note(
             coding_server_note,
             coding_unowned_server_note,
             is_cognee_cloud_url,
+            server_advertises_coding,
         )
 
         coding = coding_memory_enabled()
+        if coding and server_live and server_advertises_coding(target_url):
+            # The server says it runs coding distillation: nothing to warn about,
+            # whoever started it.
+            return ""
         if local and not managed:
             if not server_live:
                 return ""

@@ -101,6 +101,12 @@ def test_spawn_records_the_distillation_mode(
 # --- the note when a session joins a running server ---------------------------------------
 
 
+def require_coding_capability(pc) -> None:
+    """The capability check ships with Claude Code's plugin only."""
+    if not hasattr(pc, "server_advertises_coding"):
+        pytest.skip("this host does not read the server's coding mode from /health")
+
+
 def _join(session_start, closed_port_url, monkeypatch, *, coding: bool) -> dict:
     """Run ``_start`` against an already-running local server (heavy path faked)."""
     if coding:
@@ -173,6 +179,51 @@ def test_no_pidfile_says_shut_down_and_restart(session_start, pc, closed_port_ur
     assert "stops on its own" not in note
     assert "COGNEE_BASE_URL" not in note
     assert "unknown whether it runs coding mode" in note
+
+
+def test_a_server_that_says_it_runs_coding_mode_gets_no_note(
+    session_start, pc, closed_port_url, monkeypatch
+):
+    """A server the plugin did not start reports its mode on /health: with the coding
+    capability there, a coding session is not told to shut it down."""
+    require_coding_capability(pc)
+    monkeypatch.setattr(pc, "server_advertises_coding", lambda *a, **k: True)
+    result = _join(session_start, closed_port_url, monkeypatch, coding=True)
+    assert "coding mode" not in _messages(result)
+    assert "Shut it down" not in _messages(result)
+
+
+def test_the_coding_capability_is_read_from_health(pc, monkeypatch):
+    require_coding_capability(pc)
+    seen = []
+
+    class Reply(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(url, timeout=None, context=None):
+        seen.append(url)
+        return Reply(json.dumps(replies.pop(0)).encode())
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", fake_urlopen)
+    replies = [
+        {"status": "ready", "capabilities": ["session_summary_v1", "coding_distillation_v1"]},
+        {"status": "ready", "capabilities": ["session_summary_v1"]},
+        {"status": "ready"},
+    ]
+    assert pc.server_advertises_coding("http://127.0.0.1:8011") is True
+    assert pc.server_advertises_coding("http://127.0.0.1:8011") is False
+    assert pc.server_advertises_coding("http://127.0.0.1:8011") is False
+    assert seen[0] == "http://127.0.0.1:8011/health"
+
+    def refused(url, timeout=None, context=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", refused)
+    assert pc.server_advertises_coding("http://127.0.0.1:8011") is False
 
 
 def test_older_pidfile_keeps_the_close_sessions_advice(
