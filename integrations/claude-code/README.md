@@ -567,7 +567,11 @@ one request (a background task finished, a stop hook made it continue) the secon
 only the new calls, with a QA entry marked as a continuation. Entries go through the existing
 queue (the cloud spool in cloud mode, the replay buffer otherwise), so nothing is lost while the server is
 down. `improve` runs at session end (after the queue is drained) and once a day in long sessions
-(`COGNEE_IMPROVE_COOLDOWN`).
+(`COGNEE_IMPROVE_COOLDOWN`). A slow server is waited out after the session ends: the detached
+final sync goes on draining for as long as each pass delivers something. A queue it still had
+to leave (the server was unreachable, or refused the writes) is logged as `delivery_gave_up`,
+stays counted as "awaiting replay" in the prompt header, and is delivered and improved by a
+background worker at the next session start on the same server.
 
 **One memory block per session.** The first prompt of a session that got no list at session
 start, and the first one after a compaction, gets a block of about 2,000 characters instead

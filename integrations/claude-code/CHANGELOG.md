@@ -85,6 +85,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (cognee 1.6.11 or later) and a repository indexed by path. An older server, Cognee
   Cloud and a repository indexed from a git URL get one line saying so.
 
+### Fixed
+
+- **A session's queued entries are delivered after it ends, and its improve follows
+  them.** While the server was slow, a session's end made two drain passes, each
+  stopping at the first write that timed out, submitted the improve with entries still
+  queued, and after three such attempts left the queue where it was, with no line saying
+  so; only the same session, resumed, ever drained it. Now a pass that delivered
+  something is followed by the next one, so a slow server is waited out in the detached
+  final sync and the improve is submitted after the last queued entry. A wait for another
+  session's drain is no longer counted as a failed pass, and a long drain keeps its lock.
+  SessionStart starts one background worker that delivers the queues of ended sessions
+  of the same server, oldest first and one session at a time, and then submits the
+  improve each is owed (none for a queue it could not move). A worker that gives up logs
+  `delivery_gave_up` with the session, the count left and the reason. A healthy server
+  sees the same requests as before.
+
 ## [1.8.11]
 
 **This release takes back versions 1.8.2 to 1.8.10.** The plugin is the code on `dev`

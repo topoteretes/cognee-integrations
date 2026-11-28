@@ -24,6 +24,7 @@ from pathlib import Path
 # Add scripts dir to path for config/_plugin_common imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _plugin_common import (
+    drain_stop_reason,
     get_session_key,
     hook_log,
     http_api_ready,
@@ -44,6 +45,11 @@ _WATCHER_PID = _STATE_DIR / "watcher.pid"
 _WATCHER_STOP = _STATE_DIR / "watcher.stop"
 _DETACHED_ARG = "--detached-final"
 _SESSION_END_ARG = "--session-end"
+#: SessionStart's background worker: deliver the queues ended sessions left.
+_STRANDED_ARG = "--deliver-stranded"
+#: Set on the final sync that worker runs for one ended session.
+_STRANDED_ENV = "COGNEE_SYNC_STRANDED"
+_STRANDED_PIDFILE = _STATE_DIR / "stranded-delivery.pid"
 _FINAL_SYNC_ONCE_DIR = _STATE_DIR / "final-sync-once"
 _FINAL_SYNC_ONCE_TTL_SECONDS = 3600
 _DETACHED_RETRIES_DEFAULT = 3
@@ -118,6 +124,138 @@ def _final_sync_identity() -> tuple[str, str]:
 
 #: The marker this worker claimed, released again if every attempt fails.
 _CLAIMED_MARKER: Path | None = None
+#: Why the last attempt left entries queued (logged once, when the worker gives up).
+_LEFT_REASON = ""
+
+
+def _queued(path: Path) -> tuple[int, float]:
+    """Entries queued in one session's replay buffer and when the oldest was queued."""
+    from _plugin_common import _BUFFERED_AT_KEY, _load_json_file
+
+    count, oldest = 0, time.time()
+    for state in _load_json_file(path).values():
+        for entry in (state.get("pending_entries") or []) if isinstance(state, dict) else []:
+            count += 1
+            try:
+                oldest = min(oldest, float(entry[_BUFFERED_AT_KEY]))
+            except (KeyError, TypeError, ValueError):
+                oldest = min(oldest, path.stat().st_mtime)
+    return count, oldest
+
+
+def _stranded_queues() -> tuple[list[tuple[float, str, int]], dict]:
+    """Replay buffers of ended sessions of this server, oldest first, and the rest by reason.
+
+    A session is ended when its launch record's host process is gone. The
+    record also names the server the session wrote to: a queue is only ever
+    delivered there, so one without a record, or recorded for another server,
+    stays queued (and counted in the prompt header's "awaiting replay").
+    """
+    from _plugin_common import (
+        _BRIDGE_DIR,
+        _live_launch_records,
+        _local_api_url,
+        _read_map_record,
+        _url_identity,
+    )
+
+    live = {str(rec.get("host_key") or "") for rec in _live_launch_records()}
+    live.add(get_session_key())
+    server = _url_identity(_local_api_url())
+    queues: list[tuple[float, str, int]] = []
+    skipped: dict = {}
+    for path in _BRIDGE_DIR.glob("*.json"):
+        count, oldest = _queued(path)
+        if not count:
+            continue
+        key = path.stem
+        if key in live:
+            why = "session_live"
+        elif not (rec := _read_map_record(key)):
+            why = "no_launch_record"
+        elif not rec.get("base_url") or _url_identity(str(rec["base_url"])) != server:
+            why = "other_server"
+        else:
+            queues.append((oldest, key, count))
+            continue
+        skipped[why] = skipped.get(why, 0) + count
+    return sorted(queues), skipped
+
+
+def _claim_stranded_delivery() -> bool:
+    """One stranded-delivery worker per machine: two would write side by side."""
+    from _proc import pid_alive
+
+    try:
+        if pid_alive(int(_STRANDED_PIDFILE.read_text(encoding="utf-8").strip())):
+            return False
+    except (OSError, ValueError):
+        pass
+    _STRANDED_PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+    _STRANDED_PIDFILE.write_text(str(os.getpid()), encoding="utf-8")
+    return True
+
+
+def _deliver_stranded() -> None:
+    """Deliver the queues ended sessions left behind, then the improve each is owed.
+
+    One session at a time, oldest first: each runs the same final sync its own
+    exit ran (drain, then one improve), as a child that is waited for, so there
+    is never more than one writer. The session's once-marker makes a session
+    whose own final sync is still running a skip, not a second worker.
+    """
+    from _capture_policy import capture_enabled
+    from _cloud_worker import enabled as cloud_enabled
+    from _plugin_common import _backend_reachable, _local_api_url
+
+    if cloud_enabled() or not capture_enabled() or not _claim_stranded_delivery():
+        return
+    try:
+        queues, skipped = _stranded_queues()
+        if not queues and not skipped:
+            return
+        hook_log(
+            "stranded_queues",
+            {
+                "sessions": len(queues),
+                "entries": sum(count for _, _, count in queues),
+                "skipped": skipped,
+            },
+        )
+        for index, (_, key, _count) in enumerate(queues):
+            if not _backend_reachable(_local_api_url()):
+                hook_log(
+                    "stranded_delivery_stopped",
+                    {
+                        "sessions": len(queues) - index,
+                        "left": sum(count for _, _, count in queues[index:]),
+                        "reason": "unreachable",
+                    },
+                )
+                return
+            env = os.environ.copy()
+            for name in (
+                "COGNEE_SYNC_SESSION_ID",
+                "COGNEE_SYNC_DATASET",
+                "COGNEE_AGENT_SESSION_NAME",
+                "COGNEE_UNREGISTER_ON_FINISH",
+            ):
+                env.pop(name, None)
+            env.update({"COGNEE_SESSION_KEY": key, "COGNEE_SYNC_START_DELAY": "0"})
+            env[_STRANDED_ENV] = "1"
+            subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), _DETACHED_ARG],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+    finally:
+        try:
+            _STRANDED_PIDFILE.unlink()
+        except OSError:
+            pass
 
 
 def _claim_final_sync_once() -> bool:
@@ -309,7 +447,9 @@ async def _sync(
     unregister_on_finish: bool = False,
     strict: bool = False,
     include_touched: bool = False,
+    trigger: str = "",
 ):
+    global _LEFT_REASON
     session_id, dataset, user_id, agent_session_name, was_registered, has_api_key, session_key = (
         _load_resolved()
     )
@@ -350,11 +490,13 @@ async def _sync(
         incomplete: list[str] = []
         # The final (strict) sync must always run; a manual /cognee-sync too.
         # Only the auto trigger honours the improve cooldown/backoff.
-        trigger = "final" if strict else "manual"
+        trigger = trigger or ("final" if strict else "manual")
         for sid, ds in targets:
             outcome = run_session_improve_detailed(ds, sid, trigger=trigger)
             wrote = bool(outcome.get("ok"))
             why = str(outcome.get("reason") or "")
+            if not wrote:
+                _LEFT_REASON = drain_stop_reason() or why
             if why == "busy":
                 # Another improve of this session is in flight server-side (an
                 # auto improve, or a second final worker). It persists
@@ -450,6 +592,9 @@ def _coding_flush(payload_raw: str) -> None:
 
 def main():
     if is_observer_child():
+        return
+    if _STRANDED_ARG in sys.argv:
+        _deliver_stranded()
         return
     detached_final = _DETACHED_ARG in sys.argv
     forced_session_end = _SESSION_END_ARG in sys.argv
@@ -558,6 +703,7 @@ def main():
                     # ...and it covers every session this launch touched (a
                     # dataset switch retires sessions mid-launch).
                     include_touched=detached_final,
+                    trigger="replay" if os.environ.get(_STRANDED_ENV) else "",
                 )
             )
             return
@@ -572,6 +718,21 @@ def main():
             if attempt < attempts:
                 hook_log("sync_retry_scheduled", {"attempt": attempt + 1, "delay": retry_delay})
                 time.sleep(retry_delay)
+    if detached_final and last_error is not None:
+        from _plugin_common import _bridge_file, get_session_key
+
+        left, _ = _queued(_bridge_file())
+        if left:
+            # The one line that says a session's entries are still queued and
+            # why; the next session start picks the queue up again.
+            hook_log(
+                "delivery_gave_up",
+                {
+                    "session": get_session_key(),
+                    "left": left,
+                    "reason": _LEFT_REASON or str(last_error)[:120],
+                },
+            )
     if detached_final and last_error is not None and _CLAIMED_MARKER is not None:
         # Every attempt failed: drop the claim so the next exit of this session
         # tries again instead of being skipped as already synced.

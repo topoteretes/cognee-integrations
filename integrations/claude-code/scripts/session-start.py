@@ -1642,6 +1642,40 @@ def _spawn_exit_watcher(
         hook_log("exit_watcher_launch_failed", {"error": str(e)[:300]})
 
 
+def _spawn_stranded_delivery(*, session_key: str, api_key: str, service_url: str) -> None:
+    """Deliver, in the background, the queues ended sessions left behind.
+
+    A session whose final sync gave up (the server was down or too slow) keeps
+    its captured entries in its replay buffer, and nothing else runs for a
+    session that is over. The worker delivers them and fires the improve they
+    are owed; with no such queue it reads a few files and exits.
+    """
+    try:
+        env = os.environ.copy()
+        # Credentials must not be serialized into process arguments.
+        if api_key:
+            env["COGNEE_API_KEY"] = api_key
+        if service_url:
+            env["COGNEE_BASE_URL"] = service_url
+        if session_key:
+            env["COGNEE_SESSION_KEY"] = session_key
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("sync-session-to-graph.py")),
+                "--deliver-stranded",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as exc:
+        hook_log("stranded_delivery_launch_failed", {"error": str(exc)[:300]})
+
+
 def _purge_legacy_resolved_files() -> None:
     legacy = _STATE_DIR / "resolved.json"
     scoped_dir = _STATE_DIR / "resolved"
@@ -2901,6 +2935,11 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
         dataset,
         session_key=session_key,
         agent_session_name=agent_session_name,
+        api_key=agent_api_key,
+        service_url=str(config.get("base_url", "") or ""),
+    )
+    _spawn_stranded_delivery(
+        session_key=session_key,
         api_key=agent_api_key,
         service_url=str(config.get("base_url", "") or ""),
     )
