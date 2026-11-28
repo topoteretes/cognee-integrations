@@ -47,7 +47,8 @@ def recall_user_prompt(payload: dict, on_skip: Callable[[str], None] | None = No
         closing = "</" + tag + ">"
         end = prompt.find(closing, match.end())
         if end < 0:
-            return skip(tag)
+            # An unmatched opener may be literal user text, not a host envelope.
+            break
         if tag == "command-args":
             # Slash-command arguments are authored by the user, even though
             # the host wraps them in the same envelope as command metadata.

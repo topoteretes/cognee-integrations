@@ -71,7 +71,6 @@ def test_unset_floor_keeps_the_stock_gate_exactly(suite, hook_module, monkeypatc
         "<system-reminder>Use the task tool</system-reminder>",
         "<scheduled-task>Run the hourly summary</scheduled-task>",
         "<cross-session-message>Another agent finished</cross-session-message>",
-        "<system-reminder>Incomplete notification",
         "[SUGGESTION MODE: Suggest the user's next message]",
         "[Request interrupted by user for tool use]",
         "# Files mentioned by the user\n/path/to/file.py",
@@ -96,6 +95,11 @@ def test_machine_only_prompts_do_not_recall(suite, hook_module, monkeypatch, pro
         ),
         ("Explain what <system-reminder> means", "Explain what <system-reminder> means"),
         ("Try again", "Try again"),
+        ("<system-reminder>Incomplete notification", "<system-reminder>Incomplete notification"),
+        (
+            "<system-reminder> is the tag I need explained",
+            "<system-reminder> is the tag I need explained",
+        ),
     ],
 )
 def test_user_text_is_preserved(suite, hook_module, monkeypatch, prompt, expected):
