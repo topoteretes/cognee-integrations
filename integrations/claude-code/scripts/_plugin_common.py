@@ -5315,6 +5315,24 @@ def _try_acquire_drain_lock() -> bool:
         return True
 
 
+def _refresh_drain_lock() -> None:
+    """Keep a long drain's lock from being taken as stale: a session-end drain
+    of a slow server runs for minutes, far past ``_DRAIN_LOCK_STALE_SECONDS``."""
+    try:
+        os.utime(_DRAIN_LOCK)
+    except OSError:
+        pass
+
+
+#: Why the last ``drain_warmup_entries`` of this process stopped with entries
+#: left: ``locked``, ``backoff``, ``budget``, ``http_<status>``, or the error text.
+_DRAIN_STOP = {"reason": ""}
+
+
+def drain_stop_reason() -> str:
+    return _DRAIN_STOP["reason"]
+
+
 def _release_drain_lock() -> None:
     try:
         _DRAIN_LOCK.unlink()
@@ -5372,6 +5390,7 @@ def drain_warmup_entries(
     """
     from _capture_policy import CapturePatternError, allow_tool, capture_enabled, sanitize
 
+    _DRAIN_STOP["reason"] = ""
     if not capture_enabled():
         return 0, 0
 
@@ -5400,8 +5419,10 @@ def drain_warmup_entries(
                     "pending": len(snapshot),
                 },
             )
+            _DRAIN_STOP["reason"] = "backoff"
             return 0, len(snapshot)
     if not _try_acquire_drain_lock():
+        _DRAIN_STOP["reason"] = "locked"
         hook_log("warmup_drain_skipped_locked", {"session": session_id, "pending": len(snapshot)})
         return 0, len(snapshot)
     try:
@@ -5437,7 +5458,9 @@ def drain_warmup_entries(
                         "left": len(snapshot) - drained - deduped,
                     },
                 )
+                _DRAIN_STOP["reason"] = "budget"
                 break
+            _refresh_drain_lock()
             send_entry = entry
             ambiguous = False
             if isinstance(entry, dict):
@@ -5470,14 +5493,17 @@ def drain_warmup_entries(
                     "warmup_drain_error",
                     {"error": str(exc)[:200], "drained": drained, "status": exc.code},
                 )
+                _DRAIN_STOP["reason"] = f"http_{exc.code}"
                 break
             except CapturePatternError as exc:
                 # A typo in COGNEE_CAPTURE_TOOLS must not cost buffered traces:
                 # leave the buffer as it is and replay once the value is fixed.
                 hook_log("capture_tools_invalid", {"error": str(exc)[:200], "drained": drained})
+                _DRAIN_STOP["reason"] = "capture_tools_invalid"
                 break
             except Exception as exc:
                 hook_log("warmup_drain_error", {"error": str(exc)[:200], "drained": drained})
+                _DRAIN_STOP["reason"] = str(exc)[:80]
                 break
         # Both sent and dedup-consumed entries leave the buffer; they form a
         # contiguous head prefix because the loop only ever breaks.
@@ -5672,8 +5698,13 @@ def ensure_dataset_via_http(dataset: str) -> None:
 def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str = "final") -> dict:
     """API-mode session->graph sync: drain warmup entries, then ONE improve submit.
 
-    ``trigger`` names the caller (``auto``, ``final``, ``manual``, ``switch``)
-    and is recorded with the session's improve state. Returns
+    ``trigger`` names the caller (``auto``, ``final``, ``manual``, ``switch``,
+    ``replay``) and is recorded with the session's improve state. ``final`` (a
+    session's end) and ``replay`` (an ended session's queue, picked up at a
+    later session start) run detached, so their drain goes on for as long as
+    every pass delivers something or only waits for another drain's lock;
+    ``replay`` submits no improve while entries remain and it delivered none,
+    since that session's end already improved what the server holds. Returns
     ``{"ok": bool, "reason": str, "error": str}``: ``ok`` when the improve landed
     and the drain was complete; otherwise ``reason`` is ``busy`` (another improve
     of this session is in flight server-side), ``unreachable`` (backend down,
@@ -5689,6 +5720,7 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
     not land arms the failure backoff.
     """
     remaining = 0
+    _DRAIN_STOP["reason"] = ""
     if not _backend_reachable(_local_api_url()):
         result: dict = {"ok": False, "error": "backend unreachable"}
         reason = "unreachable"
@@ -5696,12 +5728,39 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
         # Detached context: nothing user-visible waits on this, so the drain
         # gets a far larger budget than the per-prompt hook's default.
         final_budget = _float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
-        _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
-        if remaining:
-            # One bounded retry after a short pause: the tail usually failed on a
-            # momentary blip, and improve reads only what reached the server cache.
+        session_over = trigger in ("final", "replay")
+        drained, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
+        delivered = drained
+        retried = False
+        while remaining:
+            # A pass that delivered nothing gets one retry after a short pause
+            # (the tail usually failed on a momentary blip). A session that is
+            # over has no later trigger, so there a slow server is not a
+            # failure: a pass that delivered something, or only waited for
+            # another drain's lock, is followed by the next one.
+            if session_over and (drained or drain_stop_reason() == "locked"):
+                retried = False
+            elif retried:
+                break
+            else:
+                retried = True
             time.sleep(_DRAIN_RETRY_PAUSE_SECONDS)
-            _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
+            drained, remaining = drain_warmup_entries(
+                dataset, session_id, budget_seconds=final_budget
+            )
+            delivered += drained
+        if trigger == "replay" and remaining and not delivered:
+            hook_log(
+                "improve_incomplete_drain",
+                {
+                    "dataset": dataset,
+                    "session": session_id,
+                    "remaining": remaining,
+                    "improve_ok": False,
+                    "submitted": False,
+                },
+            )
+            return {"ok": False, "reason": "incomplete_drain", "error": ""}
         ensure_dataset_via_http(dataset)
         result = improve_session_via_http(dataset, session_id)
         if result.get("unsupported"):
