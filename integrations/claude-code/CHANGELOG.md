@@ -23,8 +23,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the graph was reloaded since.
 - **A stored regression at the next prompt.** After a review, the next prompt in that
   repository reads the stored verdict and shows a short block once per verdict when it
-  reports a regression or changed rule files. No review runs on its own, and a
-  repository with no pending review costs no request.
+  reports a regression or changed rule files. A repository with no pending review costs
+  no request.
 - **Rule proposals** (`cognee-rules.sh`, the new `cognee-rules` skill). The server mines
   candidate rules and lints each one as a draft; candidates are shown with their
   support, exceptions and lint result, those matching stored `constraint` or
@@ -34,6 +34,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
   changed, with their body hashes, and a lesson that carries stamps is tagged by the
   stamped symbols that changed or are gone instead of by its files. Needs a server with
   the `locate` code operation and a repository indexed by path; otherwise nothing changes.
+- **Coding memory reads while the agent works.** SessionStart lists up to five of the
+  project's lessons (from the lesson cache, for the model and in the session-start
+  message). Every prompt that gets no lessons block is recalled for as outside coding mode
+  and gets a `Lessons for this prompt` list of at most five lessons relevant to it; a
+  lesson already printed in full in the session is one `(shown earlier)` line. File context
+  on `Read` is on again. Still off in coding mode: the trace per tool call (the
+  end-of-request capture sends every call), the `improve` every 150 entries, the
+  pre-compact anchor and the session-start steer and recap.
+- **Where to look, in a review.** After the verdict, `cognee-review.sh` lists at most five
+  symbols the change touched, with file, line and reason: how much depends on each
+  (`impact`), earlier fix commits that changed it (`touched`), a new finding, or that the
+  change removed it; then resolved findings, removed symbols and, with `--target`, what was
+  reached outside it. The extra analyses run one after another within 60 seconds, and one
+  that fails costs its part and a line saying so. `--json` carries the pieces under
+  `where_to_look`; `--no-where` skips them.
+- **Automatic review** (coding mode, `COGNEE_AUTO_REVIEW`, on by default). After a Bash
+  call that ran `git commit`, `git push` or `gh pr create` in a repository indexed by
+  path, a detached review runs when the change holds code files, a base exists and this
+  HEAD was not reviewed yet. Its "Where to look" lines are shown once at the next prompt,
+  also when the status is clean. The gate is local and deterministic; anything else is one
+  line in `hook.log`.
 - **`cognee-plugin trace [--follow] [--session <id>]`** prints a session's hook events
   and the server's pipeline runs for it in time order, with one line per improve stage
   when the server reports them.
@@ -41,7 +62,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **Coding memory is on by default.** `COGNEE_CODING_MEMORY` unset now means on; set it to
-  `false` to keep per-call capture and per-prompt recall. A server the plugin did not start
+  `false` to keep per-call capture. A server the plugin did not start
   must run with `DISTILLATION_MODE=coding`, and session start says so when it cannot tell.
 
 - **The plugin's own local server is started with `ACCEPT_LOCAL_FILE_PATH=true`** unless

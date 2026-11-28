@@ -25,12 +25,24 @@ Usage:
 --stored:        print the verdict the server stored for this repository,
                  without running a review (says when the graph was reloaded
                  since).
---json:          print the server's reply instead of the report.
+--json:          print the server's reply instead of the report, with the
+                 pieces of the "Where to look" section under `where_to_look`.
+--no-where:      skip the "Where to look" section, its extra analyses and the
+                 re-index of an edited working tree before the review.
 
 The Cognee server runs enola on the repository this checkout was indexed from,
 so the review needs a local server with the code analysis API and a repository
 indexed by path (cognee-index-repo.sh <path>). The server stores the verdict;
 a regression or changed rule files are then shown once at the next prompt.
+
+After the verdict the report says where a reviewer should look: at most five
+symbols the change touched, each with its file and line and the reason (how
+much depends on it, earlier fix commits that changed it, a new finding, or
+that the change removed it), then resolved findings, removed symbols and, with
+--target, what the change reached outside it. Those come from the server's
+`locate`, `impact` and `touched` analyses, asked one after another within 60
+seconds; one that fails or runs out of time costs its part and a line saying
+so, never the review. `impact` is asked for the five largest changed symbols.
 
 Exit status: 0 reviewed (clean), 1 regression, 2 the review could not run,
 3 the base is not comparable.
@@ -72,7 +84,7 @@ def _parse(argv: list) -> tuple:
                 params[name] = float(value)
             else:
                 params[name] = value
-        elif arg in ("--stored", "--json"):
+        elif arg in ("--stored", "--json", "--no-where"):
             flags.add(arg)
         elif arg in ("-h", "--help"):
             flags.add("--help")
@@ -114,14 +126,27 @@ def main(argv: list) -> int:
                 )
             )
         return 0
-    answer = _code_review.run_review(cwd, base, params, rt)
+    answer = _code_review.run_review(cwd, base, params, rt, refresh="--no-where" not in flags)
     if not answer["ok"]:
         print(answer["message"])
         return 2
     result = answer["result"]
     verdict = result.get("output") if isinstance(result.get("output"), dict) else {}
+    where = None
+    if "--no-where" not in flags and result.get("exit_code") != 3:
+        try:
+            where = _code_review.where_to_look(
+                answer["state"],
+                rt,
+                result.get("review") or {},
+                verdict,
+                target=str(params.get("target") or ""),
+                graph_lag=answer.get("graph_lag", ""),
+            )
+        except Exception as exc:  # the verdict is printed whatever happens here
+            where = {"places": [], "unavailable": ["where to look: %s" % str(exc)[:160]]}
     if "--json" in flags:
-        print(json.dumps(result))
+        print(json.dumps({**result, "where_to_look": where} if where is not None else result))
     else:
         print(
             _code_review.report(
@@ -131,6 +156,8 @@ def main(argv: list) -> int:
                 str(result.get("enola_version") or ""),
             )
         )
+        if where is not None:
+            print("\n".join(_code_review.where_lines(where)))
     exit_code = result.get("exit_code")
     return exit_code if exit_code in (1, 3) else 0
 

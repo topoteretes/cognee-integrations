@@ -34,8 +34,16 @@ Explain the paths relevant to the question:
   set the variable: it lets that loopback-only server read a repository by its path for
   indexing, reviews and rule proposals. A server the user started, and Cognee Cloud,
   are never given it.
-- Code reviews and rule proposals are run by the server (enola) only when asked for; the
-  plugin never runs enola. A stored review's regression is shown once at the next prompt.
+- Code reviews and rule proposals are run by the server (enola); the plugin never runs
+  enola. Rule proposals run only when asked for. In coding mode a review also runs by
+  itself after a Bash call that ran `git commit`, `git push` or `gh pr create` in a
+  repository indexed by path, when the change holds code files and that commit was not
+  reviewed yet; `COGNEE_AUTO_REVIEW=false` turns that off. A stored review's regression,
+  and an automatic review's "Where to look" lines, are shown once at the next prompt.
+- In coding mode (the default) nothing is written while the agent works: each request is
+  sent once, at its end. Memory is read during the session: up to five lessons at session
+  start, recall and a `Lessons for this prompt` list on every prompt, and file context on
+  `Read`. `COGNEE_CODING_MEMORY=false` goes back to per-call capture.
 - Recall injects selected memory into Claude's context. The injection budget drops
   whole entries and the session ledger avoids repeating cloud memory until context
   is cleared or compacted.

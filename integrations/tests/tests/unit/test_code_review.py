@@ -552,3 +552,388 @@ def test_the_hook_survives_a_broken_review_module(env, hook, monkeypatch):
     output = {"hookSpecificOutput": {"additionalContext": "kept"}}
     assert hook._with_review_notice(output, str(env.repo)) is output
     assert os.path.isdir(env.repo)
+
+
+# -- Where to look -----------------------------------------------------------------
+
+
+def symbol(name: str, line: int, lines: int = 3) -> dict:
+    return {
+        "id": (name.encode().hex() + "0" * 32)[:32],
+        "name": "pricing." + name,
+        "symbol_kind": "function",
+        "file": "pricing.py",
+        "line": line,
+        "end_line": line + lines - 1,
+        "lines": lines,
+    }
+
+
+#: Seven changed symbols; ``impact`` is asked for the five largest.
+SYMBOLS = [
+    symbol(name, 10 * n, lines)
+    for n, (name, lines) in enumerate(
+        [
+            ("tiny", 1),
+            ("line_total", 9),
+            ("total", 8),
+            ("discount", 7),
+            ("tax", 6),
+            ("fmt", 5),
+            ("nit", 2),
+        ],
+        start=1,
+    )
+]
+DEPENDENTS = {
+    "pricing.line_total": (2, 1),
+    "pricing.total": (4, 3),
+    "pricing.discount": (0, 0),
+    "pricing.tax": (4, 1),
+    "pricing.fmt": (1, 1),
+}
+
+
+def analysis_reply(output, exit_code: int = 0) -> dict:
+    return {"analysis": "x", "exit_code": exit_code, "output": output, "review": None}
+
+
+def impact_output(target: str) -> dict:
+    total, direct = DEPENDENTS[target]
+    by_depth = {}
+    if direct:
+        by_depth["1"] = [{"name": f"d{n}"} for n in range(direct)]
+    if total - direct:
+        by_depth["2"] = [{"name": f"t{n}"} for n in range(total - direct)]
+    return {"target": target, "by_depth": by_depth}
+
+
+@pytest.fixture
+def looking(env, monkeypatch):
+    """A change in the checkout's working tree and a server that answers the
+    extra analyses. ``env.answers[analysis]`` is a reply, a callable or a failure."""
+    (env.repo / "pricing.py").write_text("def line_total(price, qty):\n    return 0\n")
+    env.review = dict(
+        REVIEW, base_commit=env.cg._run_git(["rev-parse", "HEAD"], str(env.repo)).strip()
+    )
+    env.answers = {
+        "locate": lambda p: (200, analysis_reply({"diff": {"files": [{"symbols": SYMBOLS}]}})),
+        "impact": lambda p: (200, analysis_reply(impact_output(p["target"]))),
+        "touched": lambda p: (
+            200,
+            analysis_reply(
+                {
+                    "ranking": [
+                        {"id": SYMBOLS[4]["id"], "name": "pricing.tax", "count": 2},
+                        {"id": SYMBOLS[0]["id"], "name": "pricing.tiny", "count": 1},
+                    ]
+                }
+            ),
+        ),
+    }
+
+    def answer(body):
+        reply = env.answers[body["analysis"]]
+        return reply(body["params"]) if callable(reply) else reply
+
+    env.server.on("POST", ANALYZE, answer)
+    env.refreshed = []
+    monkeypatch.setattr(env.cr, "_refresh_graph", lambda *a, **k: env.refreshed.append(1) or "")
+    return env
+
+
+def look(env, verdict=CLEAN, **kwargs) -> dict:
+    return env.cr.where_to_look(env.state, env.rt, env.review, verdict, **kwargs)
+
+
+def asked(env) -> list:
+    return [body["analysis"] for body in env.server.bodies(ANALYZE)]
+
+
+def test_where_to_look_ranks_the_changed_symbols_by_what_depends_on_them(looking):
+    env = looking
+    where = look(env)
+    # One call after another: the diff's symbols, impact of the five largest, the fix history.
+    assert asked(env) == ["locate", *["impact"] * 5, "touched"]
+    bodies = env.server.bodies(ANALYZE)
+    assert "+    return 0" in bodies[0]["params"]["diff"]
+    assert [b["params"]["target"] for b in bodies[1:6]] == [
+        "pricing.line_total",
+        "pricing.total",
+        "pricing.discount",
+        "pricing.tax",
+        "pricing.fmt",
+    ]
+    assert bodies[6]["params"] == {
+        "rev": env.review["base_commit"],
+        "subject": env.cr.FIX_SUBJECT,
+        "top": 0,
+    }
+    assert (where["impact_asked"], where["impact_left_out"]) == (5, 2)
+    assert len(where["changed_symbols"]) == 7
+    assert env.cr.where_lines(where) == [
+        "Where to look:",
+        "  1. pricing.total (pricing.py:30): 4 symbol(s) depend on it (3 directly)",
+        "  2. pricing.tax (pricing.py:50): 4 symbol(s) depend on it (1 directly); "
+        "changed by 2 fix commit(s) before",
+        "  3. pricing.line_total (pricing.py:20): 2 symbol(s) depend on it (1 directly)",
+        "  4. pricing.fmt (pricing.py:60): 1 symbol(s) depend on it (1 directly)",
+        # Impact was not asked for it, but a fix changed it before.
+        "  5. pricing.tiny (pricing.py:10): changed by 1 fix commit(s) before",
+        "  (impact was asked for the 5 largest of 7 changed symbols)",
+    ]
+    # pricing.discount and pricing.nit: nothing depends on them, no fix: not places.
+    assert where["more_places"] == 0 and where["unavailable"] == []
+
+
+def test_findings_removed_symbols_and_the_scope_come_from_the_verdict(looking):
+    env = looking
+    env.answers["locate"] = (200, analysis_reply({"diff": {"files": [{"symbols": SYMBOLS[1:3]}]}}))
+    finding = {
+        "title": "Dead code candidate: function pricing.unused",
+        "source": "dead-code",
+        "evidence": [{"file": "pricing.py", "symbol": "pricing.unused", "line": 70}],
+    }
+    on_changed = dict(
+        CYCLE, evidence=[{"file": "pricing.py", "symbol": "pricing.total", "line": 30}]
+    )
+    verdict = dict(
+        REGRESSION,
+        failures=[on_changed],
+        diff={
+            "findings_new": [on_changed, finding],
+            "findings_resolved": [DEAD],
+            "facts_removed": [
+                {"kind": "symbol", "name": "pricing.legacy", "file": "pricing.py", "line": 80},
+                {"kind": "dependency", "name": "pricing -> os"},
+            ],
+        },
+    )
+    where = look(env, verdict, target="pricing")
+    assert env.cr.where_lines(where) == [
+        "Where to look:",
+        "  1. pricing.total (pricing.py:30): 4 symbol(s) depend on it (3 directly); "
+        "new finding [cycles]",
+        "  2. pricing.line_total (pricing.py:20): 2 symbol(s) depend on it (1 directly)",
+        "  3. pricing.unused (pricing.py:70): new finding [dead-code]",
+        "  4. pricing.legacy (pricing.py:80): removed by this change; "
+        "check what still refers to it",
+        "Resolved findings: 1",
+        "  - [dead-code] Dead code candidate: function billing/invoice.unused_helper "
+        "(billing/invoice.py:6)",
+        "Removed symbols: pricing.legacy",
+        "Reached outside pricing: 1 package(s) reached outside the declared scope (over the limit)",
+    ]
+    # Without --target the verdict's scope line is the report's own, not repeated here.
+    assert not any(
+        line.startswith("Reached outside") for line in env.cr.where_lines(look(env, verdict))
+    )
+
+
+def test_at_most_five_places_and_the_rest_is_counted(looking):
+    env = looking
+    many = [symbol(f"f{n}", n + 1, 9 - n) for n in range(5)]
+    env.answers["locate"] = (200, analysis_reply({"diff": {"files": [{"symbols": many}]}}))
+    env.answers["impact"] = (200, analysis_reply({"by_depth": {"1": [{"name": "x"}]}}))
+    env.answers["touched"] = (200, analysis_reply({"ranking": []}))
+    removed = [{"kind": "symbol", "name": f"pricing.gone{n}", "file": "pricing.py"} for n in (1, 2)]
+    where = look(env, dict(CLEAN, diff={"facts_removed": removed}))
+    lines = env.cr.where_lines(where)
+    assert len(where["places"]) == env.cr.MAX_PLACES == 5 and where["more_places"] == 2
+    assert "  (2 more place(s) had a reason; --json lists all the pieces)" in lines
+
+
+def test_nothing_to_look_at_says_so(looking):
+    env = looking
+    env.answers["impact"] = (200, analysis_reply({"by_depth": {}}))
+    env.answers["touched"] = (200, analysis_reply({"ranking": []}))
+    where = look(env)
+    assert where["places"] == []
+    assert env.cr.where_lines(where)[1].startswith("  nothing stands out: 7 changed symbol(s)")
+
+
+@pytest.mark.parametrize(
+    ("failing", "calls", "line"),
+    [
+        (
+            "locate",
+            ["locate"],
+            "Not available: changed symbols: Cognee review: the server could not run locate "
+            "(HTTP 500): enola crashed",
+        ),
+        (
+            "touched",
+            ["locate", *["impact"] * 5, "touched"],
+            "Not available: fix history: Cognee review: the server could not run touched "
+            "(HTTP 500): enola crashed",
+        ),
+    ],
+)
+def test_a_part_that_fails_costs_one_line_and_nothing_else(looking, failing, calls, line):
+    env = looking
+    env.answers[failing] = (500, {"detail": "enola crashed"})
+    where = look(env)
+    assert asked(env) == calls
+    lines = env.cr.where_lines(where)
+    assert [text for text in lines if text.startswith("Not available")] == [line]
+    if failing == "touched":  # the ranking by dependents is still there
+        assert lines[1].startswith("  1. pricing.total (pricing.py:30): 4 symbol(s)")
+        assert "fix commit" not in "\n".join(lines)
+
+
+def test_impact_failing_for_some_symbols_is_one_line(looking):
+    env = looking
+
+    def impact(params):
+        if params["target"] in ("pricing.total", "pricing.fmt"):
+            return 500, {"detail": "boom"}
+        return 200, analysis_reply(impact_output(params["target"]))
+
+    env.answers["impact"] = impact
+    lines = env.cr.where_lines(look(env))
+    assert lines[1].startswith("  1. pricing.tax (pricing.py:50): 4 symbol(s) depend on it")
+    unavailable = [text for text in lines if text.startswith("Not available")]
+    assert len(unavailable) == 1 and unavailable[0].startswith(
+        "Not available: impact of pricing.total, pricing.fmt: "
+    )
+
+
+def test_the_extra_calls_share_one_time_budget(looking):
+    env = looking
+    where = look(env, budget=0.0)
+    assert asked(env) == []  # no time left: nothing is asked, the verdict stands
+    assert where["places"] == []
+    assert where["unavailable"] == ["changed symbols: no time left in the review's budget"]
+
+    def slow(params):
+        time.sleep(0.3)
+        return 200, analysis_reply({"diff": {"files": [{"symbols": SYMBOLS[:2]}]}})
+
+    env.answers["locate"] = slow
+    where = look(env, budget=0.2)
+    assert asked(env) == ["locate"]  # the budget ran out during it: impact is not started
+    assert any(line.startswith("impact of ") for line in where["unavailable"])
+
+
+def test_the_graph_is_refreshed_before_the_review_when_asked(looking):
+    """Before, so the stored verdict and the analyses after it describe one graph."""
+    env = looking
+    order: list = []
+    env.answers["check"] = lambda p: order.append("check") or (200, check_reply(CLEAN))
+    env.cr._refresh_graph = lambda *a, **k: order.append("refresh") or ""
+    assert env.cr.run_review(str(env.repo), "main", {}, env.rt)["graph_lag"] == ""
+    assert order == ["check"]
+    order.clear()
+    env.cr._refresh_graph = lambda *a, **k: order.append("refresh") or "unreachable"
+    answer = env.cr.run_review(str(env.repo), "main", {}, env.rt, refresh=True)
+    assert order == ["refresh", "check"]
+    assert answer["ok"] and answer["graph_lag"] == "unreachable"
+
+
+def test_a_graph_that_could_not_be_refreshed_is_said(looking):
+    env = looking
+    where = look(env, graph_lag="unreachable")
+    assert where["unavailable"] == [
+        "code graph refresh: unreachable; symbols are read from the graph as last indexed"
+    ]
+    assert len(where["places"]) == 5
+
+
+def test_no_diff_against_the_merge_base_asks_nothing(looking):
+    env = looking
+    env.cg._run_git(["checkout", "--", "pricing.py"], str(env.repo))
+    where = look(env)
+    assert asked(env) == []
+    assert where["unavailable"][0].startswith("changed symbols: git shows no diff")
+
+
+def test_the_script_prints_where_to_look_after_the_verdict(looking, script, capsys, monkeypatch):
+    env = looking
+    # ``script`` loaded the modules again: the refresh of its own copy is the one to fake.
+    monkeypatch.setattr(script._code_review, "_refresh_graph", lambda *a, **k: "")
+    env.answers["check"] = (200, check_reply(CLEAN, base_commit=env.review["base_commit"]))
+    assert script.main(["main"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("Cognee review: proj against main")
+    report_end = out.index("Outside the expected scope: nothing reported")
+    assert out[report_end + 1] == "Where to look:"
+    assert out[report_end + 2].startswith("  1. pricing.total (pricing.py:30)")
+
+    assert script.main(["main", "--json"]) == 0
+    reply = json.loads(capsys.readouterr().out)
+    assert reply["output"] == CLEAN
+    where = reply["where_to_look"]
+    assert [place["symbol"] for place in where["places"]][:2] == ["pricing.total", "pricing.tax"]
+    assert where["places"][0] == {
+        "symbol": "pricing.total",
+        "file": "pricing.py",
+        "line": 30,
+        "reasons": ["4 symbol(s) depend on it (3 directly)"],
+    }
+    assert {
+        "changed_symbols",
+        "resolved_findings",
+        "removed_symbols",
+        "outside_scope",
+        "unavailable",
+    } <= set(where)
+
+    env.server.calls.clear()
+    assert script.main(["main", "--no-where"]) == 0
+    assert "Where to look" not in capsys.readouterr().out
+    assert asked(env) == ["check"]
+
+
+def test_a_declined_review_asks_for_nothing_more(looking, script, capsys):
+    env = looking
+    declined = dict(CLEAN, diff={"comparability": {"comparable": False, "reason": "no history"}})
+    env.answers["check"] = (200, check_reply(declined, 3))
+    assert script.main(["main"]) == 3
+    assert "Where to look" not in capsys.readouterr().out
+    assert asked(env) == ["check"]
+
+
+def test_a_manual_review_leaves_no_places_for_the_notice(looking):
+    """Only the automatic review's places go to the next prompt; a later verdict drops them."""
+    env = looking
+    env.answers["check"] = (200, check_reply(CLEAN))
+    assert run(env)["ok"]
+    env.cr.note_where(
+        str(env.repo),
+        REVIEW,
+        {
+            "places": [
+                {
+                    "symbol": "a.b",
+                    "file": "a.py",
+                    "line": 3,
+                    "reasons": ["2 symbol(s) depend on it (1 directly)"],
+                }
+            ]
+        },
+    )
+    env.server.on("POST", RECALL, (200, code_rows(stored(CLEAN))))
+    text, _ = notice(env)
+    assert text.endswith("Where to look:\n- a.b (a.py:3): 2 symbol(s) depend on it (1 directly)")
+    # A new review of the repository: the places were another verdict's.
+    env.answers["check"] = (200, check_reply(CLEAN, reviewed_at="2026-11-28T09:00:00+00:00"))
+    assert run(env)["ok"]
+    env.server.on(
+        "POST", RECALL, (200, code_rows(stored(CLEAN, reviewed_at="2026-11-28T09:00:00+00:00")))
+    )
+    assert notice(env) == ("", None)
+
+
+def test_a_regression_notice_carries_the_places_too(looking):
+    env = looking
+    env.answers["check"] = (200, check_reply(REGRESSION, 1))
+    assert run(env)["ok"]
+    env.cr.note_where(
+        str(env.repo),
+        REVIEW,
+        {"places": [{"symbol": "a.b", "file": "", "reasons": ["new finding [cycles]"]}]},
+    )
+    env.server.on("POST", RECALL, (200, code_rows(stored(REGRESSION, 1))))
+    text, _ = notice(env)
+    assert ": REGRESSION" in text.splitlines()[0]
+    assert text.endswith("Where to look:\n- a.b: new finding [cycles]")

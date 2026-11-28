@@ -771,9 +771,28 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             exc = caught
         return scope_dataset, part, exc, round((time.monotonic() - t0) * 1000, 1)
 
+    # Coding memory: the lessons relevant to this prompt are looked up next to
+    # the recall, under the same deadline (see ``_coding_lessons``).
+    coding = coding_memory_enabled()
+    lessons_task = None
+    if coding and scope_specs:
+        import _coding_lessons
+
+        lessons_task = asyncio.create_task(
+            asyncio.to_thread(
+                _coding_lessons.for_prompt, get_session_key(), prompt, cwd, budget_deadline
+            )
+        )
+
     outcomes = await asyncio.gather(
         *(_dispatch(scope_list, qtype, profile) for scope_list, qtype, profile in scope_specs)
     )
+    prompt_lessons: list = []
+    if lessons_task is not None:
+        try:
+            prompt_lessons = await lessons_task
+        except Exception as exc:
+            hook_log("coding_prompt_lessons_failed", {"error": str(exc)[:200]})
 
     # Fold every scope's outcome in, in canonical order, so the injected
     # context and the logs read the same whichever request answered first.
@@ -1022,6 +1041,28 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     cite = credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
     marked: list = []
     memory_sections = _injection_sections(by_source, cite, marked)
+    lesson_lines = [item["line"] for item in prompt_lessons]
+    lesson_sections = []
+    reserved_lessons = ""
+    if coding:
+        memory_sections = _without_lesson_passages(memory_sections)
+    if lesson_lines:
+        # Above every recall section: a lesson is the densest thing memory holds.
+        # Not counted as recall entries and never deduplicated by the ledger
+        # (a "shown earlier" line reads the same on every prompt it applies to).
+        lesson_sections = [
+            {
+                "title": _coding_lessons.PROMPT_TITLE,
+                "entries": lesson_lines,
+                "priority": 60,
+                "counted": False,
+                "dedupe": False,
+                "separator": "\n",
+            }
+        ]
+        # Reserved at its longest, corrected after fitting (as the drop notice).
+        reserved_lessons = _lessons_segment(len(lesson_lines), len(lesson_lines))
+        header += reserved_lessons
     # Reserve the largest possible drop notice before fitting. Replacing it
     # with the actual smaller count (or removing it) can only shrink output.
     entry_count = sum(len(section["entries"]) for section in memory_sections)
@@ -1047,9 +1088,10 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         [{"entries": [header], "required": True}]
         + instruction_sections
         + hint_sections
+        + lesson_sections
         + memory_sections
     )
-    if not total and not scope_timeouts:
+    if not total and not scope_timeouts and not lesson_lines:
         sections.append(
             {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
         )
@@ -1121,6 +1163,15 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         actual_header = actual_header.replace(
             reserved_drop, f"; {dropped} dropped to fit" if dropped else "", 1
         )
+    lessons_kept = 0
+    if reserved_lessons:
+        # Lines are whole entries: one that is in the output was kept.
+        kept_lessons = [item for item in prompt_lessons if item["line"] in full_context]
+        lessons_kept = len(kept_lessons)
+        actual_header = actual_header.replace(
+            reserved_lessons, _lessons_segment(lessons_kept, len(lesson_lines) - lessons_kept), 1
+        )
+        _coding_lessons.mark_shown(_key, [i["lesson"] for i in kept_lessons if i["full"]])
     full_context = actual_header + full_context[len(full_context.split("\n", 1)[0]) :]
     if reserved_instruction and reserved_instruction in full_context:
         # Only what survived the budget and the dedupe was injected on this turn.
@@ -1182,6 +1233,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             "saves_last_turn": saves_last_turn,
             "elapsed_ms": elapsed_ms(recall_start),
             "receipt_id": receipt_id,
+            "lessons": lessons_kept,
             # The entry lists hold recalled text: counts only in the log.
             **{
                 k: v
@@ -1265,9 +1317,37 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     return _recall_output(full_context, notice), total
 
 
+def _lessons_segment(kept: int, left_out: int) -> str:
+    """The header's part about the prompt's lessons; "" when none was kept or cut."""
+    if not kept and not left_out:
+        return ""
+    return "; lessons %d%s" % (kept, " (%d left out to fit)" % left_out if left_out else "")
+
+
+def _without_lesson_passages(sections: list) -> list:
+    """Coding memory: lesson documents the graph recall returned leave the recall
+    section; the prompt's lessons list shows the relevant ones once."""
+    import _coding_lessons
+
+    kept = []
+    for section in sections:
+        if section.get("source") == "graph_context" and section.get("kind") in (
+            "passages",
+            "evidence",
+        ):
+            entries = [e for e in section["entries"] if not _coding_lessons.is_lesson_passage(e)]
+            section = {**section, "entries": entries}
+        if section["entries"]:
+            kept.append(section)
+    return kept
+
+
 def _coding_prompt(payload: dict) -> dict | None:
     """Coding memory (SDK-1336): record the request's start, then give the lessons
-    block once per session instead of a recall per prompt. Fails open."""
+    block once per session. A prompt that gets no block (every later prompt, and
+    the first one after a session-start lessons list) is recalled for as outside
+    coding mode. Fails open."""
+    import _coding_lessons
     import _coding_memory
 
     prompt = payload.get("prompt", "")
@@ -1280,7 +1360,9 @@ def _coding_prompt(payload: dict) -> dict | None:
             _coding_memory.begin_turn(key, prompt, cwd)
             from _capture_policy import sanitize
 
-            block = _coding_memory.deliver(key, str(sanitize(prompt)), cwd)
+            if not _coding_lessons.start_list_shown(key):
+                block = _coding_memory.deliver(key, str(sanitize(prompt)), cwd)
+                _coding_lessons.mark_shown(key, block=block)
     except Exception as exc:
         hook_log("coding_delivery_failed", {"error": str(exc)[:200]})
         return None
@@ -1330,6 +1412,16 @@ def _with_review_notice(output: dict | None, cwd: str) -> dict | None:
     return merged
 
 
+def _coding_server_supported() -> bool:
+    try:
+        import _coding_memory
+
+        return _coding_memory.server_supported()
+    except Exception as exc:
+        hook_log("coding_delivery_failed", {"error": str(exc)[:200]})
+        return True
+
+
 def _recall_min_prompt_chars() -> int:
     """Prompts shorter than this skip recall (capture keeps its own 5-char floor).
 
@@ -1366,13 +1458,23 @@ def main():
         hook_log("context_lookup_missing_session_key")
         return
 
-    if coding_memory_enabled():
-        output = _with_review_notice(
-            _coding_prompt(payload), str(payload.get("cwd") or "") or os.getcwd()
-        )
-        if output:
-            print(json.dumps(output))
-        return
+    coding = coding_memory_enabled()
+
+    def notice_only(output=None) -> None:
+        """Coding memory: a prompt that is not recalled for still gets a pending
+        review notice (outside coding mode such a prompt prints nothing)."""
+        if coding:
+            output = _with_review_notice(output, str(payload.get("cwd") or "") or os.getcwd())
+            if output:
+                print(json.dumps(output))
+
+    if coding:
+        block = _coding_prompt(payload)
+        if block or not _coding_server_supported():
+            # The lessons block is this prompt's memory; on a server too old for
+            # coding mode memory is off and nothing is recalled.
+            notice_only(block)
+            return
 
     prompt = payload.get("prompt", "")
     try:
@@ -1382,14 +1484,17 @@ def main():
         prompt = sanitize(prompt) if isinstance(prompt, str) else ""
     except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
         hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})
+        notice_only()
         return
     if not prompt or len(prompt) < 5:
+        notice_only()
         return
     # Only a raised floor applies here: the stock gate above keeps its exact
     # behavior (whitespace counts), so an unset variable changes nothing.
     min_chars = _recall_min_prompt_chars()
     if min_chars > 5 and len(prompt.strip()) < min_chars:
         hook_log("context_lookup_short_prompt", {"chars": len(prompt.strip()), "min": min_chars})
+        notice_only()
         return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
 
