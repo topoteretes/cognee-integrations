@@ -995,6 +995,18 @@ def main():
     except json.JSONDecodeError:
         return
 
+    from _recall_prompt import recall_user_prompt
+
+    prompt = recall_user_prompt(
+        payload,
+        on_skip=lambda reason: hook_log(
+            "context_lookup_machine_prompt_skipped", {"reason": reason}
+        ),
+    )
+    if not prompt:
+        return
+    payload = {**payload, "prompt": prompt}
+
     session_key_candidate, session_key_source = resolve_session_key_from_payload(payload)
     if session_key_candidate:
         set_session_key(session_key_candidate)

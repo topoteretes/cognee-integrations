@@ -6,6 +6,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 
 | Logger and legacy name | Canonical name |
 |---|---|
+| `hook:context_lookup_machine_prompt_skipped` | `recall.lookup_machine_prompt_skipped` |
 | `clear-transcript-context:claude_context_cleared` | `transcript.cleared` |
 | `clear-transcript-context:clear_context_failed` | `transcript.failed` |
 | `clear-transcript-context:clear_context_invalid_payload` | `transcript.invalid_payload` |
@@ -371,3 +372,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 
 `memory.credit`: the Stop hook's credit check, `{injected, credited}`. `injected` is whether the turn injected memory with the credit instruction (`injected_turn` in the session's `credit.json` is the current turn); `credited` whether the answer ends with the credit line (`logo_exact` is added for the ChatGPT app's credit: whether its icon was copied exactly). Only a credit on an injected turn is counted. Logged when either is true.
+
+`recall.lookup_machine_prompt_skipped` records only a fixed `reason` (the envelope tag or host-prefix category); it never includes the prompt. Count it to measure automatic recalls avoided. Mixed envelopes that retain user text, including `command-args`, are not counted as skips.

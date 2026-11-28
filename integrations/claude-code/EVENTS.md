@@ -6,6 +6,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 
 | Logger and legacy name | Canonical name |
 |---|---|
+| `hook:context_lookup_machine_prompt_skipped` | `recall.lookup_machine_prompt_skipped` |
 | `claude-observer:completion` | `observer.completion` |
 | `claude-observer:completion_failed` | `observer.completion_failed` |
 | `claude-observer:handler_exception` | `observer.handler_exception` |
@@ -428,3 +429,5 @@ not server acknowledgement. Self skips log an allowlisted `first_token` and
 and allowlisted first token; neither event includes command text.
 
 `memory.credit`: the Stop hook's credit check, `{injected, credited}`. `injected` is whether the turn injected memory with the credit instruction (`injected_turn` in the session's `credit.json` is the current turn); `credited` whether the answer ends with the credit line. Only a credit on an injected turn is counted. Logged when either is true.
+
+`recall.lookup_machine_prompt_skipped` records only a fixed `reason` (the envelope tag or host-prefix category); it never includes the prompt. Count it to measure automatic recalls avoided. Mixed envelopes that retain user text, including `command-args`, are not counted as skips.

@@ -6,6 +6,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 
 | Logger and legacy name | Canonical name |
 |---|---|
+| `hook:context_lookup_machine_prompt_skipped` | `recall.lookup_machine_prompt_skipped` |
 | `clear-transcript-context:claude_context_cleared` | `transcript.cleared` |
 | `clear-transcript-context:clear_context_failed` | `transcript.failed` |
 | `clear-transcript-context:clear_context_invalid_payload` | `transcript.invalid_payload` |
@@ -364,3 +365,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:plugin_provision_retry_after_update` | `plugin.provision_retry_after_update` |
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+`recall.lookup_machine_prompt_skipped` records only a fixed `reason` (the envelope tag or host-prefix category); it never includes the prompt. Count it to measure automatic recalls avoided. Mixed envelopes that retain user text, including `command-args`, are not counted as skips.

@@ -48,6 +48,7 @@ ISOLATED_MODULES = (
     "_proc",
     "_recall_http",
     "_recall_text",
+    "_recall_prompt",
     "_injection_budget",
     "_injection_ledger",
     "_evidence",
