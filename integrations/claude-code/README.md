@@ -616,7 +616,9 @@ then runs the coding distillation for them too. These two are server settings, s
 a server the plugin starts: a local server that is already running keeps the mode it started with.
 When that mode differs from the session's (a coding session on a server started without coding
 mode, or the reverse), session start says so, with the server's pid and how to restart it; the
-plugin never restarts a shared server itself. The mode of a server the plugin did not start (a
+plugin never restarts a shared server itself. A server that runs `DISTILLATION_MODE=coding` lists `coding_distillation_v1` in the
+`capabilities` of its `/health` reply, and a coding session that sees it there gets no note,
+whoever started the server. Without it, the mode of a server the plugin did not start (a
 local one with no pidfile record, a remote URL or a `COGNEE_MANAGED_ENDPOINT`) is unknown, so a
 coding session is told to shut it down and restart the plugin, which then starts its own server in
 coding mode; for a remote URL or managed endpoint, remove that setting first, or the plugin

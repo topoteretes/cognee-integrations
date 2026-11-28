@@ -3486,6 +3486,29 @@ def is_cognee_cloud_url(url: str) -> bool:
     return host == "cognee.ai" or host.endswith(".cognee.ai")
 
 
+CODING_DISTILLATION_CAPABILITY = "coding_distillation_v1"
+
+
+def server_advertises_coding(service_url: str, timeout: float = 2.0) -> bool:
+    """True when the server's ``/health`` lists the coding distillation capability.
+
+    A server that runs ``DISTILLATION_MODE=coding`` says so there, so a session
+    joining a server the plugin did not start knows its mode. False covers a
+    server in the default mode, one too old to say, and one that did not answer:
+    the caller then falls back to what the pidfile record tells it.
+    """
+    base = _normalize_service_url(service_url or _local_api_url())
+    try:
+        with urllib.request.urlopen(
+            f"{base}/health", timeout=timeout, context=_https_context()
+        ) as response:
+            body = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return False
+    capabilities = body.get("capabilities") if isinstance(body, dict) else None
+    return isinstance(capabilities, list) and CODING_DISTILLATION_CAPABILITY in capabilities
+
+
 def coding_server_note(port: int, coding: bool) -> str:
     """The SessionStart note when the running local server's distillation mode
     differs from this session's coding memory setting (SDK-1336), or ''.
