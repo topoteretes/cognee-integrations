@@ -818,6 +818,16 @@ def _ensure_local_server_running(
         # pick the user the plugin logs in as; a non-default user must already exist.
         server_env.setdefault("DEFAULT_USER_EMAIL", _LOCAL_DEFAULT_USER_EMAIL)
         server_env.setdefault("DEFAULT_USER_PASSWORD", _LOCAL_DEFAULT_USER_PASSWORD)
+        # Every client dials http://localhost, which Windows resolves to ::1 first,
+        # while uvicorn binds 127.0.0.1 by default; there a refused connect to ::1
+        # takes about 2 s before the client falls back to IPv4, so each request
+        # paid that. Bound to "localhost", asyncio's create_server listens on every
+        # address the name resolves to (::1 and 127.0.0.1): still loopback only.
+        # Windows only: elsewhere a refused connect fails at once, and a host that
+        # resolves localhost to ::1 with IPv6 disabled (common in containers) could
+        # not bind it. setdefault: an operator's own UVICORN_HOST wins.
+        if os.name == "nt":
+            server_env.setdefault("UVICORN_HOST", "localhost")
         # The server's console output must not inherit this worker's stdio
         # (bootstrap.log — that is how it reached gigabytes: every line the
         # server printed for as long as it ran), but it must not vanish either:

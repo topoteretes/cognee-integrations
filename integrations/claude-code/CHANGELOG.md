@@ -82,6 +82,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   server.** An error on this machine (the index state or a "never" that could not be
   saved) printed nothing, which the script read as "server unreachable, nothing was
   submitted". It now prints the error.
+- **On Windows the local server listens on `::1` as well as `127.0.0.1`**, so the hooks'
+  requests to `http://localhost` no longer wait about 2 s each for Windows to refuse `::1`
+  before falling back to IPv4. The server is spawned with `UVICORN_HOST=localhost`, and an
+  exported `UVICORN_HOST` still wins. Other platforms keep uvicorn's default: there a refused
+  connect fails at once (#668).
 
 ### Upgrade note
 
