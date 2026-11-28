@@ -72,6 +72,10 @@ def begin(dataset: str, session_id: str, cwd: str) -> None:
         path,
         {
             "pending": True,
+            # The process whose setup owns this session until it prepares it or
+            # hands it over (``claim``): ``route`` prepares a session whose owner
+            # died before either (a killed hook), since nothing else will.
+            "owner_pid": os.getpid(),
             "primary": dataset,
             "write": dataset,
             "node_set": [tag] if tag else [],
@@ -190,10 +194,57 @@ def prepare(dataset: str, session_id: str, timeout: float = 5.0) -> dict:
             state["fallback"] = type(error).__name__
             state["write"] = dataset
     state["pending"] = False
-    for key in ("retry_at", "last_failure"):
+    for key in ("retry_at", "last_failure", "owner_pid"):
         state.pop(key, None)
     _write_json_file(path, state)
     return state
+
+
+def claim(dataset: str, session_id: str, pid: int | None) -> None:
+    """Hand an unprepared session to the process that now owns its setup.
+
+    ``pid`` is the owner whose death lets ``route`` prepare the session itself
+    (a spawned bootstrap worker). ``None`` names an owner that later hooks
+    restart until it has prepared the session (the cloud worker), which
+    ``route`` never preempts. A prepared or backed-off state is left alone.
+    """
+    from _plugin_common import _load_json_file, _write_json_file
+
+    path = _path(dataset, session_id)
+    state = _load_json_file(path)
+    if not state or not state.get("pending") or "retry_at" in state:
+        return
+    state["owner_pid"] = pid
+    _write_json_file(path, state)
+
+
+def _owner_alive(pid: int) -> bool:
+    """Whether the process that owns a session's setup still runs.
+
+    Only a process known to be gone counts as dead; a pid this process may not
+    inspect, or a check that fails, counts as alive, so the state is left to it.
+    """
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == 259  # STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def allow_retry(dataset: str, session_id: str) -> None:
@@ -226,12 +277,16 @@ def route(dataset: str, session_id: str) -> dict:
     if not state:
         return {"primary": dataset, "write": dataset, "node_set": []}
     if state.get("pending"):
-        # Only a state with a retry_at is retried here: a failed prepare(), or a
+        # A state with a retry_at is retried here: a failed prepare(), or a
         # setup that gave up (allow_retry). Without one, session setup has not
         # run prepare() yet, and it alone may: it knows when the key and the
-        # dataset are final.
+        # dataset are final. Unless the process that owned that setup is gone
+        # (a hook or bootstrap worker killed before its hand-over): then no one
+        # else will ever prepare the session, and its captures would stay queued.
         retry_at = state.get("retry_at")
-        if isinstance(retry_at, (int, float)) and time.time() >= retry_at:
+        owner = state.get("owner_pid")
+        abandoned = retry_at is None and isinstance(owner, int) and not _owner_alive(owner)
+        if abandoned or (isinstance(retry_at, (int, float)) and time.time() >= retry_at):
             state = prepare(dataset, session_id, timeout=ROUTE_PREPARE_TIMEOUT) or state
         if state.get("pending"):
             raise RuntimeError("Project memory provisioning is pending; capture remains queued")

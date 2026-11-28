@@ -1694,8 +1694,12 @@ def _spawn_bootstrap(
     agent_session_name: str,
     session_key: str,
     dataset: str,
-) -> bool:
-    """Launch the detached server-bootstrap worker (this script, --bootstrap)."""
+) -> int:
+    """Launch the detached server-bootstrap worker (this script, --bootstrap).
+
+    Returns the worker's pid, which then owns the session's project memory
+    (:func:`_project_memory.claim`), or 0 when it could not be started.
+    """
     bootstrap = {
         "cwd": cwd,
         "session_id": session_id,
@@ -1716,7 +1720,7 @@ def _spawn_bootstrap(
         env = os.environ.copy()
         if session_key:
             env["COGNEE_SESSION_KEY"] = session_key
-        subprocess.Popen(
+        worker = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), _BOOTSTRAP_ARG, json.dumps(bootstrap)],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
@@ -1725,11 +1729,11 @@ def _spawn_bootstrap(
             start_new_session=True,
             close_fds=True,
         )
-        hook_log("bootstrap_spawned", {"session_id": session_id})
-        return True
+        hook_log("bootstrap_spawned", {"session_id": session_id, "pid": worker.pid})
+        return worker.pid
     except Exception as exc:
         hook_log("bootstrap_spawn_failed", {"error": str(exc)[:300]})
-        return False
+        return 0
 
 
 def _status_from_error(message: str) -> int:
@@ -1949,13 +1953,13 @@ async def _run_bootstrap(bootstrap: dict) -> None:
     ran for is handed to a later ``route()``. A prepared or backed-off state
     is left alone (:func:`_project_memory_gave_up`).
     """
+    dataset = str(bootstrap.get("dataset", "") or get_dataset(load_config()))
+    session_id = str(bootstrap.get("session_id", "") or "")
+    _project_memory_claimed(dataset, session_id, os.getpid())
     try:
         await _bootstrap_session(bootstrap)
     finally:
-        _project_memory_gave_up(
-            str(bootstrap.get("dataset", "") or get_dataset(load_config())),
-            str(bootstrap.get("session_id", "") or ""),
-        )
+        _project_memory_gave_up(dataset, session_id)
 
 
 async def _bootstrap_session(bootstrap: dict) -> None:
@@ -2215,8 +2219,11 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
             },
         }
     if will_boot and _LAZY_BOOTSTRAP:
-        if _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset):
-            setup.pop("project_memory", None)
+        worker_pid = _spawn_bootstrap(
+            config, cwd, session_id, agent_session_name, session_key, dataset
+        )
+        if worker_pid:
+            _project_memory_handed_to(setup, worker_pid)
         user_id = os.environ.get("COGNEE_USER_ID", "")
     else:
         user_id, agent_api_key, ok = await _run_heavy(
@@ -2232,10 +2239,11 @@ async def _start_session(payload: dict | None, setup: dict) -> dict:
         if not ok:
             if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url) and not managed_locked:
                 # Inline attempt failed; retry the heavy path out of band.
-                if _spawn_bootstrap(
+                worker_pid = _spawn_bootstrap(
                     config, cwd, session_id, agent_session_name, session_key, dataset
-                ):
-                    setup.pop("project_memory", None)
+                )
+                if worker_pid:
+                    _project_memory_handed_to(setup, worker_pid)
             else:
                 return {}
 
@@ -2363,6 +2371,23 @@ def _coding_server_note(
             {"base_url": target_url, "managed": managed, "coding": coding_memory_enabled()},
         )
     return note
+
+
+def _project_memory_handed_to(setup: dict, pid: int | None) -> None:
+    """The hook hands the session's setup to a worker: ``pid`` (a spawned
+    bootstrap) or ``None`` (a worker that later hooks restart)."""
+    handed = setup.pop("project_memory", None)
+    if handed:
+        _project_memory_claimed(*handed, pid)
+
+
+def _project_memory_claimed(dataset: str, session_id: str, pid: int | None) -> None:
+    try:
+        from _project_memory import claim
+
+        claim(dataset, session_id, pid)
+    except Exception as exc:
+        hook_log("project_memory_claim_failed", {"error": str(exc)[:200]})
 
 
 def _project_memory_gave_up(dataset: str, session_id: str) -> None:
