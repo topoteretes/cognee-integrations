@@ -106,7 +106,7 @@ def _join(session_start, closed_port_url, monkeypatch, *, coding: bool) -> dict:
     if coding:
         monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
     else:
-        monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", "false")
     monkeypatch.setenv("COGNEE_BASE_URL", closed_port_url)
     monkeypatch.setattr(
         session_start, "server_presence", lambda *a, **k: (session_start.PRESENCE_READY, {})
@@ -191,7 +191,7 @@ def _join_remote(session_start, monkeypatch, url: str, *, coding: bool = True) -
     if coding:
         monkeypatch.setenv("COGNEE_CODING_MEMORY", "true")
     else:
-        monkeypatch.delenv("COGNEE_CODING_MEMORY", raising=False)
+        monkeypatch.setenv("COGNEE_CODING_MEMORY", "false")
     monkeypatch.setenv("COGNEE_BASE_URL", url)
     monkeypatch.setattr(session_start, "_health_ok", lambda *a, **k: True)
 

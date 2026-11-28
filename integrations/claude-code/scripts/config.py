@@ -207,12 +207,16 @@ def load_config() -> dict:
 
 
 def coding_memory_enabled() -> bool:
-    """True when ``COGNEE_CODING_MEMORY`` is on (see ``_coding_memory``)."""
-    return str(os.environ.get("COGNEE_CODING_MEMORY", "")).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    """True unless ``COGNEE_CODING_MEMORY`` turns coding memory off (see ``_coding_memory``).
+
+    On by default: unset or blank is on, and only ``false`` / ``0`` / ``no`` / ``off``
+    turn it off.
+    """
+    return str(os.environ.get("COGNEE_CODING_MEMORY", "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
     )
 
 

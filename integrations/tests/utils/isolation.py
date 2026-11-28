@@ -87,6 +87,9 @@ ISOLATED_MODULES = (
 #:   - COGNEE_LLM_OBSERVER=false keeps SessionStart from starting the Claude
 #:     observer shim (a detached process) on a machine with `claude` on PATH;
 #:     the observer tests opt back in.
+#:   - COGNEE_CODING_MEMORY=false: Claude Code's coding memory is on by default
+#:     and replaces per-call capture and per-prompt recall; the suites that
+#:     test those run with it off, the coding memory tests opt back in.
 DETERMINISTIC_ENV = {
     "COGNEE_PLUGIN_IN_VENV": "1",
     "COGNEE_IDLE_DISABLED": "1",
@@ -94,6 +97,7 @@ DETERMINISTIC_ENV = {
     "COGNEE_LAZY_BOOTSTRAP": "0",
     "PYTHONIOENCODING": "utf-8",
     "COGNEE_LLM_OBSERVER": "false",
+    "COGNEE_CODING_MEMORY": "false",
 }
 
 #: Env-var prefixes scrubbed from the inherited environment so a developer's
@@ -111,6 +115,9 @@ def scrub_cognee_env(monkeypatch) -> None:
     for key in list(os.environ):
         if key.startswith(_SCRUBBED_PREFIXES):
             monkeypatch.delenv(key, raising=False)
+    # Coding memory is on by default in Claude Code; in-process tests run with it
+    # off like the hook subprocesses do (DETERMINISTIC_ENV), and opt back in.
+    monkeypatch.setenv("COGNEE_CODING_MEMORY", "false")
 
 
 def build_env(

@@ -40,6 +40,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Coding memory is on by default.** `COGNEE_CODING_MEMORY` unset now means on; set it to
+  `false` to keep per-call capture and per-prompt recall. A server the plugin did not start
+  must run with `DISTILLATION_MODE=coding`, and session start says so when it cannot tell.
+
 - **The plugin's own local server is started with `ACCEPT_LOCAL_FILE_PATH=true`** unless
   you set the variable. cognee 1.6.10 and later refuse a local repository path named
   over the API without it. A server the plugin did not start is not affected.
