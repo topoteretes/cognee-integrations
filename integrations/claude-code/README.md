@@ -1511,6 +1511,13 @@ Shared state (used by both Claude Code and Codex plugins):
 ~/.cognee-plugin/venv/            # shared Cognee virtualenv
 ```
 
+### Inspector (development tool)
+
+`tools/inspector/inspector.py` serves a local, read-only page (http://127.0.0.1:8030) with
+one live timeline of the plugin's hook events, the server's pipeline runs (improve stages
+included), the enola commands it ran and its errors, each row with its session. See
+[`tools/inspector/README.md`](tools/inspector/README.md).
+
 ## Usage metrics
 
 For an offline usage rollup compiled purely from the local files above — no
